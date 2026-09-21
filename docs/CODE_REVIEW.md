@@ -8,9 +8,9 @@ surfaces.
 
 Line numbers refer to `web/js/app.js` (the extracted bundle) unless marked
 `web/index.html` or `web/styles.css`. **They are as of the read that produced
-this document and have since drifted** — Phases 1–5 all edited that file, so a
-reference can be tens of lines out. Search by the function or class name quoted
-beside it rather than jumping to the number.
+this document and have since drifted** — Phases 1–5, 10 and 11 all edited that
+file, so a reference can be tens of lines out. Search by the function or class
+name quoted beside it rather than jumping to the number.
 
 **Status at 2026-09-21: Phases 1–11 complete.** Every finding below is fixed and
 covered by `node tools/test-all.cjs` (**nine** suites, 504 checks, all green). The
