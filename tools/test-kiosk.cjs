@@ -531,6 +531,75 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check("the borrower's note reaches the staff queue", !!queueRow && queueRow.note, JSON.stringify(queueRow));
     check("and the button says it is accepting damage, not good condition", !!queueRow && /damaged/i.test(queueRow.label), JSON.stringify(queueRow));
 
+    // ── 9. the way across the boundary, and back ──────────────────────────
+    // The hold leads to the PIN, the PIN led to the admin panel, and the admin
+    // panel's only exit led back to the kiosk. So on a tablet -- no Escape key,
+    // and a 400ms window on the splash at launch -- the staff home, where
+    // checkout and check-in live, could not be reached at all. The panel now
+    // carries a way to it, and the home screen carries a way back.
+    check("the admin panel offers a way to the desk", (await clickIn("screen-admin", '[data-action="admin-home"]')) === "ok");
+    await sleep(600);
+    check("which lands on the staff home", (await screen()) === "screen-home", await screen());
+
+    // Arriving there has to show the desk's real numbers, not three zeros --
+    // nothing about the router used to refresh them.
+    await page
+      .waitForFunction(() => Number((document.getElementById("home-stat-out") || {}).textContent) > 0, { timeout: 8000 })
+      .catch(() => {});
+    const homeCounts = await page.evaluate(() => ({
+      out: (document.getElementById("home-stat-out") || {}).textContent,
+      overdue: (document.getElementById("home-stat-overdue") || {}).textContent
+    }));
+    check("with the counts filled in on arrival", Number(homeCounts.out) > 0, JSON.stringify(homeCounts));
+
+    check("the staff home can hand the device back to the kiosk", (await clickIn("screen-home", "#btn-to-kiosk")) === "ok");
+    await sleep(400);
+    check("and does", (await screen()) === "screen-welcome", await screen());
+
+    // The boundary still only opens one way: whoever is at the tablet cannot
+    // walk from the public screen into the staff one without the hold and PIN.
+    const stillRefused = await page.evaluate(async () => {
+      window.app.goToScreen("home");
+      await new Promise((r) => setTimeout(r, 200));
+      const el = document.querySelector(".screen:not(.hidden)");
+      return el ? el.id : null;
+    });
+    check("and the kiosk still refuses to leave on its own", stillRefused === "screen-welcome", `ended on ${stillRefused}`);
+
+    // ── 10. back in through the front door ────────────────────────────────
+    // The staff home has its own way into the panel now, and it has to lead to
+    // a PIN screen that works. Every other route in this suite arrives at the
+    // PIN through the hold gesture, which runs showAdminLogin() -- the function
+    // that arms the LOGIN button, and it arms it once per document. So the case
+    // that matters is a fresh page where the hold has never been used: the desk
+    // button has to be enough on its own.
+    //
+    // A fresh document reaches the staff home one way, by tapping the splash
+    // inside its 400ms window. A 10ms poll catches it without racing.
+    await page.evaluateOnNewDocument(() => {
+      const t = setInterval(() => {
+        const s = document.getElementById("screen-splash");
+        if (s && !s.classList.contains("hidden")) {
+          clearInterval(t);
+          s.click();
+        }
+      }, 10);
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-home:not(.hidden)", { timeout: 15000 });
+    check("a fresh page reaches the desk without the hold gesture", (await screen()) === "screen-home", await screen());
+
+    check("and the desk has its own way into the panel", (await clickIn("screen-home", "#btn-to-admin")) === "ok");
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    check("which opens the PIN screen", true);
+    await page.type("#screen-admin-login .pin-input", PIN);
+    await clickIn("screen-admin-login", ".pin-submit");
+    const gotIn = await page
+      .waitForSelector("#screen-admin:not(.hidden)", { timeout: 12000 })
+      .then(() => true)
+      .catch(() => false);
+    check("and LOGIN works on a document where the hold was never used", gotIn);
+
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));
   } finally {

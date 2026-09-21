@@ -2275,6 +2275,19 @@ var init_keyboard = __esm({
           if (this._showToken !== showToken) return;
           this.container.classList.add("visible");
           const kbdHeight = this.container.offsetHeight || 360;
+          // Published on the document as well as applied to the active screen's
+          // body. The body padding lets a scrolling screen push its form above
+          // the keyboard; this lets a screen that has no .screen-body -- the
+          // PIN screen, whose card is centred in a full-height container --
+          // reserve the same space in CSS. Without one of the two, the keyboard
+          // simply lay on top of that card: at every size measured, LOGIN and
+          // Cancel were underneath it, and a real click on either landed on a
+          // keycap. The PIN screen could not be logged into or backed out of.
+          document.documentElement.style.setProperty("--keyboard-height", kbdHeight + "px");
+          // A marker for the stylesheet, because CSS cannot read the value of a
+          // custom property. Screens that reserve space do it with the variable;
+          // the PIN screen has to change its shape, and that needs a selector.
+          document.documentElement.classList.add("kbd-open");
           const screen = document.querySelector(".screen:not(.hidden)");
           if (screen) {
             const body = screen.querySelector(".screen-body");
@@ -2296,6 +2309,8 @@ var init_keyboard = __esm({
         this.suggestions = [];
         this.targetInput = null;
         this._endLongPress();
+        document.documentElement.style.removeProperty("--keyboard-height");
+        document.documentElement.classList.remove("kbd-open");
         const screen = document.querySelector(".screen:not(.hidden)");
         if (screen) {
           const body = screen.querySelector(".screen-body");
@@ -2580,7 +2595,16 @@ var init_keyboard = __esm({
         }
         if (key === "done") {
           this.hide();
-          const activeStep = document.querySelector(".step.active");
+          // Scoped to the screen on show, not to the document. A document-wide
+          // query for .step.active matches the checkout screen's step even
+          // while checkout is hidden, so on any other screen with a field --
+          // the PIN screen above all -- Done took the checkout branch, clicked
+          // a Continue button nobody could see, and returned without ever
+          // pressing Enter in the field the person had just typed into. The
+          // keypad closed and nothing else happened: measured on the PIN
+          // screen, with the correct PIN, at 1280x800 and 375x667.
+          const visibleScreen = document.querySelector(".screen:not(.hidden)");
+          const activeStep = visibleScreen ? visibleScreen.querySelector(".step.active") : null;
           if (activeStep) {
             const continueBtn = activeStep.querySelector(".step-continue");
             if (continueBtn && !continueBtn.disabled) {
@@ -2588,7 +2612,6 @@ var init_keyboard = __esm({
             }
             return;
           }
-          const visibleScreen = document.querySelector(".screen:not(.hidden)");
           if (visibleScreen) {
             const focused = document.activeElement;
             if (focused && visibleScreen.contains(focused) && focused.tagName === "INPUT") {
@@ -2837,7 +2860,7 @@ async function refreshHome() {
 function initHomeScreen() {
   const btnCheckout = document.querySelector("#screen-home .btn-home-primary:first-of-type");
   const btnCheckin = document.querySelector("#screen-home .btn-home-primary:nth-of-type(2)");
-  const btnAdmin = document.querySelector(".btn-admin-link");
+  const btnAdmin = document.getElementById("btn-to-admin");
   if (btnCheckout) {
     btnCheckout.onclick = null;
     btnCheckout.addEventListener("click", () => {
@@ -2855,6 +2878,13 @@ function initHomeScreen() {
     btnAdmin.addEventListener("click", () => {
       window.dispatchEvent(new CustomEvent("frontdesk:admin-start"));
     });
+  }
+  // Back to the public screen. The kiosk can be left for a staff screen only by
+  // a deliberate grant, which is the hold gesture; going the other way is not a
+  // boundary, it is putting the device back where borrowers expect it.
+  const btnKiosk = document.getElementById("btn-to-kiosk");
+  if (btnKiosk) {
+    btnKiosk.onclick = () => goToScreen("welcome");
   }
 }
 function initScreens() {
@@ -4393,6 +4423,32 @@ var BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 // is absent, so nothing here is required for the app to work.
 
 let _hostInfoCache = null;
+
+// The version shown in the corner of every screen.
+//
+// The markup used to carry a hard-coded "v0.1" while the exe, the zip and the
+// README all said 1.0.0, so the one place a staff member can read the version
+// disagreed with the thing they installed. Prefer what the host actually
+// reports -- it is the running build, not what this file believes it shipped
+// with -- and fall back to this constant when the page is opened in a browser
+// with no host to ask.
+//
+// Keep WEB_VERSION in step with Build.Version in host/FrontDesk.cs and
+// AssemblyVersion in host/AssemblyInfo.cs; tools/test-host-bridge.cjs fails if
+// they drift apart.
+const WEB_VERSION = "1.0.0";
+async function renderBuildInfo() {
+  const el = document.querySelector(".build-info");
+  if (!el) return;
+  let version = WEB_VERSION;
+  try {
+    const info = await hostInfo();
+    if (info && info.version) version = String(info.version);
+  } catch (_) {
+  }
+  el.textContent = `v${version} \xB7 Front Desk`;
+  el.title = `Front Desk ${version}`;
+}
 
 /** The native object, or null when running in a plain browser. */
 function hostObject() {
@@ -6001,7 +6057,13 @@ async function renderAdminStats() {
       <span class="stat">Items: <strong>${items.length}</strong></span>
       <span class="stat">People: <strong>${borrowers.length}</strong></span>
     `;
-  } catch (_) {
+  } catch (err) {
+    // Swallowing this left the last good counts on screen, or -- on a first
+    // render -- an empty bar, either way with nothing to say the numbers are
+    // not current. A staff member cannot tell a library with nothing overdue
+    // from a database that did not answer, and the answer matters. Say so.
+    console.error("renderAdminStats failed", err);
+    header.innerHTML = '<span class="stat" style="color:var(--error);">Counts unavailable</span>';
   }
 }
 async function renderRecentKiosk() {
@@ -6039,7 +6101,12 @@ async function renderRecentKiosk() {
         container.classList.add("hidden");
       };
     }
-  } catch (_) {
+  } catch (err) {
+    // This banner says "someone just checked themselves out" and is only shown
+    // for ten minutes, so a stale copy is worse than none -- it would keep
+    // announcing a checkout that has aged out. Hide it and log.
+    console.error("renderRecentKiosk failed", err);
+    container.classList.add("hidden");
   }
 }
 async function renderQueue() {
@@ -8199,9 +8266,20 @@ function _wireAdminChrome() {
       goToScreen("welcome");
     };
   }
-  const legacyBack = root.querySelector(".btn-back:not([data-action])");
-  if (legacyBack) {
-    legacyBack.onclick = () => {
+  // The way to the desk from the admin panel.
+  //
+  // This was a `.btn-back:not([data-action])` fallback that could never match:
+  // the admin header's only back button carries data-action="admin-back", so
+  // the branch was dead and nothing on the admin panel led to the staff home.
+  // That left the home screen -- where checkout and check-in live, and which
+  // the README calls the main staff job -- reachable only by tapping the splash
+  // inside its 400ms window or by pressing Escape, and a tablet has no Escape
+  // key. Staff who signed in on the desk tablet could reach the admin panel and
+  // nothing else. The kiosk still refuses to leave for a staff screen; this is
+  // the authenticated side of that boundary, which is where it belongs.
+  const adminHome = root.querySelector('[data-action="admin-home"]');
+  if (adminHome) {
+    adminHome.onclick = () => {
       goToScreen("home");
       refreshHome();
     };
@@ -8302,12 +8380,21 @@ async function bootstrap() {
     initScreens();
     initHomeScreen();
     initKiosk();
+    renderBuildInfo().catch(() => {});
     // Re-render the active admin tab whenever the admin screen is entered.
     // `onEnterHooks` existed and was never populated, so returning from a detail
     // screen (item, borrower, duplicate review) left the list underneath showing
     // the state from before the edit -- an archived item still listed, a merged
     // duplicate still counted, a resolved banner still warning.
     onEnterHooks.set("admin", () => _renderActiveTab());
+    // And the same for Home, whose "N out / N overdue / N today" bar is the
+    // first thing a staff member reads. Every route that reaches Home happened
+    // to pair goToScreen("home") with refreshHome() by hand -- the splash tap,
+    // Escape, the admin back button, the visibility handler. A route that
+    // forgot left the bar showing whatever it said last, which on a fresh
+    // document is three zeros sitting above a desk with items out. Doing it
+    // here means the counts are right by construction rather than by memory.
+    onEnterHooks.set("home", () => refreshHome());
     try {
       const keyboardContainer = document.getElementById("keyboard");
       if (keyboardContainer) {

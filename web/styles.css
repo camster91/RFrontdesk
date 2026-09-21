@@ -2257,6 +2257,19 @@ body {
   justify-content: center;
   height: 100vh;
   padding: var(--space-6);
+  /* Clear of the on-screen keyboard, which is fixed across the bottom and
+     would otherwise sit on top of the LOGIN and Cancel buttons. This card is
+     centred in a full-height container rather than living in a .screen-body,
+     so it never got the padding the keyboard gives a scrolling screen -- and
+     the keyboard opens by itself the moment the PIN field takes focus, which
+     it does on arrival. Space is reserved here instead. */
+  padding-bottom: calc(var(--space-6) + var(--keyboard-height, 0px));
+  /* On a short window the card cannot fit above the keyboard (it is 486px on a
+     375px-wide screen, against 373px of keyboard), so the container scrolls.
+     With the card centred by `margin: auto` rather than by `align-items`, both
+     of its edges stay reachable -- a flex item centred in a scroll container
+     overflows past the top and cannot be scrolled back to. */
+  overflow-y: auto;
 }
 
 .login-card {
@@ -2267,6 +2280,7 @@ body {
   text-align: center;
   max-width: 400px;
   width: 100%;
+  margin: auto;
   box-shadow: var(--shadow-lg);
 }
 
@@ -2289,6 +2303,68 @@ body {
   font-size: 24px;
   letter-spacing: 0.5em;
   padding: var(--space-5);
+}
+
+/* ── The PIN screen with the keypad up ──
+   The numeric pad is five rows, which is 373px on a 375x667 screen and 473px
+   on a 1280x800 one, and the card as drawn is 454-486px. Both cannot fit, and
+   the keypad is a fixed overlay: the card's lower half sat underneath it, so
+   LOGIN and Cancel were covered and a real tap on either landed on a keycap.
+   Measured at every size the layout suite uses, Cancel could not be pressed --
+   on the one screen whose whole job is to be got out of.
+
+   With the keypad up the card gives up what it does not need: the heading (the
+   keypad says what this is) and the stacked pair of buttons. What is left is
+   the field and one row of actions, which fits above the keypad everywhere.
+   LOGIN stays reachable another way too -- the keypad's Done key presses Enter
+   in the focused field -- but Cancel has no other route, so it has to be
+   visible. */
+html.kbd-open .login-card {
+  padding: var(--space-4);
+  /* Belt and braces: if a future keypad grows past this, the card scrolls
+     instead of disappearing under it. */
+  max-height: calc(100vh - var(--space-4) * 2 - var(--keyboard-height, 0px));
+  overflow-y: auto;
+}
+
+html.kbd-open .login-title {
+  display: none;
+}
+
+html.kbd-open .pin-input-container {
+  flex-direction: row;
+  align-items: stretch;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+html.kbd-open .pin-input-container .pin-input {
+  /* From zero, not from auto. An input's auto width is its default 20
+     characters, so the field would ask for far more than the row has and be
+     shrunk back to its floor. Growing from zero asks for nothing and takes
+     what is left after the button. */
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 20px;
+  /* The card's PIN field is spaced out so the digits read as separate dots;
+     at half an em that costs 20px per digit, and eight digits did not fit in
+     the width a phone leaves beside the button. A quarter em keeps the
+     spacing and fits the longest PIN the field accepts. */
+  letter-spacing: 0.25em;
+  padding: var(--space-2) var(--space-3);
+}
+
+html.kbd-open .pin-input-container .pin-submit {
+  flex: 0 0 auto;
+  /* auto, and this is the whole reason the field was 28px wide. The stacked
+     layout below sets width: 100%, which is right in a column and wrong in a
+     row: a flex-basis of auto resolves to that 100%, so the button alone asked
+     for the entire 366px row and every other item in it was squeezed to its
+     floor. Measured -- the button's own box was 366px, the same as the
+     container. Sizing it to its text leaves the field the rest. */
+  width: auto;
+  padding-left: var(--space-5);
+  padding-right: var(--space-5);
 }
 
 .pin-submit {
@@ -2838,7 +2914,17 @@ body {
   .tab {
     min-height: var(--touch-comfortable);
   }
-  
+
+  /* The Admin button on the staff header is not a .btn and not a .tab, so it
+     was the one control in the app that stayed 34px tall on a touch device
+     while everything around it grew to 64-80. It is the way into the staff
+     screens and it sits in a corner of the busiest screen, so it is worth
+     being able to hit first time. --touch-min is the header's own minimum
+     height, so this grows the target without growing the header. */
+  .btn-admin-link {
+    min-height: var(--touch-min);
+  }
+
   /* Remove hover effects that can get stuck on touch */
   .btn:hover,
   .item-card:hover,
@@ -2912,9 +2998,22 @@ body {
     flex: none;
   }
   
+  /* The admin counts used to be a column squeezed beside the title, which
+     wrapped "Overdue:" away from its number and made the header 183px tall on
+     a 375px screen -- 27% of the viewport, sitting above the list that is the
+     reason the screen exists. Letting the header wrap puts the counts on their
+     own full-width row, where all four fit across a phone, so no label breaks
+     and the header roughly halves. Scoped to the admin screen: the other
+     headers have nothing to wrap. */
+  #screen-admin .screen-header {
+    flex-wrap: wrap;
+  }
   .admin-stats {
-    flex-direction: column;
-    gap: var(--space-2);
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-left: 0;
+    width: 100%;
+    gap: var(--space-2) var(--space-4);
   }
   
   .return-actions {
@@ -3086,6 +3185,16 @@ body {
   }
   .kiosk-step-title {
     font-size: 22px;
+  }
+  /* The staff header carries the wordmark, the overdue badge and two staff
+     controls. On a 375px screen those come to two pixels more than there is
+     room for, and the badge is the only part of it that is duplicated -- the
+     status bar below already shows the same count, and that one is the one
+     with the tap handler. So the gaps give rather than a control. */
+  #screen-home .screen-header {
+    gap: var(--space-2);
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
   }
 }
 

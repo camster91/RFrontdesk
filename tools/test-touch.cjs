@@ -314,6 +314,121 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check("navigating away puts the keyboard away at once", !afterNav.visible, JSON.stringify(afterNav));
     check("and it is inert from that moment", afterNav.inert, JSON.stringify(afterNav));
 
+    // ── the Done key ──────────────────────────────────────────────────────
+    // Done is how a touch user finishes: they type and press Done rather than
+    // reaching past the keypad for a button. It was dead on the PIN screen.
+    // Done asked the whole document for a .step.active, and the checkout
+    // screen's step matched even with checkout hidden -- so it took the
+    // checkout branch, clicked a CONTINUE nobody could see, and returned. The
+    // keypad closed and the PIN was never checked. Both halves are asserted
+    // here, because the fix has to scope the step lookup without losing the
+    // checkout behaviour it exists for.
+    const tapSelector = async (sel) => {
+      const box = await page.evaluate((s) => {
+        const el = document.querySelector(s);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const at = document.elementFromPoint(x, y);
+        return {
+          x, y,
+          onScreen: r.top >= 0 && r.bottom <= window.innerHeight,
+          hits: !!at && (at === el || el.contains(at)),
+          atPoint: at ? at.className || at.tagName : null
+        };
+      }, sel);
+      if (!box || !box.onScreen || !box.hits) return box;
+      await touch("touchStart", box);
+      await sleep(50);
+      await touch("touchEnd", box);
+      await sleep(140);
+      return box;
+    };
+
+    await page.evaluate(() => window.app.showAdminLogin());
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 10000 });
+    // Opening the field is setup, so it uses the same CDP mouse input the rest
+    // of the suite uses for that; the keys below are the part that has to work
+    // under a finger, and those are real touches. A raw synthetic touch on an
+    // input does not move focus in headless Chromium, which left the keypad
+    // showing the previous screen's four-row layout, inert and off screen --
+    // a green-looking setup over a test that could not have passed.
+    await page.click("#screen-admin-login .pin-input");
+    await page.waitForFunction(
+      () => document.getElementById("keyboard").classList.contains("visible"),
+      { timeout: 10000 }
+    ).catch(() => {});
+    check("the keypad comes up for the PIN field", (await kbdState()).visible, JSON.stringify(await kbdState()));
+    const pinLayout = await page.evaluate(() => ({
+      rows: document.querySelectorAll("#keyboard .kbd-row").length,
+      hasDone: !!document.querySelector('#keyboard .kbd[data-key="done"]'),
+      // The numeric pad is the one with digits; the phone layout is a full
+      // keyboard. If the wrong one is up, every check below is meaningless.
+      digits: document.querySelectorAll('#keyboard .kbd[data-key="1"]').length,
+      focused: document.activeElement === document.querySelector("#screen-admin-login .pin-input")
+    }));
+    check(
+      "it is the numeric pad, and the field has focus",
+      pinLayout.rows === 5 && pinLayout.hasDone && pinLayout.digits === 1 && pinLayout.focused,
+      JSON.stringify(pinLayout)
+    );
+
+    for (const digit of ["1", "2", "3", "4"]) {
+      await tapSelector(`#keyboard .kbd[data-key="${digit}"]`);
+    }
+    const pinTyped = await page.$eval("#screen-admin-login .pin-input", (el) => el.value);
+    check("four keypad taps enter the four digits", pinTyped === "1234", pinTyped);
+
+    const doneBox = await tapSelector('#keyboard .kbd[data-key="done"]');
+    check(
+      "the Done key is on screen and a touch at its centre hits it",
+      !!doneBox && doneBox.onScreen && doneBox.hits,
+      JSON.stringify(doneBox)
+    );
+    const openedByDone = await page
+      .waitForFunction(() => !document.getElementById("screen-admin").classList.contains("hidden"), { timeout: 4000 })
+      .then(() => true)
+      .catch(() => false);
+    check("Done on the PIN screen signs in", openedByDone);
+    const afterDone = await page.evaluate(() => ({
+      screens: [...document.querySelectorAll(".screen")].filter((s) => !s.classList.contains("hidden")).map((s) => s.id),
+      keypadUp: document.getElementById("keyboard").classList.contains("visible")
+    }));
+    check(
+      "and it went to the admin panel, not to a hidden checkout step",
+      afterDone.screens.length === 1 && afterDone.screens[0] === "screen-admin",
+      JSON.stringify(afterDone)
+    );
+    check("with the keypad put away", !afterDone.keypadUp, JSON.stringify(afterDone));
+
+    // The half the fix must not lose: on the checkout screen the step it
+    // belongs to is the visible one, and Done still presses CONTINUE.
+    await page.evaluate(() => window.app.goToScreen("home"));
+    await sleep(200);
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("frontdesk:checkout-start")));
+    await sleep(400);
+    const onPhoneStep = await page.evaluate(() => !!document.querySelector("#screen-checkout .step-phone.active"));
+    check("checkout opens on the phone step", onPhoneStep);
+    // Ten digits: handlePhone rejects anything shorter with a toast and stays
+    // on the step, which would look exactly like Done having done nothing.
+    await page.type("#screen-checkout .step-phone .input", "5551234567");
+    await sleep(200);
+    const phoneTyped = await page.$eval("#screen-checkout .step-phone .input", (el) => el.value);
+    check("the checkout phone field holds a full number", phoneTyped.replace(/\D/g, "").length === 10, phoneTyped);
+    await page.click("#screen-checkout .step-phone .input");
+    await page.waitForFunction(
+      () => document.getElementById("keyboard").classList.contains("visible"),
+      { timeout: 10000 }
+    ).catch(() => {});
+    check("the keypad is up on the checkout step too", (await kbdState()).visible, JSON.stringify(await kbdState()));
+    await tapSelector('#keyboard .kbd[data-key="done"]');
+    const advanced = await page
+      .waitForFunction(() => !!document.querySelector("#screen-checkout .step-name.active"), { timeout: 4000 })
+      .then(() => true)
+      .catch(() => false);
+    check("and Done still advances it, through the step it belongs to", advanced);
+
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors during any of it", realErrors.length === 0, realErrors.join(" | "));
   } finally {

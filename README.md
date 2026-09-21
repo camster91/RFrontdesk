@@ -34,6 +34,31 @@ to 5 minutes. The count survives a restart, so closing the app does not clear it
 The panel also **locks itself after 5 minutes idle**; any mouse, key or scroll
 activity on the admin screens resets that timer.
 
+### Getting between the two surfaces
+
+The app has two faces: the **kiosk**, which borrowers use and which anyone
+standing at the tablet can see, and the **staff screens**, which show names,
+phone numbers and who has what. Getting from the kiosk to a staff screen always
+takes the hold gesture and the PIN. Nothing else crosses that line.
+
+Coming back is one tap, and it should be the last thing you do at the desk:
+
+| From | Control | Lands on |
+| --- | --- | --- |
+| Kiosk | press and hold the Rotman logo | PIN screen |
+| PIN screen | Cancel | wherever you came from |
+| PIN screen | LOGIN | admin panel |
+| Admin panel | Back | the kiosk |
+| Admin panel | Front desk | staff home |
+| Staff home | Admin | PIN screen |
+| Staff home | Kiosk | the kiosk |
+
+**Tap Kiosk on the way out.** The staff home shows a borrower's name and phone
+at the top of a checkout, so a tablet left on it after a shift is showing the
+next person in the queue someone else's details. Escape works too on a machine
+with a keyboard, and the app is never more than a restart away from the kiosk,
+but the Kiosk button is the one that works on a tablet.
+
 ### Checkout — the main staff job
 
 From the staff home screen, start a checkout and:
@@ -271,12 +296,27 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Eight suites, 235 checks (8 host bridge, 11 toast stack, 8 screen router, 17
-report aggregation, 23 keyboard touch, 79 browser UI, 44 kiosk, 45 backup round
-trip). Four lift their section out of the real `app.js` and run it in a sandbox
-(host bridge, toast stack, screen router, report aggregation); four drive the
-real page in headless Edge (keyboard touch through real touch input, the browser
-UI end to end, the kiosk surface, and the backup round trip).
+Nine suites, 411 checks (10 host bridge, 11 toast stack, 8 screen router, 17
+report aggregation, 34 keyboard touch, 79 browser UI, 54 kiosk, 153 layout at
+real widths, 45 backup round trip). Four lift their section out of the real
+`app.js` and run it in a sandbox (host bridge, toast stack, screen router,
+report aggregation); five drive the real page in headless Edge (keyboard touch
+through real touch input, the browser UI end to end, the kiosk surface, the
+layout suite, and the backup round trip).
+
+The layout suite is the odd one out in how it reports: it checks every screen
+at every width and passes or fails each one by name — 153 checks across 375,
+412, 768, 1024, 1280 and 1440 — so a failure names the screen and the width
+rather than just a count. It also measures the PIN screen twice: once as it
+opens, and once with the on-screen keypad up, because that is a different
+layout and the one where a control is likeliest to end up underneath something.
+It seeds the worst case the forms allow (36 items and
+24 borrowers with names at the input limit, 70 loans split open, overdue and
+returned) because an empty database makes any layout look clean, and it checks
+that the seeded rows actually reached the DOM before it believes the result.
+768 and 1024 are measured as touch devices and 1280 and 1440 as a mouse, which
+is what they are, and which changes the layout: the stylesheet grows every
+`.btn`, `.input` and `.tab` to 64–80px under `pointer: coarse`.
 
 `node tools/serve.cjs` serves `web/` on `127.0.0.1:8791` for looking at it in a
 normal browser. Nothing about the app needs it; it exists because IndexedDB needs a

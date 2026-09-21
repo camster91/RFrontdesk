@@ -37,6 +37,10 @@ function load(bridge) {
   // The real dateStamp lives outside the extracted section; this is its
   // definition verbatim from app.js.
   sandbox.dateStamp = () => new Date().toISOString().slice(0, 10);
+  // renderBuildInfo is the one thing in the section that touches the DOM. A
+  // stub with a single .build-info node is enough to see what it writes.
+  sandbox.__buildInfo = { textContent: "", title: "" };
+  sandbox.document = { querySelector: (sel) => (sel === ".build-info" ? sandbox.__buildInfo : null) };
   vm.createContext(sandbox);
   vm.runInContext(section, sandbox);
   return sandbox;
@@ -138,6 +142,55 @@ function load(bridge) {
     check("formatBytes: MB", s.formatBytes(1.5 * 1024 * 1024) === "1.50 MB", s.formatBytes(1.5 * 1024 * 1024));
     check("formatBytes survives junk", s.formatBytes(undefined) === "0 B", s.formatBytes(undefined));
     ok("formatBytes covers all three magnitudes and junk input");
+  }
+
+  // --- The version shown in the corner (H: three files must agree) ---------
+  //
+  // web/js/app.js (WEB_VERSION), host/FrontDesk.cs (Build.Version) and
+  // host/AssemblyInfo.cs (AssemblyVersion) all state the product version, and
+  // the corner of every screen shows it. They drifted once already -- the UI
+  // said v0.1 while the exe said 1.0.0 -- so rather than trust three files to
+  // be edited together, read all three and compare.
+  {
+    const root = path.join(__dirname, "..");
+    const web = /const WEB_VERSION = "([^"]+)"/.exec(src);
+    const cs = /public const string Version = "([^"]+)"/.exec(
+      fs.readFileSync(path.join(root, "host", "FrontDesk.cs"), "utf8"));
+    // AssemblyVersion is four parts; the product version is the first three.
+    const asm = /AssemblyVersion\("(\d+\.\d+\.\d+)/.exec(
+      fs.readFileSync(path.join(root, "host", "AssemblyInfo.cs"), "utf8"));
+
+    check("WEB_VERSION is declared", web !== null);
+    check("Build.Version is declared in host/FrontDesk.cs", cs !== null);
+    check("AssemblyVersion is declared in host/AssemblyInfo.cs", asm !== null);
+    if (web && cs && asm) {
+      check("the web bundle and the host agree on the version",
+        web[1] === cs[1], `${web[1]} vs ${cs[1]}`);
+      check("the web bundle and the assembly agree on the version",
+        web[1] === asm[1], `${web[1]} vs ${asm[1]}`);
+    }
+    ok("one product version across the bundle, the host and the assembly");
+
+    // And the corner renders what the host reports, not what the file assumes.
+    const s = load({ GetInfo: () => JSON.stringify({ ok: true, version: "9.8.7", hosted: true }), Ping: () => "pong" });
+    await s.renderBuildInfo();
+    check("the corner shows the host's version when hosted",
+      s.__buildInfo.textContent === "v9.8.7 \xB7 Front Desk", s.__buildInfo.textContent);
+    check("and titles itself with it", s.__buildInfo.title === "Front Desk 9.8.7", s.__buildInfo.title);
+
+    const plain = load(null);
+    await plain.renderBuildInfo();
+    check("and falls back to the bundle's own version in a browser",
+      plain.__buildInfo.textContent === "v" + web[1] + " \xB7 Front Desk", plain.__buildInfo.textContent);
+
+    const broken = load({ GetInfo: () => JSON.stringify({ ok: false, error: "no" }) });
+    // The bridge logs the failed call, which is the behaviour under test; it is
+    // not this suite's job to print the stack in the middle of a passing run.
+    broken.console = Object.assign({}, console, { error: () => {}, warn: () => {} });
+    await broken.renderBuildInfo();
+    check("a host that cannot answer still leaves a version on screen",
+      /^v\d/.test(broken.__buildInfo.textContent), broken.__buildInfo.textContent);
+    ok("build-info renders the running version in all three cases");
   }
 
   console.log("");

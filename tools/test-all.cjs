@@ -16,6 +16,7 @@ const SUITES = [
   ["keyboard touch", "test-touch.cjs"],
   ["browser UI", "test-ui.cjs"],
   ["kiosk", "test-kiosk.cjs"],
+  ["layout at real widths", "test-responsive.cjs"],
   ["backup round trip", "test-restore.cjs"]
 ];
 
