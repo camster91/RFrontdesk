@@ -5903,13 +5903,13 @@ async function showItemDetail(itemId) {
 
       ${openLoan ? `
         <div class="loan-section">
-          <h3 class="section-title">CURRENTLY OUT</h3>
+          <h2 class="section-title">CURRENTLY OUT</h2>
           <div id="open-loan-row"></div>
         </div>
       ` : ""}
 
       <div class="loan-section">
-        <h3 class="section-title">STATS</h3>
+        <h2 class="section-title">STATS</h2>
         <div class="return-card" style="display:flex; gap:24px; flex-wrap:wrap;">
           <div><div class="loan-meta">Avg duration</div><div style="font-size:20px; font-weight:600;">${formatRelativeTime(avgMs) || "\u2014"}</div></div>
           <div><div class="loan-meta">Damaged</div><div style="font-size:20px; font-weight:600; color:var(--warning);">${damageCount}</div></div>
@@ -5918,7 +5918,7 @@ async function showItemDetail(itemId) {
       </div>
 
       <div class="loan-section">
-        <h3 class="section-title">ALL LOANS (${loans.length})</h3>
+        <h2 class="section-title">ALL LOANS (${loans.length})</h2>
         <div class="admin-list" id="item-loans-list"></div>
       </div>
     `;
@@ -5989,14 +5989,14 @@ async function showBorrowerDetail(borrowerId) {
 
       ${openLoans.length > 0 ? `
         <div class="loan-section">
-          <h3 class="section-title">CURRENTLY HELD (${openLoans.length})</h3>
+          <h2 class="section-title">CURRENTLY HELD (${openLoans.length})</h2>
           <div class="admin-list" id="open-loans-borrower"></div>
         </div>
       ` : ""}
 
       ${topItems.length > 0 ? `
         <div class="loan-section">
-          <h3 class="section-title">TOP ITEMS</h3>
+          <h2 class="section-title">TOP ITEMS</h2>
           <div class="admin-list">
             ${topItems.map(([name, count]) => `<div class="admin-list-item" style="cursor:default;"><div style="flex:1;">${escapeHtml3(name)}</div><div class="item-count">${count}\xD7</div></div>`).join("")}
           </div>
@@ -6004,13 +6004,13 @@ async function showBorrowerDetail(borrowerId) {
       ` : ""}
 
       <div class="loan-section">
-        <h3 class="section-title">ALL LOANS (${loans.length})</h3>
+        <h2 class="section-title">ALL LOANS (${loans.length})</h2>
         <div class="admin-list" id="borrower-loans-list"></div>
       </div>
 
       ${phoneMatches.length > 1 ? `
         <div class="loan-section">
-          <h3 class="section-title">SAME PHONE (${phoneMatches.length} borrowers)</h3>
+          <h2 class="section-title">SAME PHONE (${phoneMatches.length} borrowers)</h2>
           <div class="admin-list">
             ${phoneMatches.map((b) => `<div class="admin-list-item" data-borrower-id="${b.id}"><div style="flex:1;">${escapeHtml3(b.name)}</div><div class="loan-meta">${b.timesCheckedOut || 0}\xD7</div></div>`).join("")}
           </div>
@@ -6668,7 +6668,7 @@ async function _showDuplicatesReview() {
       }).join("");
       return `
         <div class="loan-section" data-group="${gi}">
-          <h3 class="section-title">${escapeHtml3(group[0].name)} — ${group.length} entries</h3>
+          <h2 class="section-title">${escapeHtml3(group[0].name)} — ${group.length} entries</h2>
           <div class="dedup-group">${members}</div>
           <div class="dedup-actions">
             <button class="btn btn-primary" data-action="merge" data-group="${gi}" ${bothOut ? "disabled" : ""}>
@@ -6922,7 +6922,7 @@ async function renderSettings() {
     </div>
 
     <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
-      <h3 class="section-title" style="font-size:18px; margin-bottom:16px;">Backup &amp; Restore</h3>
+      <h2 class="section-title" style="font-size:18px; margin-bottom:16px;">Backup &amp; Restore</h2>
       <div class="setting-actions">
         <button class="btn btn-secondary" data-action="export-json">Export Backup (JSON)</button>
         <button class="btn btn-secondary" data-action="export-csv-overdue">Export Overdue (CSV)</button>
@@ -6934,7 +6934,7 @@ async function renderSettings() {
     <div id="host-settings"></div>
 
     <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
-      <h3 class="section-title" style="font-size:18px; margin-bottom:16px; color:var(--error);">Danger Zone</h3>
+      <h2 class="section-title" style="font-size:18px; margin-bottom:16px; color:var(--error);">Danger Zone</h2>
       <button class="btn btn-danger" data-action="wipe">Wipe All Data\u2026</button>
     </div>
 
@@ -7054,7 +7054,7 @@ async function _renderHostSettings(container) {
   if (!isHosted()) {
     container.innerHTML = `
       <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
-        <h3 class="section-title" style="font-size:18px; margin-bottom:8px;">Backup folder</h3>
+        <h2 class="section-title" style="font-size:18px; margin-bottom:8px;">Backup folder</h2>
         <div class="loan-meta">In the browser, a backup can only be downloaded. The Windows app additionally
         writes one into a folder on this machine on every launch, and keeps the last few &mdash; open
         <strong>RotmanFrontDesk.exe</strong> to use it.</div>
@@ -7092,7 +7092,7 @@ async function _renderHostSettings(container) {
       : `<div class="loan-meta">No backups yet. One is written automatically each time the app opens.</div>`;
   container.innerHTML = `
     <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
-      <h3 class="section-title" style="font-size:18px; margin-bottom:16px;">This computer</h3>
+      <h2 class="section-title" style="font-size:18px; margin-bottom:16px;">This computer</h2>
       <div class="path-row">
         <div class="path-row-main">
           <div class="setting-label" style="margin:0;">Data folder</div>
@@ -7121,7 +7121,7 @@ async function _renderHostSettings(container) {
     </div>
 
     <div class="setting-group" style="margin-top:24px;">
-      <h3 class="section-title" style="font-size:18px; margin-bottom:12px;">Recent backups</h3>
+      <h2 class="section-title" style="font-size:18px; margin-bottom:12px;">Recent backups</h2>
       ${listHtml}
     </div>
 
@@ -7589,7 +7589,7 @@ async function renderReports() {
   const emptyTile = t.loans === 0 ? `<div class="report-empty">No loans ${period === "all" ? "recorded yet" : "in this period"}. Try a longer period.</div>` : "";
   const maxBucket = report.buckets.reduce((m, b) => Math.max(m, b.count), 0);
   const chart = report.buckets.length === 0 || maxBucket === 0 ? "" : `<div class="report-section">
-      <h3 class="report-section-title">LOANS ${report.byMonth ? "BY MONTH" : "BY DAY"}</h3>
+      <h2 class="report-section-title">LOANS ${report.byMonth ? "BY MONTH" : "BY DAY"}</h2>
       <div class="report-chart" role="img" aria-label="Loans over the period">
         ${report.buckets.map((b) => `<div class="report-bar" title="${escapeHtml3(b.label)}: ${b.count}"><span style="height:${b.count === 0 ? 2 : Math.max(6, Math.round(b.count / maxBucket * 100))}%"></span></div>`).join("")}
       </div>
@@ -7601,16 +7601,16 @@ async function renderReports() {
       ${report.byMonth && t.loans > 0 ? `<p class="report-note">Chart shows the last ${REPORT_MAX_MONTHS} months; the totals above cover everything.</p>` : ""}
     </div>`;
   const topItems = report.topItems.length === 0 ? "" : `<div class="report-section">
-      <h3 class="report-section-title">BUSIEST ITEMS</h3>
+      <h2 class="report-section-title">BUSIEST ITEMS</h2>
       ${report.topItems.map((i) => _reportRankRow(i.name, i.open > 0 ? `${i.open} still out` : "", String(i.count), i.count / report.topItems[0].count)).join("")}
     </div>`;
   const topPeople = report.topBorrowers.length === 0 ? "" : `<div class="report-section">
-      <h3 class="report-section-title">BUSIEST PEOPLE</h3>
+      <h2 class="report-section-title">BUSIEST PEOPLE</h2>
       ${report.topBorrowers.map((p) => _reportRankRow(p.name, [p.phone ? formatPhone(p.phone) : "", p.open > 0 ? `${p.open} still out` : ""].filter(Boolean).join(" \xB7 "), String(p.count), p.count / report.topBorrowers[0].count)).join("")}
     </div>`;
   const idleShown = report.idle.slice(0, 12);
   const idle = report.idle.length === 0 ? "" : `<div class="report-section">
-      <h3 class="report-section-title">NOT USED ${period === "all" ? "AT ALL" : "THIS PERIOD"} (${report.idle.length})</h3>
+      <h2 class="report-section-title">NOT USED ${period === "all" ? "AT ALL" : "THIS PERIOD"} (${report.idle.length})</h2>
       <div class="report-idle">
         ${idleShown.map((i) => `<span class="report-idle-chip">${escapeHtml3(i.name)}</span>`).join("")}
       </div>

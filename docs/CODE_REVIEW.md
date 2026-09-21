@@ -12,14 +12,16 @@ this document and have since drifted** — Phases 1–5 all edited that file, so
 reference can be tens of lines out. Search by the function or class name quoted
 beside it rather than jumping to the number.
 
-**Status at 2026-09-21: Phases 1–9 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**nine** suites, all green). The sections
-that follow are kept as the record of what was wrong and why — they are no longer
-a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for shipping
-the app (icon, packaging, and what the package could have carried out with it),
-"Phase 9" for the PIN screen and the controls on it that could not be used, and
-"Known, not fixed" for what was found and deliberately left alone. The
-endpoint-agent question is in `docs/EDR_AND_SIGNING.md`.
+**Status at 2026-09-21: Phases 1–10 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**nine** suites, 447 checks, all green). The
+sections that follow are kept as the record of what was wrong and why — they are
+no longer a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for
+shipping the app (icon, packaging, and what the package could have carried out
+with it), "Phase 9" for the PIN screen and the controls on it that could not be
+used, "Phase 10" for the headings that were not headings and the light-theme
+contrast nobody had measured, and "Known, not
+fixed" for what was found and deliberately left alone. The endpoint-agent
+question is in `docs/EDR_AND_SIGNING.md`.
 
 ## Verification status
 
@@ -1526,6 +1528,116 @@ lines of it sitting untracked while the README counted its checks. It is tracked
 now.
 
 Nine suites, 411 checks, all green.
+
+---
+
+## Phase 10 — the app had never been navigable, and half its contrast was unmeasured
+
+Phase 7 gave the app a light theme and fixed the return buttons' wiring. This
+phase asked the two questions that work left open: *can a screen reader navigate
+this?* and *is the light theme's text actually readable, or merely different?*
+
+The first had never been asked. There were **no headings, in any meaningful
+sense**: no `h1` on any screen, `h3` used as a section label throughout, and one
+`h1` sitting on the admin panel with everything under it at `h3`. A screen reader
+user got a document with no title and a structure that skipped a level wherever
+it had one.
+
+The second had been measured only in the theme it was written in. Every contrast
+value in Phases 1–9 was taken against the dark theme, and the light one had
+never been measured at all — including the two hover colours that Phase 7's new
+token block had just changed the meaning of. It turned out that this is exactly
+where the remaining failures were.
+
+### What was measured, and what it turned out to be
+
+An audit across six routes (welcome, admin-login, home, checkout, checkin,
+admin) asking four questions per screen: does every control have a name, does
+every field have a label, is a heading level ever skipped, is there exactly one
+`h1` and is it the first heading. The first run answered:
+
+```
+── checkin-return (on screen-checkin-return)
+   unlabelled fields: [{"el":"TEXTAREA.input.notes-input","placeholder":"Optional notes..."}]
+── admin-login (on screen-admin-login)
+   heading jumps: ["h1 -> h3 \"Settings\""]
+   [h1 count 0, first heading h3]
+```
+
+and the same shape on the other five. Fixed:
+
+- **Nine fields had only a placeholder** — the kiosk phone and name fields, the
+  item search on both the kiosk and the checkout, the return phone, the full
+  name, the check-in search, the admin PIN, and the return screen's notes box.
+  All nine now carry an `aria-label`; the placeholder stays as a hint.
+- **Eleven titles were `div`s or `h3`s** — six kiosk step titles, four checkout
+  step titles, and the login card's "Admin Access". All are now the screen's
+  `h1`. `#screen-home` had no title at all and gained a visually-hidden one.
+  Twenty-two section headings went `h3` → `h2`.
+- **The login title was being deleted to make room for the keypad.** Phase 9
+  set `html.kbd-open .login-title { display: none }` so the card would fit above
+  the keyboard — which took the screen's only heading out of the accessibility
+  tree along with it. It is now `.visually-hidden`, present but not painted.
+
+Two mechanical traps came with the promotions, both caught by measuring rather
+than reasoning: promoting `h3` to `h2` changes the UA default margin from `1em`
+to `0.83em`, which would have shifted every section heading up by ~2.4px, and
+promoting an `h3` to `h1` moves it the other way. Both are pinned back to the
+old margin explicitly, so the visual result is unchanged.
+
+### White on a coloured button was unreadable on half the fills
+
+The three condition buttons on the return screen — `✓ RETURNED OK`,
+`⚠ DAMAGED`, `✗ LOST` — are the only place the app paints text on a solid
+semantic fill, and they were `color: #fff`. Measured against the fill actually
+painted behind them, at 18px/600:
+
+| button | fill (dark) | ratio | |
+|---|---|---|---|
+| ✓ RETURNED OK | `rgb(16,185,129)` | 2.54:1 | **FAIL** |
+| ⚠ DAMAGED | `rgb(245,158,11)` | 9.78:1 | pass |
+| ✗ LOST | `rgb(239,68,68)` | 3.76:1 | **FAIL** |
+
+Two of three. The fix is one token, `--on-accent: var(--bg)`, declared in both
+theme blocks rather than once in `:root` — a `var()` inside a custom property
+resolves where it is declared, so a single `:root` definition would compute
+against the dark `--bg` and inherit that resolved value down into `body.light`.
+It is the only one of the six obvious candidates that clears 4.5:1 across all
+six fill/theme pairs; white fails three of them and black fails the other three.
+Lowest is **4.61:1** (light theme, amber).
+
+The hover states had the same problem from the other direction. They were fixed
+hexes — `#059669`, `#D97706`, `#DC2626` — which are *darker* than the dark
+theme's fills, so on the dark theme they happened to work. On the light theme,
+whose fills are already dark, hovering made the button **lighter** and took the
+text below AA: 3.46, 2.92 and 4.43. Fixed hexes cannot follow a theme that
+inverts, so the hover colours are tokens too, going one step along the same ramp
+in whichever direction that theme's ramp runs.
+
+Measured with a real mouse move onto each button, in both themes, at rest and
+hovered — 12 measurements, all passing:
+
+```
+dark  ✓ RETURNED OK    rest   2.54 -> 7.80     hover  #34D399  10.29
+dark  ⚠ DAMAGED        rest           9.21     hover  #FBBF24  11.85
+dark  ✗ LOST           rest   3.76 -> 5.26     hover  #F87171   7.15
+light ✓ RETURNED OK    rest           5.03     hover  #065F46   7.05
+light ⚠ DAMAGED        rest           4.61     hover  #92400E   6.50
+light ✗ LOST           rest           5.93     hover  #991B1B   7.62
+```
+
+All twelve are now regression checks in `tools/test-ui.cjs`, which drives a real
+`:hover` and measures the computed colour against the colour actually painted
+behind it — not against the token, and not against a forced class.
+
+One thing this probe had to learn: reaching the return screen is itself part of
+the measurement. `goToScreen` refuses to leave the welcome screen, because the
+welcome screen is a kiosk surface and the containment is real (`app.js:2748`);
+and the check-in list is built from open loans in the database, so an empty
+database shows no list to click. The probe grants the exit the way a person does
+(`showAdminLogin`), seeds one open loan, reloads, and then walks the route.
+
+Nine suites, 447 checks, all green.
 
 ---
 

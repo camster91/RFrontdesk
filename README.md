@@ -296,8 +296,8 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Nine suites, 411 checks (10 host bridge, 11 toast stack, 8 screen router, 17
-report aggregation, 34 keyboard touch, 79 browser UI, 54 kiosk, 153 layout at
+Nine suites, 447 checks (10 host bridge, 11 toast stack, 8 screen router, 17
+report aggregation, 34 keyboard touch, 115 browser UI, 54 kiosk, 153 layout at
 real widths, 45 backup round trip). Four lift their section out of the real
 `app.js` and run it in a sandbox (host bridge, toast stack, screen router,
 report aggregation); five drive the real page in headless Edge (keyboard touch

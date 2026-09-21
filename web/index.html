@@ -105,10 +105,10 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h2 class="kiosk-step-title">Enter your phone number</h2>
+      <h1 class="kiosk-step-title">Enter your phone number</h1>
       <p class="kiosk-step-sub">So we can find your account</p>
       <div class="kiosk-phone-input-wrap">
-        <input type="tel" class="input input-xl kiosk-input" id="kiosk-phone" maxlength="14" autofocus />
+        <input type="tel" class="input input-xl kiosk-input" id="kiosk-phone" maxlength="14" autofocus aria-label="Your phone number" />
       </div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-phone-continue">CONTINUE →</button>
     </div>
@@ -121,10 +121,10 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h2 class="kiosk-step-title">What's your name?</h2>
+      <h1 class="kiosk-step-title">What's your name?</h1>
       <p class="kiosk-step-sub">So we can hand it back to the right person.</p>
       <div class="kiosk-name-input-wrap">
-        <input type="text" class="input input-xl kiosk-input" id="kiosk-name" maxlength="100" autocomplete="off" autofocus />
+        <input type="text" class="input input-xl kiosk-input" id="kiosk-name" maxlength="100" autocomplete="off" autofocus aria-label="Your name" />
       </div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-name-continue">CONTINUE →</button>
       <p class="kiosk-hint" style="margin-top:var(--space-3);">Please give a name — it is how we get the item back to you. Ask the front desk if you would rather not.</p>
@@ -138,9 +138,9 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h2 class="kiosk-step-title">Hi, <span id="kiosk-greeting-name">there</span>!</h2>
+      <h1 class="kiosk-step-title">Hi, <span id="kiosk-greeting-name">there</span>!</h1>
       <p class="kiosk-step-sub">What are you taking? Pick it from the list.</p>
-      <input type="text" class="input input-xl kiosk-input" id="kiosk-need" placeholder="Search the item list" maxlength="100" autocomplete="off" autofocus />
+      <input type="text" class="input input-xl kiosk-input" id="kiosk-need" placeholder="Search the item list" maxlength="100" autocomplete="off" autofocus aria-label="What do you need? Search the item list" />
       <div id="kiosk-need-suggestions" class="kiosk-suggestions"></div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-confirm-pick">TAKE IT</button>
     </div>
@@ -153,7 +153,7 @@
     </header>
     <div class="screen-body kiosk-flow-body">
       <div class="kiosk-done-icon">✅</div>
-      <h2 class="kiosk-step-title">Have it back by end of day</h2>
+      <h1 class="kiosk-step-title">Have it back by end of day</h1>
       <div class="kiosk-done-card">
         <div class="kiosk-done-label">Item</div>
         <div class="kiosk-done-text" id="kiosk-done-text">—</div>
@@ -170,10 +170,10 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h2 class="kiosk-step-title">Return items</h2>
+      <h1 class="kiosk-step-title">Return items</h1>
       <p class="kiosk-step-sub">Enter your phone number so we can find your items</p>
       <div class="kiosk-phone-input-wrap">
-        <input type="tel" class="input input-xl kiosk-input" id="kiosk-return-phone" maxlength="14" inputmode="tel" autofocus />
+        <input type="tel" class="input input-xl kiosk-input" id="kiosk-return-phone" maxlength="14" inputmode="tel" autofocus aria-label="Your phone number" />
       </div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-return-phone-continue">CONTINUE →</button>
     </div>
@@ -186,7 +186,7 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h2 class="kiosk-step-title">Hi, <span id="kiosk-return-greeting-name">there</span>!</h2>
+      <h1 class="kiosk-step-title">Hi, <span id="kiosk-return-greeting-name">there</span>!</h1>
       <p class="kiosk-step-sub" id="kiosk-return-sub">Tap an item, then hand it to the front desk.</p>
       <div class="kiosk-return-list" id="kiosk-return-list"></div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-back-home">DONE</button>
@@ -196,6 +196,12 @@
   <!-- Home Screen (staff mode, accessed via admin) -->
   <section id="screen-home" class="screen hidden">
     <header class="screen-header">
+      <!-- The screen had no heading at all -- it is a logo, a badge and two
+           buttons -- so its outline began at whatever the first control said,
+           and a screen reader arriving here heard no name for the place. This
+           names it without drawing anything; the logo beside it says the same
+           thing to anyone who can see. -->
+      <h1 class="visually-hidden">Front desk</h1>
       <img data-logo  class="logo" alt="Rotman" />
       <div class="header-status">
         <div class="overdue-badge" data-count="0">
@@ -269,18 +275,18 @@
     
     <div class="screen-body">
       <div class="step step-phone active">
-        <h2 class="step-title">📱 Enter phone number</h2>
+        <h1 class="step-title">📱 Enter phone number</h1>
         <div class="input-container">
-          <input type="tel" class="input input-lg" placeholder="(   )    -    " maxlength="14" autofocus />
+          <input type="tel" class="input input-lg" placeholder="(   )    -    " maxlength="14" autofocus aria-label="Phone number" />
         </div>
         <button class="btn btn-primary btn-xl step-continue">CONTINUE →</button>
         <div class="recent-phones"></div>
       </div>
       
       <div class="step step-name hidden">
-        <h2 class="step-title">👤 What's your name?</h2>
+        <h1 class="step-title">👤 What's your name?</h1>
         <div class="input-container">
-          <input type="text" class="input input-lg" placeholder="Enter full name" maxlength="100" />
+          <input type="text" class="input input-lg" placeholder="Enter full name" maxlength="100" aria-label="Full name" />
         </div>
         <div class="step-name-actions">
           <button class="btn btn-primary btn-xl step-continue">CONTINUE →</button>
@@ -289,18 +295,18 @@
       </div>
       
       <div class="step step-items hidden">
-        <h2 class="step-title">📋 What do you need?</h2>
+        <h1 class="step-title">📋 What do you need?</h1>
         <p class="step-subhint">Tap what you need, or type to search. The front desk will bring it to you.</p>
         <div class="item-search">
-          <input type="text" class="input search-input" placeholder="e.g. key to room 1050, HDMI dongle, clicker" maxlength="200" data-kbd="alphanumeric" />
+          <input type="text" class="input search-input" placeholder="e.g. key to room 1050, HDMI dongle, clicker" maxlength="200" data-kbd="alphanumeric" aria-label="What do you need? Search the item list" />
         </div>
         <div class="item-sections">
           <div class="item-section">
-            <h3 class="section-title">SUGGESTIONS</h3>
+            <h2 class="section-title">SUGGESTIONS</h2>
             <div class="frequent-items"></div>
           </div>
           <div class="item-section">
-            <h3 class="section-title">ALL ITEMS</h3>
+            <h2 class="section-title">ALL ITEMS</h2>
             <div class="all-items"></div>
           </div>
         </div>
@@ -309,7 +315,7 @@
       </div>
       
       <div class="step step-confirm hidden">
-        <h2 class="step-title">✅ Confirm check-out</h2>
+        <h1 class="step-title">✅ Confirm check-out</h1>
         <div class="confirmation-card">
           <div class="confirm-borrower">
             <div class="confirm-phone"></div>
@@ -339,22 +345,22 @@
 
     <div class="screen-body">
       <div class="search-container">
-        <input type="text" class="input search-input-lg" placeholder="Search by name, phone, or item..." maxlength="100" />
+        <input type="text" class="input search-input-lg" placeholder="Search by name, phone, or item..." maxlength="100" aria-label="Search by name, phone, or item" />
       </div>
 
       <div class="loans-list">
         <div class="loan-section overdue-section">
-          <h3 class="section-title overdue-title">OVERDUE</h3>
+          <h2 class="section-title overdue-title">OVERDUE</h2>
           <div class="loan-items overdue-items"></div>
         </div>
 
         <div class="loan-section today-section">
-          <h3 class="section-title">OUT TODAY</h3>
+          <h2 class="section-title">OUT TODAY</h2>
           <div class="loan-items today-items"></div>
         </div>
 
         <div class="loan-section earlier-section">
-          <h3 class="section-title">OUT EARLIER</h3>
+          <h2 class="section-title">OUT EARLIER</h2>
           <div class="loan-items earlier-items"></div>
         </div>
       </div>
@@ -390,7 +396,7 @@
       </div>
       
       <div class="notes-section">
-        <textarea class="input notes-input" placeholder="Optional notes..." rows="3"></textarea>
+        <textarea class="input notes-input" aria-label="Notes about this return" placeholder="Optional notes..." rows="3"></textarea>
       </div>
     </div>
   </section>
@@ -399,9 +405,9 @@
   <section id="screen-admin-login" class="screen hidden">
     <div class="login-container">
       <div class="login-card">
-        <h2 class="login-title">Admin Access</h2>
+        <h1 class="login-title">Admin Access</h1>
         <div class="pin-input-container">
-          <input type="password" class="pin-input" placeholder="Enter PIN" maxlength="8" inputmode="numeric" autocomplete="off" />
+          <input type="password" class="pin-input" placeholder="Enter PIN" maxlength="8" inputmode="numeric" autocomplete="off" aria-label="Admin PIN" />
           <button class="btn btn-primary pin-submit">LOGIN</button>
         </div>
         <button class="btn btn-ghost" onclick="app.cancelAdminLogin()">Cancel</button>

@@ -43,6 +43,30 @@
   --info: #3B82F6;
   --info-soft: rgba(59, 130, 246, 0.15);
 
+  /* Ink for text on a solid semantic fill -- the RETURNED OK / DAMAGED / LOST
+     buttons and anything shaped like them.
+     It is --bg, and that is the whole point: this theme's success, warning and
+     error are light, so the ink has to be dark; the light theme's are dark, so
+     there it has to be light. --bg already inverts exactly that way, and
+     measured across all six fill/theme pairs it clears 4.5:1 with the lowest at
+     4.61, where white fails three of the six and black fails the other three.
+     Declared in both theme blocks rather than once in :root, because a var()
+     inside a custom property resolves where the property is declared -- a
+     single :root definition would compute against the dark --bg and inherit
+     that resolved value down into body.light. */
+  --on-accent: var(--bg);
+
+  /* One step along the same ramp as the token above it, and the direction
+     matters: this theme's fills are light, so hover goes lighter. The three
+     hover colours used to be fixed hexes -- #059669, #D97706, #DC2626 -- which
+     are *darker* than the fills, so on this theme they happened to work while
+     on the light theme, where the fills are already dark, hovering made the
+     button lighter and took the text below AA (3.46, 2.92 and 4.43:1). Fixed
+     hexes cannot follow a theme that inverts. */
+  --success-hover: #34D399;
+  --warning-hover: #FBBF24;
+  --error-hover: #F87171;
+
   /* Spacing */
   --space-1: 4px;
   --space-2: 8px;
@@ -137,6 +161,14 @@ body.light {
   --info: #1D4ED8;
   --info-soft: rgba(29, 78, 216, 0.12);
 
+  /* Light, on this theme's dark fills. See the note on the dark theme's copy. */
+  --on-accent: var(--bg);
+
+  /* The other direction: these fills are dark, so hover goes darker still. */
+  --success-hover: #065F46;
+  --warning-hover: #92400E;
+  --error-hover: #991B1B;
+
   --shadow-sm: 0 1px 3px rgba(16, 18, 24, 0.10);
   --shadow: 0 6px 24px rgba(16, 18, 24, 0.12);
   --shadow-lg: 0 16px 48px rgba(16, 18, 24, 0.18);
@@ -204,6 +236,25 @@ body {
   font-weight: 600;
   color: var(--text);
   margin: 0;
+}
+
+/* Names a screen for a screen reader without drawing anything. Used where a
+   screen has no visible title to promote -- the staff home is a logo and a row
+   of buttons, so it had no heading at all and its outline began at whatever the
+   first button's text implied. Not `display: none` or `visibility: hidden`:
+   both remove the element from the accessibility tree, which is the opposite of
+   the point. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .screen-body {
@@ -1400,31 +1451,37 @@ body {
 
 .btn-success {
   background: var(--success);
-  color: #fff;
+  /* Was #fff, which on this theme's light green measured 2.54:1 -- the worst
+     contrast in the app, on the button that says an item came back. */
+  color: var(--on-accent);
 }
 
 .btn-success:hover {
-  background: #059669;
+  background: var(--success-hover);
   transform: translateY(-1px);
 }
 
 .btn-warning {
   background: var(--warning);
-  color: #000;
+  /* Already dark, and the reason the token exists: this button was legible at
+     9.78:1 while the two beside it were not, which is how the problem stayed
+     invisible. */
+  color: var(--on-accent);
 }
 
 .btn-warning:hover {
-  background: #D97706;
+  background: var(--warning-hover);
   transform: translateY(-1px);
 }
 
 .btn-danger {
   background: var(--error);
-  color: #fff;
+  /* Was #fff, 3.76:1 on this theme's red. */
+  color: var(--on-accent);
 }
 
 .btn-danger:hover {
-  background: #DC2626;
+  background: var(--error-hover);
   transform: translateY(-1px);
 }
 
@@ -1470,6 +1527,12 @@ body {
   font-size: 28px;
   font-weight: 700;
   text-align: center;
+  /* em, matching the browser's own default for a heading, on purpose. This
+     element is the h1 of its screen, and an h1's default top margin is 0.67em
+     where an h2's is 0.83em -- so without this the tag change would have moved
+     every checkout step up by about 4px. Written as the value it already had,
+     which also makes the spacing survive any future change of tag. */
+  margin-top: 0.83em;
   margin-bottom: var(--space-8);
   color: var(--text);
 }
@@ -1516,6 +1579,11 @@ body {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  /* em, matching the browser's own default for the heading level this used to
+     be, for the same reason as .step-title above: these are h2 now, and an h2's
+     default top margin is 0.83em where an h3's is 1em, so without this every
+     section heading in the app would have risen about 2px on the tag change. */
+  margin-top: 1em;
   margin-bottom: var(--space-3);
 }
 
@@ -2328,7 +2396,22 @@ html.kbd-open .login-card {
 }
 
 html.kbd-open .login-title {
-  display: none;
+  /* Out of the way, not out of the document. `display: none` was the obvious
+     way to give the keypad its space back, and it took the screen's only
+     heading with it -- so with the keypad up, which is the normal state on a
+     touchscreen and the only state this rule applies in, the screen a screen
+     reader arrived at had no name at all. The same technique the home screen's
+     heading uses: invisible, still announced, and occupying no room. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 html.kbd-open .pin-input-container {

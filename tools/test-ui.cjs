@@ -669,6 +669,85 @@ function startServer() {
     await page.waitForSelector("#screen-checkin .loan-item", { timeout: 15000 });
     await clickOn("#screen-checkin .loan-item");
     await page.waitForSelector("#screen-checkin-return:not(.hidden)", { timeout: 15000 });
+
+    // --- the two failure colours, and what is printed on them --------------
+    // These three buttons are the only place the app paints text on a solid
+    // semantic fill, and they were wrong: `color: #fff` measured 2.54:1 on the
+    // green and 3.76:1 on the red, both under AA for 18px/600 text, in the dark
+    // theme alone. The fix was an ink that follows the theme (--on-accent), and
+    // per-theme hover tokens, because the old fixed hover hexes went the wrong
+    // way on the light theme: hovering made the fill lighter and took the text
+    // to 3.46 / 2.92 / 4.43. This measures the colour computed against the
+    // colour actually painted, in both themes, at rest and under the mouse.
+    const contrastOf = () =>
+      page.evaluate(() => {
+        const parse = (c) => {
+          const m = String(c).match(/rgba?\(([^)]+)\)/);
+          if (!m) return null;
+          const q = m[1].split(",").map(Number);
+          return { r: q[0], g: q[1], b: q[2], a: q.length > 3 ? q[3] : 1 };
+        };
+        const over = (f, g) => ({
+          r: f.r * f.a + g.r * (1 - f.a),
+          g: f.g * f.a + g.g * (1 - f.a),
+          b: f.b * f.a + g.b * (1 - f.a),
+          a: 1
+        });
+        const lum = (c) => {
+          const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+          return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+        };
+        return [...document.querySelectorAll("#screen-checkin-return .btn-return")].map((el) => {
+          const cs = getComputedStyle(el);
+          const fg = parse(cs.color);
+          let acc = null, n = el;
+          while (n && n !== document.documentElement) {
+            const c = parse(getComputedStyle(n).backgroundColor);
+            if (c && c.a > 0) { acc = acc ? over(acc, c) : c; if (acc.a >= 1) break; }
+            n = n.parentElement;
+          }
+          const body = parse(getComputedStyle(document.body).backgroundColor) || { r: 0, g: 0, b: 0, a: 1 };
+          const bg = acc ? over(acc, body) : body;
+          const l1 = lum(over(fg, bg)), l2 = lum(bg);
+          const size = parseFloat(cs.fontSize), bold = parseInt(cs.fontWeight, 10) >= 700;
+          return {
+            text: (el.textContent || "").trim(),
+            theme: document.body.classList.contains("light") ? "light" : "dark",
+            fill: cs.backgroundColor,
+            ratio: Math.round(((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)) * 100) / 100,
+            needs: size >= 24 || (bold && size >= 18.66) ? 3 : 4.5
+          };
+        });
+      });
+
+    const returnBtns = await page.$$("#screen-checkin-return .btn-return");
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+      await new Promise((r) => setTimeout(r, 250));
+      for (let i = 0; i < returnBtns.length; i++) {
+        await page.mouse.move(5, 5);
+        await new Promise((r) => setTimeout(r, 150));
+        const rest = (await contrastOf())[i];
+        await returnBtns[i].hover(); // a real mouse move, so a real :hover
+        await new Promise((r) => setTimeout(r, 200));
+        const hover = (await contrastOf())[i];
+        check(
+          `${rest.text} is readable on its fill in the ${theme} theme`,
+          rest.ratio >= rest.needs,
+          `${rest.ratio}:1 on ${rest.fill}, needs ${rest.needs}`
+        );
+        check(
+          `and stays readable while hovered in the ${theme} theme`,
+          hover.ratio >= hover.needs,
+          `${hover.ratio}:1 on ${hover.fill}, needs ${hover.needs}`
+        );
+      }
+    }
+    // Back to the theme the app boots in before anything downstream measures it.
+    await page.evaluate(() => document.body.classList.remove("light"));
+    await page.mouse.move(5, 5);
+    await new Promise((r) => setTimeout(r, 250));
+
     await clickOn('#screen-checkin-return .btn-return[data-condition="damaged"]');
     await page.waitForSelector("#dialog .dialog-card", { timeout: 5000 });
 
@@ -720,6 +799,73 @@ function startServer() {
     check("at 480px the period switch wraps instead of squashing", narrow.rows === 2, JSON.stringify(narrow));
     check("and every period label is readable, not ellipsised", narrow.allLabelsFit, `overflow ${narrow.widest}px`);
     await page.setViewport({ width: 1280, height: 1100 });
+
+    // ── accessibility, on the real screens ────────────────────────────────
+    // Not a general audit -- a browser engine is the wrong tool for that. These
+    // are the four things a hand-written single-page app gets wrong when nobody
+    // checks: a control with no name, a field whose only label is a placeholder,
+    // a heading level skipped, and a screen with no heading at all. Each was
+    // found by measuring and then fixed; these keep them fixed.
+    const a11yOf = () => {
+      const screen = document.querySelector(".screen:not(.hidden)");
+      const vis = (el) => {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const mine = (el) => !screen || screen.contains(el);
+      const unnamed = [];
+      for (const el of document.querySelectorAll("button, a[href], [role=button]")) {
+        if (!vis(el) || !mine(el)) continue;
+        const aria = el.getAttribute("aria-label");
+        const by = el.getAttribute("aria-labelledby");
+        const lab = by ? by.split(/\s+/).map((id) => (document.getElementById(id) || {}).textContent || "").join(" ") : "";
+        if (!(aria && aria.trim()) && !(lab && lab.trim()) && !(el.textContent || "").trim()) {
+          unnamed.push(el.tagName + "." + String(el.className).slice(0, 30));
+        }
+      }
+      const unlabelled = [];
+      for (const el of document.querySelectorAll("input, select, textarea")) {
+        if (!vis(el) || !mine(el) || el.type === "hidden") continue;
+        const hasFor = el.id && document.querySelector(`label[for="${el.id}"]`);
+        const aria = el.getAttribute("aria-label") || el.getAttribute("aria-labelledby");
+        if (!hasFor && !el.closest("label") && !aria) {
+          unlabelled.push(el.tagName + "." + String(el.className).slice(0, 26));
+        }
+      }
+      const hs = [...document.querySelectorAll("h1, h2, h3, h4, h5, h6")].filter((h) => vis(h) && mine(h)).map((h) => +h.tagName[1]);
+      const jumps = [];
+      let prev = 0;
+      for (const lvl of hs) {
+        if (prev && lvl > prev + 1) jumps.push(`h${prev}->h${lvl}`);
+        prev = lvl;
+      }
+      return {
+        screen: screen ? screen.id : "(none)",
+        unnamed, unlabelled, jumps,
+        h1: [...document.querySelectorAll("h1")].filter((h) => vis(h) && mine(h)).length,
+        first: hs.length ? hs[0] : null
+      };
+    };
+
+    const a11yRoutes = [
+      ["welcome", () => {}],
+      ["admin-login", () => window.app.showAdminLogin()],
+      ["home", () => window.app.goToScreen("home")],
+      ["checkout", () => window.dispatchEvent(new CustomEvent("frontdesk:checkout-start"))],
+      ["checkin", () => window.dispatchEvent(new CustomEvent("frontdesk:checkin-start"))],
+      ["admin", () => window.app.goToScreen("admin")]
+    ];
+    for (const [label, go] of a11yRoutes) {
+      await page.evaluate(go);
+      await new Promise((r) => setTimeout(r, 700));
+      const a = await page.evaluate(a11yOf);
+      check(`every control on ${label} has a name`, a.unnamed.length === 0, JSON.stringify(a.unnamed));
+      check(`every field on ${label} has a label, not just a placeholder`, a.unlabelled.length === 0, JSON.stringify(a.unlabelled));
+      check(`no heading level is skipped on ${label}`, a.jumps.length === 0, JSON.stringify(a.jumps));
+      check(`${label} has exactly one h1, and it comes first`, a.h1 === 1 && a.first === 1, `h1=${a.h1} first=${a.first}`);
+    }
 
     const lateErrors = errors.filter((e) => !/favicon/.test(e));
     check("still no errors after exercising the UI", lateErrors.length === 0, lateErrors.join(" | "));
