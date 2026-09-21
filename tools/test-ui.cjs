@@ -661,12 +661,462 @@ function startServer() {
       );
 
     await clearToasts();
-    // The check-in list is built by CheckinFlow, which starts on the event the
-    // home screen's button dispatches -- goToScreen alone leaves it empty.
+
+    // --- the check-in search actually filters ------------------------------
+    // This box did nothing at all, for the whole life of the app. The element
+    // carried `search-input-lg`; CheckinFlow._wireDom asks for `.search-input`
+    // (app.js:4221), matched nothing, logged nothing, and set `_wireOnce = true`
+    // anyway -- so no listener was ever attached and the screen looked wired.
+    // Measured before the fix, on 750 open loans: every query, including
+    // "zzz", left 750 rows on screen.
+    //
+    // A second loan, so "filters" means the list narrowed rather than merely
+    // emptied. Its id is far above anything autoIncrement has handed out, and
+    // it is checked out three hours ago so it sorts after the loan the flow
+    // below returns.
+    await page.evaluate(
+      () =>
+        new Promise((res, rej) => {
+          const q = indexedDB.open("frontdesk");
+          q.onerror = () => rej(q.error);
+          q.onsuccess = () => {
+            const db = q.result;
+            const now = Date.now();
+            const tx = db.transaction(["items", "borrowers", "loans"], "readwrite");
+            tx.oncomplete = () => res(true);
+            tx.onerror = () => rej(tx.error);
+            tx.objectStore("items").put({
+              id: 9001, name: "Second Widget", nameLower: "second widget", isArchived: "no",
+              timesCheckedOut: 0, createdAt: now, updatedAt: now
+            });
+            tx.objectStore("borrowers").put({
+              id: 9001, name: "Zed Borrower", nameLower: "zed borrower", phone: "4169998888",
+              phoneFormatted: "(416) 999-8888", lastSeenAt: now, createdAt: now
+            });
+            tx.objectStore("loans").put({
+              id: 9001, itemId: 9001, borrowerId: 9001, isOpen: "open",
+              checkedOutAt: now - 3 * 3600000, dueAt: now + 7200000,
+              itemNameSnapshot: "Second Widget", borrowerNameSnapshot: "Zed Borrower",
+              borrowerPhoneSnapshot: "4169998888", createdAt: now - 3 * 3600000
+            });
+          };
+        })
+    );
+
+    // Typed into by position in the container, not by the class CheckinFlow
+    // happens to query: if the wiring breaks again the checks below fail with
+    // "the list did not narrow", which says what is wrong, instead of the run
+    // dying on a null selector.
+    const SEARCH = "#screen-checkin .search-container input";
+    const checkinRows = () => page.$$eval("#screen-checkin .loan-item", (els) => els.map((e) => e.textContent.trim()));
+    const searchCheckin = async (text) => {
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) {
+          el.value = "";
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }, SEARCH);
+      await new Promise((r) => setTimeout(r, 300));
+      if (text) await page.type(SEARCH, text, { delay: 15 });
+      await new Promise((r) => setTimeout(r, 400));
+      return checkinRows();
+    };
+
+    // The list is built by CheckinFlow, which starts on the event the home
+    // screen's button dispatches -- goToScreen alone leaves it empty.
     await page.evaluate(() => window.app.goToScreen("home"));
     await page.waitForSelector("#screen-home:not(.hidden)", { timeout: 15000 });
     await clickOn("#screen-home .btn-home-primary:nth-of-type(2)");
     await page.waitForSelector("#screen-checkin .loan-item", { timeout: 15000 });
+
+    const allRows = await checkinRows();
+    check("the check-in list draws both open loans", allRows.length === 2, `${allRows.length} rows`);
+
+    const byItem = await searchCheckin("second widget");
+    check("typing an item name narrows the list to it", byItem.length === 1 && /Second Widget/.test(byItem[0]), JSON.stringify(byItem));
+
+    const byPerson = await searchCheckin("zed");
+    check("and typing a borrower's name narrows it too", byPerson.length === 1 && /Second Widget/.test(byPerson[0]), JSON.stringify(byPerson));
+
+    // The regression this exists for: the phone is shown as "(416) 999-8888"
+    // and typed as digits. Before the fix the digits form found nothing.
+    const byDigits = await searchCheckin("9998888");
+    check("and typing a phone number as digits finds it", byDigits.length === 1 && /Second Widget/.test(byDigits[0]), JSON.stringify(byDigits));
+
+    const byFormat = await searchCheckin("999-8888");
+    check("and the formatted form still works", byFormat.length === 1, JSON.stringify(byFormat));
+
+    const none = await searchCheckin("zzzz");
+    check("a query that matches nothing empties the list", none.length === 0, JSON.stringify(none));
+    const notice = await page.evaluate(() => {
+      const el = document.querySelector("#screen-checkin .loans-empty");
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { text: el.textContent.trim(), visible: r.width > 0 && r.height > 0 };
+    });
+    check("and says so, rather than leaving a blank screen", !!notice && notice.visible && /zzzz/.test(notice.text), JSON.stringify(notice));
+
+    const cleared = await searchCheckin("");
+    check("clearing the box brings the whole list back", cleared.length === 2, JSON.stringify(cleared));
+    const noticeGone = await page.evaluate(() => {
+      const el = document.querySelector("#screen-checkin .loans-empty");
+      return el ? el.getBoundingClientRect().height > 0 : null;
+    });
+    check("and the notice goes away with it", noticeGone === false, String(noticeGone));
+
+    // --- the colours that carry meaning, and whether they can be read -------
+    // The block further down measures the three return buttons and stops there.
+    // These are the rest of the app's coloured text, and every one of them was
+    // wrong:
+    //   .badge-overdue     white on the dark theme's red        3.76:1
+    //   .badge-today       white on the dark theme's blue       3.68:1
+    //   .badge-due-soon    black on the light theme's amber     4.18:1
+    //   .timing-value.due  --error on the row's own red tint    4.21:1
+    //   .overdue-count/-label  --warning on its own amber tint  3.93:1
+    //   .toast-success     --success on its own green tint      4.27:1
+    //   .toast-undo-btn:hover  white on the dark theme's blue   3.68:1
+    // One pattern: an accent used as ink on a surface tinted with that same
+    // hue, which moves the background toward the text and eats the margin the
+    // colour had on the plain page. The fix is a --*-text token per accent.
+    //
+    // Two measurement rules this needs, both of which hid the worst of it. A
+    // container's `opacity` composites its text with it -- the overdue chip
+    // animated opacity down to 0.3, so at the bottom of every two-second cycle
+    // its number was drawn at 30%, 1.86:1 on the light theme -- so the walk
+    // below multiplies ancestor opacity in and reports it. And a gradient fill
+    // paints over `background-color`, which stays transparent, so a fill has to
+    // be read from background-image when there is one.
+    const inkOf = (selectors) =>
+      page.evaluate((sels) => {
+        const parse = (c) => {
+          const m = String(c).match(/rgba?\(([^)]+)\)/);
+          if (!m) return null;
+          const q = m[1].split(",").map(Number);
+          return { r: q[0], g: q[1], b: q[2], a: q.length > 3 ? q[3] : 1 };
+        };
+        const over = (f, g) => ({
+          r: f.r * f.a + g.r * (1 - f.a),
+          g: f.g * f.a + g.g * (1 - f.a),
+          b: f.b * f.a + g.b * (1 - f.a),
+          a: 1
+        });
+        const lum = (c) => {
+          const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+          return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+        };
+        const ratio = (a, b) => {
+          const l1 = lum(a), l2 = lum(b);
+          return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        };
+        const bodyBg = parse(getComputedStyle(document.body).backgroundColor) || { r: 10, g: 10, b: 11, a: 1 };
+        return sels.map((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return { sel, missing: true };
+          const cs = getComputedStyle(el);
+          // The surface the element's own opacity group is composited over.
+          let back = null;
+          for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+            const p = getComputedStyle(n);
+            const c = parse(p.backgroundColor);
+            if (c && c.a > 0 && parseFloat(p.opacity) === 1) { back = back ? over(back, c) : c; if (back.a >= 1) break; }
+          }
+          back = back ? over(back, bodyBg) : bodyBg;
+          // Everything painted between the text and the group's edge, and the
+          // product of the group's own opacity.
+          let fill = null, alpha = 1;
+          for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+            const p = getComputedStyle(n);
+            const op = parseFloat(p.opacity);
+            if (!Number.isNaN(op) && op < 1) alpha *= op;
+            const c = parse(p.backgroundColor);
+            if (c && c.a > 0) fill = fill ? over(fill, c) : c;
+            if (fill && fill.a >= 1) break;
+          }
+          const bg = fill ? over({ ...fill, a: fill.a * alpha }, back) : back;
+          const fg = parse(cs.color);
+          const ink = alpha === 1 ? fg : {
+            r: fg.r * alpha + back.r * (1 - alpha),
+            g: fg.g * alpha + back.g * (1 - alpha),
+            b: fg.b * alpha + back.b * (1 - alpha),
+            a: 1
+          };
+          const size = parseFloat(cs.fontSize), bold = parseInt(cs.fontWeight, 10) >= 700;
+          const needs = size >= 24 || (bold && size >= 18.66) ? 3 : 4.5;
+          // A gradient paints over `background-color`, which a gradient leaves
+          // transparent -- so for a button that is filled with one, the surface
+          // is its stops and the worst is whichever sits closest in luminance
+          // to the ink. Only the element's own gradient counts. An ancestor's
+          // counts for nothing: the body wears a radial magenta wash at 8%
+          // alpha, and reading that as a surface painted a tint over the tint
+          // and moved the overdue row from 5.06:1 to a phantom 4.46 -- and it
+          // would depend on where the row happened to have been scrolled to.
+          const ownGradient = cs.backgroundImage && cs.backgroundImage.indexOf("gradient") >= 0 ? cs.backgroundImage : null;
+          const stops = ownGradient
+            ? (String(ownGradient).match(/rgba?\([^)]+\)/g) || []).map(parse).filter(Boolean).map((s) => over(s, back))
+            : [bg];
+          const worst = stops.reduce((min, s) => Math.min(min, ratio(over(ink, s), s)), Infinity);
+          return {
+            sel,
+            text: (el.textContent || "").trim().slice(0, 22),
+            color: cs.color, size: cs.fontSize, needs, gradient: !!ownGradient,
+            opacity: Math.round(alpha * 100) / 100,
+            ratio: Math.round(worst * 100) / 100
+          };
+        });
+      }, selectors);
+
+    const rowInk = (r, theme) =>
+      r.missing
+        ? `not on screen (${r.sel})`
+        : `${r.ratio}:1 for ${r.size} text that needs ${r.needs}, ink ${r.color}${r.opacity < 1 ? ` at ${r.opacity} opacity` : ""}${r.gradient ? " on a gradient" : ""} in the ${theme} theme`;
+
+    // --- the brand mark ----------------------------------------------------
+    // The mark is an <img>, not text, so `color` says nothing about it: it is
+    // one shared white-on-transparent SVG -- the data URI in index.html's
+    // __ROT_LOGO is fill="none" on its root and fill="#fff" on its only group --
+    // painted into nine placements, recoloured only by whatever `filter` the
+    // theme applies. The general audit reads `color` on it and so reported the
+    // inherited text colour, which is why this went unnoticed: every one of the
+    // nine is on --surface or --bg, both near-white once the light theme is on,
+    // and white artwork on a white header is not faint, it is absent. Measured
+    // 1:1 on the two headers and 1.09:1 on the splash; a screenshot of the light
+    // home screen had no mark in it at all.
+    //
+    // Hidden screens are measured too. Their <img> has a zero box, but the
+    // header that paints behind it paints the same colour whether or not the
+    // screen is open, so the placement's contrast is real either way -- and
+    // measuring all nine means a sixth kiosk screen added later is covered
+    // without anyone remembering to add it here.
+    const logoInks = () =>
+      page.evaluate(() => {
+        const parse = (c) => {
+          const m = String(c).match(/rgba?\(([^)]+)\)/);
+          if (!m) return null;
+          const q = m[1].split(",").map(Number);
+          return { r: q[0], g: q[1], b: q[2], a: q.length > 3 ? q[3] : 1 };
+        };
+        const over = (f, g) => ({
+          r: f.r * f.a + g.r * (1 - f.a),
+          g: f.g * f.a + g.g * (1 - f.a),
+          b: f.b * f.a + g.b * (1 - f.a),
+          a: 1
+        });
+        const lum = (c) => {
+          const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+          return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+        };
+        const ratio = (a, b) => {
+          const l1 = lum(a), l2 = lum(b);
+          return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        };
+        const rgb = (c) => `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
+        const WHITE = { r: 255, g: 255, b: 255, a: 1 };
+        // The artwork's colour once the filter has had it. `invert(p)` maps each
+        // channel c -> c*(1-p) + (255-c)*p, so white becomes 255*(1-p) on every
+        // channel. Only invert is handled -- it is the only function the
+        // stylesheet applies to the mark -- and an unhandled filter leaves the
+        // ink white, which fails loudly rather than passing quietly.
+        const inkFor = (filter) => {
+          const m = filter && String(filter).match(/invert\(\s*([\d.]+)\s*(%?)\s*\)/);
+          if (!m) return WHITE;
+          const p = m[2] ? parseFloat(m[1]) / 100 : parseFloat(m[1]);
+          const v = Math.round(255 * (1 - p));
+          return { r: v, g: v, b: v, a: 1 };
+        };
+        const bodyBg = parse(getComputedStyle(document.body).backgroundColor) || { r: 10, g: 10, b: 11, a: 1 };
+
+        return Array.prototype.map.call(document.querySelectorAll("img[data-logo]"), (el) => {
+          const cs = getComputedStyle(el);
+          const filter = cs.filter && cs.filter !== "none" ? cs.filter : null;
+          const ink = inkFor(filter);
+          // The nearest ancestor that paints an opaque colour: the header's
+          // --surface, or the screen's --bg.
+          let n = el.parentElement, acc = null;
+          while (n && n !== document.documentElement) {
+            const c = parse(getComputedStyle(n).backgroundColor);
+            if (c && c.a > 0) { acc = acc ? over(c, acc) : c; if (acc.a >= 1) break; }
+            n = n.parentElement;
+          }
+          const back = acc ? over(acc, bodyBg) : bodyBg;
+          const host = el.closest(".screen");
+          const box = el.getBoundingClientRect();
+          return {
+            cls: el.className, screen: host ? host.id : "(no screen)",
+            open: !!(host && !host.classList.contains("hidden")),
+            filter, ink: rgb(ink), bg: rgb(back),
+            size: `${Math.round(box.width)}x${Math.round(box.height)}`,
+            ratio: Math.round(ratio(ink, back) * 100) / 100
+          };
+        });
+      });
+
+    // WCAG 1.4.11, non-text contrast: a graphic that carries meaning needs 3:1.
+    const logoRow = (r, theme) =>
+      `${r.ratio}:1 for the mark on ${r.screen}${r.open ? "" : " (screen closed)"}, ` +
+      `ink ${r.ink} on ${r.bg}, filter ${r.filter || "none"}, ${r.size} in the ${theme} theme`;
+
+    // Three loans, because one badge colour per row is all a row has: overdue,
+    // inside the two-hour due-soon window, and out with days to go.
+    const badgeNow = Date.now();
+    const tempLoan = (id, dueAt, checkedOutAt) => ({
+      id, itemId: 9001, borrowerId: 9001, isOpen: "open",
+      checkedOutAt, dueAt, itemNameSnapshot: "Second Widget",
+      borrowerNameSnapshot: "Zed Borrower", borrowerPhoneSnapshot: "4169998888",
+      createdAt: checkedOutAt
+    });
+    const OVERDUE_LOAN = tempLoan(9101, badgeNow - 86400000, badgeNow - 4 * 86400000);
+    const putLoans = (rows) =>
+      page.evaluate((list) => new Promise((res, rej) => {
+        const q = indexedDB.open("frontdesk");
+        q.onerror = () => rej(q.error);
+        q.onsuccess = () => {
+          const tx = q.result.transaction(["loans"], "readwrite");
+          tx.oncomplete = () => res(true);
+          tx.onerror = () => rej(tx.error);
+          for (const r of list) tx.objectStore("loans").put(r);
+        };
+      }), rows);
+    const dropLoans = (ids) =>
+      page.evaluate((list) => new Promise((res, rej) => {
+        const q = indexedDB.open("frontdesk");
+        q.onerror = () => rej(q.error);
+        q.onsuccess = () => {
+          const tx = q.result.transaction(["loans"], "readwrite");
+          tx.oncomplete = () => res(true);
+          tx.onerror = () => rej(tx.error);
+          for (const id of list) tx.objectStore("loans").delete(id);
+        };
+      }), ids);
+
+    await putLoans([
+      OVERDUE_LOAN,
+      tempLoan(9102, badgeNow + 3600000, badgeNow - 3600000),
+      tempLoan(9103, badgeNow + 3 * 86400000, badgeNow - 7200000)
+    ]);
+    // The check-in list is built by CheckinFlow, which starts on this event --
+    // goToScreen alone leaves it empty. Entered by event rather than by clicking
+    // the home tile, because this block is about colour and not about routing,
+    // and the tile is not reachable while a checkout flow is open.
+    const startCheckin = async () => {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("frontdesk:checkin-start")));
+      await page.waitForSelector("#screen-checkin .loan-item", { timeout: 15000 });
+      await new Promise((r) => setTimeout(r, 300));
+    };
+    await startCheckin();
+
+    const ROW_INKS = [
+      [".badge-overdue", "the OVERDUE badge"],
+      [".badge-due-soon", "the due-soon badge"],
+      [".badge-today", "the out-since badge"],
+      [".loan-item.overdue .timing-value.due", "the overdue-by line"]
+    ];
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+      await new Promise((r) => setTimeout(r, 300));
+      const rows = await inkOf(ROW_INKS.map(([s]) => s));
+      rows.forEach((r, i) => {
+        check(
+          `${ROW_INKS[i][1]} is readable in the ${theme} theme`,
+          !r.missing && r.ratio >= r.needs,
+          rowInk(r, theme)
+        );
+      });
+    }
+    await page.evaluate(() => document.body.classList.remove("light"));
+
+    // --- the home chips, in both of their states ---------------------------
+    // The chip with nothing overdue is the one that used to be dimmed to 30%,
+    // so both states are measured and the zero state is reached by removing the
+    // overdue loan rather than by writing data-count by hand.
+    const CHIP_INKS = [
+      [".overdue-count", "the overdue count"],
+      [".overdue-label", "the word OVERDUE"],
+      ["#home-overdue-chip .status-num", "the status chip's number"],
+      ["#home-overdue-chip .status-label", "the status chip's label"]
+    ];
+    for (const state of ["live", "zero"]) {
+      if (state === "zero") await dropLoans([9101]);
+      await page.evaluate(() => window.app.goToScreen("home"));
+      await new Promise((r) => setTimeout(r, 500));
+      for (const theme of ["dark", "light"]) {
+        await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+        await new Promise((r) => setTimeout(r, 300));
+        const rows = await inkOf(CHIP_INKS.map(([s]) => s));
+        const shown = await page.evaluate(() => (document.querySelector(".overdue-badge") || {}).dataset?.count);
+        rows.forEach((r, i) => {
+          check(
+            `${CHIP_INKS[i][1]} is readable with ${state === "zero" ? "nothing" : "something"} overdue in the ${theme} theme`,
+            !r.missing && r.ratio >= r.needs,
+            `${rowInk(r, theme)} (chip reads ${shown})`
+          );
+        });
+      }
+    }
+
+    // --- the brand gradient, measured at its stops -------------------------
+    // The general audit reads `background-color`, which a gradient leaves
+    // transparent, so every .btn-primary in the app came back as 1.09:1 against
+    // the page behind it. That looks like the worst failure in the app and is
+    // really the audit measuring the wrong surface -- these are the most-used
+    // controls there are: the two home tiles, every CONTINUE, and admin LOGIN.
+    // White on this gradient is correct and cannot become --on-accent, which
+    // comes out at 4.34:1 on magenta; the margin is thin on the dark theme, and
+    // this is what holds it.
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+      await new Promise((r) => setTimeout(r, 300));
+      const [tile] = await inkOf(["#screen-home .btn-home-primary"]);
+      check(
+        `the home tile's text is readable on the brand gradient in the ${theme} theme`,
+        !tile.missing && tile.ratio >= tile.needs,
+        rowInk(tile, theme)
+      );
+    }
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("frontdesk:checkout-start")));
+    await page.waitForSelector("#screen-checkout:not(.hidden)", { timeout: 15000 });
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+      await new Promise((r) => setTimeout(r, 300));
+      const [btn] = await inkOf(["#screen-checkout .btn-primary"]);
+      check(
+        `and the CONTINUE button's on the same gradient in the ${theme} theme`,
+        !btn.missing && btn.ratio >= btn.needs,
+        rowInk(btn, theme)
+      );
+    }
+    await page.evaluate(() => document.body.classList.remove("light"));
+
+    // --- the brand mark, in both themes ------------------------------------
+    // Every placement, measured against the surface behind it -- not against a
+    // token, because the bug was that the token and the surface had drifted
+    // apart. The count check comes first: it is what fails if someone adds a
+    // tenth placement, or if the inline script at index.html:17 stops filling
+    // in `src` and there is nothing left to measure.
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((t) => document.body.classList.toggle("light", t === "light"), theme);
+      await new Promise((r) => setTimeout(r, 300));
+      const logos = await logoInks();
+      check(
+        `the brand mark has all nine of its placements in the ${theme} theme`,
+        logos.length === 9,
+        `found ${logos.length}: ${logos.map((l) => l.cls).join(", ")}`
+      );
+      for (const r of logos) {
+        check(
+          `the ${r.cls} mark is drawn on ${r.screen} in the ${theme} theme`,
+          r.ratio >= 3,
+          logoRow(r, theme)
+        );
+      }
+    }
+    await page.evaluate(() => document.body.classList.remove("light"));
+
+    // Back to the two loans the rest of the run expects, and back on the
+    // check-in screen, since the block below clicks its first row.
+    await dropLoans([9102, 9103]);
+    await startCheckin();
+
     await clickOn("#screen-checkin .loan-item");
     await page.waitForSelector("#screen-checkin-return:not(.hidden)", { timeout: 15000 });
 

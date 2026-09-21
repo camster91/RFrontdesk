@@ -12,14 +12,16 @@ this document and have since drifted** — Phases 1–5 all edited that file, so
 reference can be tens of lines out. Search by the function or class name quoted
 beside it rather than jumping to the number.
 
-**Status at 2026-09-21: Phases 1–10 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**nine** suites, 447 checks, all green). The
+**Status at 2026-09-21: Phases 1–11 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**nine** suites, 504 checks, all green). The
 sections that follow are kept as the record of what was wrong and why — they are
 no longer a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for
 shipping the app (icon, packaging, and what the package could have carried out
 with it), "Phase 9" for the PIN screen and the controls on it that could not be
 used, "Phase 10" for the headings that were not headings and the light-theme
-contrast nobody had measured, and "Known, not
+contrast nobody had measured, "Phase 11" for the rest of that contrast work —
+the accents used as ink, and a brand mark that was invisible on four screens —
+and "Known, not
 fixed" for what was found and deliberately left alone. The endpoint-agent
 question is in `docs/EDR_AND_SIGNING.md`.
 
@@ -1641,10 +1643,142 @@ Nine suites, 447 checks, all green.
 
 ---
 
+## Phase 11 — the rest of the accent-as-ink sites, and a mark that was not there
+
+Phase 10 measured contrast on the check-in screen and fixed what it found there.
+This phase asked the obvious follow-up: *where else does the app paint an accent
+colour as ink, and does any of it fail the same way?* The answer was nine more
+sites, one of them worse than anything Phase 10 found, and one piece of the app
+that had stopped being drawn at all.
+
+### The shape of it
+
+Every failure in this phase is the same shape, and it is not the shape Phase 10
+fixed. Phase 10's failures were an *ink* that was wrong. These are an ink that is
+right on the plain page and wrong in the place it is actually used: an accent
+painted **on a surface tinted with its own hue**. The overdue row is tinted red,
+and the red text on it has less margin than the same red on the page. A success
+toast is tinted green, and the green text on it measures 4.27:1. The token was
+fine; the surface under it had moved.
+
+Measured across both themes, worst first:
+
+```
+                                                dark     light
+kiosk return, "Waiting for staff"    --info      4.49     7.45
+toast, "Checked in"                  --success   6.49     4.27
+status chip, the word "Overdue"      --warning   5.55     4.35
+overdue-by line on the overdue row   --error     4.21     5.72
+home chip's number and word          --warning   2.36     1.86   <- see below
+toast undo button, hovered           --info      3.68     5.98
+```
+
+Four new tokens — `--success-text`, `--warning-text`, `--error-text`,
+`--info-text` — one step from the page background in each theme, the same step
+the existing `--*-hover` tokens take. They are written out rather than aliased to
+the hover tokens so that retuning a hover state cannot silently move text
+contrast, which is exactly how the two got out of step in the first place.
+
+The badges on a check-in row took the other fix available: `--on-accent`, the ink
+Phase 10 introduced for the return buttons, because those three are a fill with
+text on it rather than a tint with ink in it. White failed two of the three on
+the dark theme (3.76 and 3.68) and black failed the third on the light one
+(4.18), because the fills invert between themes and a fixed ink cannot follow.
+Now 5.26 / 5.38 / 4.61 at worst.
+
+### The one that was worse: opacity on a container with text in it
+
+The home screen's overdue chip was the worst contrast in the app, and no
+colour-based audit could have found it, because the colours were fine. The chip
+de-emphasised itself with `opacity` — 0.6 at rest, 0.3 when nothing was overdue —
+and `pulse-glow` animated opacity from 0.3 to 0.8 on top of that, on a two-second
+loop. Opacity on a container composites **everything inside it**, text included,
+so at the bottom of every cycle the number and the word OVERDUE were painted at
+30% against the page: **1.86:1 on the light theme, 2.36:1 on the dark**, on the
+one figure a staff member walks past the desk to read.
+
+Two measurement rules hid it, and both are now in the suite:
+
+- **A container's `opacity` composites its text with it.** `getComputedStyle` on
+  the text returns the specified colour and says nothing about it. The walk in
+  `inkOf` multiplies ancestor opacity in and reports it.
+- **A gradient fill paints over `background-color`, which stays transparent.**
+  The most-used controls in the app — both home tiles, every CONTINUE, the admin
+  LOGIN — are gradient-filled, so the general audit read them as 1.09:1 against
+  the page behind them. That is the audit measuring the wrong surface, and the
+  fix was to read the fill from `background-image` when there is one and take the
+  worst stop. Only the element's *own* gradient counts: the body wears a radial
+  magenta wash at 8% alpha, and reading that as a surface painted a tint over the
+  tint and moved the overdue row from a true 5.06:1 to a phantom 4.46.
+
+The chip keeps its de-emphasis, but spends it on the fill and the border, which
+carry no information. `pulse-glow-only` is the same pulse with the opacity swing
+taken out — scale and glow carry it alone. `pulse-glow` is left intact for
+`.splash-pulse`, which is a dot and nothing else.
+
+### The mark was invisible on four screens
+
+The Rotman mark is one shared SVG — the `data:image/svg+xml` URI in
+`index.html`'s `__ROT_LOGO` has `fill="none"` on its root and `fill="#fff"` on
+its only group — painted into nine `<img data-logo>` placements. White artwork.
+Every one of the nine sits on `--surface` or `--bg`, and on the light theme those
+are `#ffffff` and `#f4f5f8`:
+
+```
+                                        dark      light
+splash-logo    screen-splash           19.79      1.09
+kiosk-logo     screen-welcome          18.14      1.00
+kiosk-logo-sm  six kiosk screens       18.14      1.00
+logo           screen-home             18.14      1.00
+```
+
+Not faint — absent. A screenshot of the light home screen had no mark in it at
+all, on the header of the app's own main screen, and the same on the kiosk
+header a borrower stands in front of.
+
+`filter` is the only way to recolour an `<img>`: a `currentColor` fill inside a
+data-URI SVG resolves against the SVG's own root and never sees the host
+document, so using the ink token would mean inlining the artwork into all nine
+elements. The fix is a `--logo-filter` token — `none` on the dark theme,
+`invert(1)` on the light, where the mark is normally drawn black on a light
+ground anyway — applied by one rule on `img[data-logo]`, which is already the
+hook the inline script uses to fill in `src`.
+
+The check measures **all nine placements in both themes**, including those on
+closed screens: their header paints the same colour whether or not the screen is
+open, and measuring all nine means a sixth kiosk screen added later is covered
+without anyone remembering to add it. It reads the artwork's colour *through*
+the filter rather than trusting the token, and it asserts the count is nine, so
+adding a placement fails until it is measured. Removing the light-theme token
+fails all nine by name:
+
+```
+FAIL  the splash-logo mark is drawn on screen-splash in the light theme
+      -> 1.09:1 ... ink rgb(255,255,255) on rgb(244,245,248), filter none
+FAIL  the logo mark is drawn on screen-home in the light theme
+      -> 1:1 ... ink rgb(255,255,255) on rgb(255,255,255), filter none
+```
+
+Two of the six `#fff`-on-`--magenta` sites were checked against `--on-accent` and
+deliberately left alone: it measures 4.34:1 on magenta in the dark theme, against
+white's 4.54 — thin, but a pass, and passing is not the same as having margin to
+spend.
+
+57 new regression checks since Phase 10 closed: the accent inks on the surfaces
+they are actually painted on, the gradients at their stops, the ancestor-opacity
+compositing that catches the pulse, and the nine placements of the mark. The
+browser UI suite alone goes from 115 to 172.
+
+Nine suites, 504 checks, all green.
+
+---
+
 ## Known, not fixed
 
 Five things found while working, left alone deliberately rather than silently
-changed.- **Typed item and category names are sentence-cased.** `sentenceCase`
+changed.
+
+- **Typed item and category names are sentence-cased.** `sentenceCase`
   (`app.js:1837`) lowercases everything after the first letter, so "HDMI dongle"
   is stored as "Hdmi Dongle" and "AV Equipment" as "Av Equipment". This is
   pre-existing behaviour and it is applied to the catalog, not to display strings,

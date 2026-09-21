@@ -133,7 +133,10 @@ the other settings and applies from the next launch. Light is a real theme, not 
 filter: the whole app is drawn from one set of colour tokens, so screens, dialogs,
 reports and the on-screen keyboard all follow it. The magenta stays the Rotman
 colour in both, deepened slightly on light where the pure brand value would not
-meet the WCAG AA contrast floor as text.
+meet the WCAG AA contrast floor as text. The Rotman mark follows too — it is a
+single white-on-transparent SVG shared by all nine placements, so the light theme
+recolours it with a `filter` (`--logo-filter`) rather than with `color`, which an
+`<img>` cannot take.
 
 ---
 
@@ -296,8 +299,8 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Nine suites, 447 checks (10 host bridge, 11 toast stack, 8 screen router, 17
-report aggregation, 34 keyboard touch, 115 browser UI, 54 kiosk, 153 layout at
+Nine suites, 504 checks (10 host bridge, 11 toast stack, 8 screen router, 17
+report aggregation, 34 keyboard touch, 172 browser UI, 54 kiosk, 153 layout at
 real widths, 45 backup round trip). Four lift their section out of the real
 `app.js` and run it in a sandbox (host bridge, toast stack, screen router,
 report aggregation); five drive the real page in headless Edge (keyboard touch
@@ -321,6 +324,34 @@ is what they are, and which changes the layout: the stylesheet grows every
 `node tools/serve.cjs` serves `web/` on `127.0.0.1:8791` for looking at it in a
 normal browser. Nothing about the app needs it; it exists because IndexedDB needs a
 real origin.
+
+### Accessibility
+
+Screen structure is real structure: one `h1` per screen and no skipped heading
+levels, every control named, every field labelled, dialogs that trap focus and
+return it to the control that opened them.
+
+Text contrast meets WCAG AA — 4.5:1 for body text, 3:1 for large text and for
+graphics that carry meaning — **measured, in both themes, against the colour
+actually painted behind it**, not against the token. That distinction is the
+whole point: an accent colour that passes on the plain page can fail inside a row
+tinted with the same hue, and several did (the overdue row, the success toast,
+the kiosk's pending row). Three rules the suite follows, each because something
+got past it once:
+
+- **A gradient fill paints over `background-color`, which stays transparent.**
+  Both home tiles, every CONTINUE and the admin LOGIN are gradient-filled, so
+  reading `background-color` reports the page behind the button, not the button.
+- **A container's `opacity` composites its text with it.** The home screen's
+  overdue chip was dimming itself to 30% on a two-second loop, taking its number
+  to 1.86:1, and no colour-based audit could see it.
+- **An `<img>` has no `color`.** The brand mark is white artwork on
+  transparency, recoloured with a `filter`; a check that reads `color` on it
+  reports the inherited text colour and says nothing about the mark — which is
+  how it came to be invisible on nine placements in the light theme.
+
+All of it is enforced by `tools/test-ui.cjs`, which fails by name and reports the
+ratio, the computed ink, and the surface it measured against.
 
 ### Known quirks
 

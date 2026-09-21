@@ -67,6 +67,22 @@
   --warning-hover: #FBBF24;
   --error-hover: #F87171;
 
+  /* Ink for an accent used as TEXT rather than as a fill.
+     Every one of these lands on a surface tinted with its own hue -- the
+     overdue row, the overdue chip, a toast -- and a tint of the same hue moves
+     the background toward the text, eating the margin the colour had on the
+     plain page. Measured: --error on the overdue row 4.21:1, --success on a
+     success toast 4.27:1, both under the 4.5:1 floor for text this size.
+     Each value is one step away from the page background, which is the same
+     step the hover tokens take and, for three of the four, the same value --
+     written out rather than aliased to --*-hover so that retuning a hover
+     state cannot silently move text contrast. The suites assert all four on
+     the surfaces they are actually painted on. */
+  --success-text: #34D399;
+  --warning-text: #F59E0B;
+  --error-text: #F87171;
+  --info-text: #60A5FA;
+
   /* Spacing */
   --space-1: 4px;
   --space-2: 8px;
@@ -94,6 +110,12 @@
   --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
   --shadow-glow: 0 0 0 1px var(--magenta-soft), 0 0 24px var(--magenta-glow);
   --shadow-glow-strong: 0 0 0 2px var(--magenta), 0 0 32px var(--magenta-glow);
+
+  /* The Rotman mark is one shared white-on-transparent SVG -- the data URI in
+     index.html's __ROT_LOGO has fill="none" on its root and fill="#fff" on its
+     only group -- painted into nine <img data-logo> elements. White is right on
+     this theme and wrong on the other one; see the light theme's copy. */
+  --logo-filter: none;
 
   /* Motion */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -168,6 +190,27 @@ body.light {
   --success-hover: #065F46;
   --warning-hover: #92400E;
   --error-hover: #991B1B;
+
+  /* Accent ink. See the note on the dark theme's copy. Two of these have to
+     leave the fill colour behind, and the reason is the same one that made the
+     light theme deepen --magenta: --warning #B45309 on the overdue chip's own
+     tint measured 3.93:1 and --success #047857 on a success toast 4.27:1. */
+  --success-text: #065F46;
+  --warning-text: #92400E;
+  --error-text: #B91C1C;
+  --info-text: #1D4ED8;
+
+  /* The white mark, inverted.
+     Every one of the nine placements sits on --surface or --bg, and on this
+     theme those are #ffffff (the home header, the kiosk header) and #f4f5f8
+     (the splash) -- so white artwork on them measured 1:1 and 1.09:1. Not faint:
+     absent. A screenshot of the light home screen has no mark in it at all.
+     `filter` is the only way to recolour an <img>; a `currentColor` fill inside
+     a data-URI SVG resolves against the SVG's own root and never sees this
+     document, so using the ink token would mean inlining the artwork into all
+     nine elements. invert(1) takes white to black, which is how the mark is
+     normally drawn on a light ground anyway. */
+  --logo-filter: invert(1);
 
   --shadow-sm: 0 1px 3px rgba(16, 18, 24, 0.10);
   --shadow: 0 6px 24px rgba(16, 18, 24, 0.12);
@@ -822,7 +865,7 @@ body {
 }
 
 .kiosk-return-item-pending {
-  color: var(--info);
+  color: var(--info-text);
   font-weight: 600;
 }
 
@@ -1103,6 +1146,19 @@ body {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
+/* ── Brand mark ── */
+/* One rule for all nine placements. The four classes that size the mark
+   (.logo, .kiosk-logo, .kiosk-logo-sm, .splash-logo) each set a height and
+   nothing else, so the colour has to come from one place, and `data-logo` is
+   already the hook the inline script at index.html:17 uses to fill in `src`.
+   Nothing here assumes a dark ground: on the light theme every placement is on
+   --surface or --bg, which is why the token is a straight inversion there and
+   no placement needs exempting. If a future placement lands on a fill the light
+   theme keeps dark -- a magenta tile, say -- it will need its own class rule
+   and the suite will catch it, because the check measures the backdrop rather
+   than trusting the token. */
+img[data-logo] { filter: var(--logo-filter); }
+
 /* ── Home Screen ── */
 .logo {
   height: 32px;
@@ -1115,6 +1171,15 @@ body {
   justify-content: center;
 }
 
+/* The home screen's overdue chip.
+   It used to de-emphasise itself with `opacity` -- 0.6 at rest, 0.3 with
+   nothing overdue -- and `pulse-glow` animated opacity from 0.3 to 0.8 on top
+   of that. Opacity on a container composites everything inside it, text
+   included, so at the bottom of every two-second cycle the number and the word
+   OVERDUE were painted at 30% against the page: measured 1.86:1 on the light
+   theme and 2.36:1 on the dark, on the one figure a staff member walks past
+   the desk to read. The de-emphasis is kept, but it is spent on the chip's
+   fill and border, which carry no information. */
 .overdue-badge {
   display: flex;
   align-items: center;
@@ -1123,28 +1188,33 @@ body {
   background: var(--warning-soft);
   border: 1px solid var(--warning);
   border-radius: var(--radius-full);
-  opacity: 0.6;
   transition: all var(--transition);
 }
 
+/* Nothing overdue: muted chip, full-strength number. */
 .overdue-badge[data-count="0"] {
-  opacity: 0.3;
+  background: transparent;
+  border-color: var(--border);
+}
+
+.overdue-badge[data-count="0"] .overdue-count,
+.overdue-badge[data-count="0"] .overdue-label {
+  color: var(--text-muted);
 }
 
 .overdue-badge[data-count]:not([data-count="0"]) {
-  animation: pulse-glow 2s ease-in-out infinite;
-  opacity: 1;
+  animation: pulse-glow-only 2s ease-in-out infinite;
 }
 
 .overdue-count {
   font-size: 16px;
   font-weight: 700;
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .overdue-label {
   font-size: 12px;
-  color: var(--warning);
+  color: var(--warning-text);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1213,7 +1283,7 @@ body {
 .status-chip-overdue.has-overdue {
   border-color: var(--error);
   background: var(--error-soft);
-  animation: pulse-glow 2.5s ease-in-out infinite;
+  animation: pulse-glow-only 2.5s ease-in-out infinite;
 }
 
 .status-num {
@@ -1224,14 +1294,14 @@ body {
 }
 
 .status-chip-overdue .status-num {
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .status-label {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   margin-top: var(--space-1);
 }
 
@@ -1658,6 +1728,17 @@ body {
   gap: var(--space-3);
 }
 
+/* The check-in list with nothing to draw. Styled like .report-empty so an empty
+   screen looks the same wherever it happens. */
+.loans-empty {
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
 .loan-item {
   display: flex;
   flex-direction: column;
@@ -1714,19 +1795,23 @@ body {
   white-space: nowrap;
 }
 
+/* The three status badges on a check-in row. Ink is --on-accent, the same as
+   the return buttons: white failed two of the three on the dark theme (3.76
+   and 3.68:1) and black failed the third on the light theme (4.18:1), because
+   the fills invert between themes while a fixed ink cannot follow. */
 .badge-overdue {
   background: var(--error);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .badge-today {
   background: var(--info);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .badge-due-soon {
   background: var(--warning);
-  color: #000;
+  color: var(--on-accent);
 }
 
 /* Middle row: borrower + phone */
@@ -1768,7 +1853,7 @@ body {
 }
 
 .loan-item.overdue .loan-timing .timing-value.due {
-  color: var(--error);
+  color: var(--error-text);
   font-weight: 700;
 }
 
@@ -1805,7 +1890,7 @@ body {
 }
 
 .stat.overdue strong {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .tabs {
@@ -2648,19 +2733,19 @@ html.kbd-open .pin-input-container .pin-submit {
 .toast-success {
   border-color: var(--success);
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--success-text);
 }
 
 .toast-error {
   border-color: var(--error);
   background: var(--error-soft);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .toast-undo {
   background: var(--info-soft);
   border-color: var(--info);
-  color: var(--info);
+  color: var(--info-text);
   display: flex;
   align-items: center;
   gap: var(--space-4);
@@ -2670,7 +2755,7 @@ html.kbd-open .pin-input-container .pin-submit {
   background: transparent;
   border: 1px solid var(--info);
   border-radius: var(--radius);
-  color: var(--info);
+  color: var(--info-text);
   padding: var(--space-2) var(--space-3);
   font-size: 14px;
   font-weight: 600;
@@ -2689,7 +2774,9 @@ html.kbd-open .pin-input-container .pin-submit {
 
 .toast-undo-btn:hover {
   background: var(--info);
-  color: #fff;
+  /* Was #fff, 3.68:1 on this theme's blue -- on the one control a borrower
+     reaches for in a hurry after a wrong check-in. */
+  color: var(--on-accent);
 }
 
 /* ── Dialog ── */
@@ -2792,7 +2879,7 @@ html.kbd-open .pin-input-container .pin-submit {
 }
 
 .current-loan-item.overdue .cli-name {
-  color: var(--error);
+  color: var(--error-text);
   font-weight: 700;
 }
 
@@ -2929,6 +3016,22 @@ html.kbd-open .pin-input-container .pin-submit {
   50% {
     transform: scale(1.1);
     opacity: 0.8;
+    box-shadow: 0 0 20px var(--magenta-glow);
+  }
+}
+
+/* The pulse with the opacity swing taken out, for containers that have text in
+   them. `pulse-glow` is right for .splash-pulse, which is a dot and nothing
+   else; on the overdue chip and the overdue status chip the opacity it
+   animates took the text down to 30% every cycle. Scale and glow carry the
+   pulse on their own. */
+@keyframes pulse-glow-only {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 var(--magenta-glow);
+  }
+  50% {
+    transform: scale(1.1);
     box-shadow: 0 0 20px var(--magenta-glow);
   }
 }

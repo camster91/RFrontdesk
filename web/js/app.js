@@ -4259,13 +4259,20 @@ var CheckinFlow = class {
     const q = normalize(this.state.query);
     let filtered = this.state.allLoans;
     if (q) {
+      // The phone is shown to the staff member as "(416) 555-1230" and typed,
+      // by anyone reading it off the screen or off a note, as "4165551230".
+      // Matching only the formatted string meant the digits form found nothing
+      // on the one screen where a person is standing at the desk waiting. The
+      // admin People search already matched both; this is the same rule.
+      const qDigits = q.replace(/\D/g, "");
       filtered = this.state.allLoans.filter((loan) => {
         const item = this.state.items.get(loan.itemId);
         const borrower = loan.borrowerId != null ? this.state.borrowers.get(loan.borrowerId) : null;
         const itemName = (item?.name || loan.itemNameSnapshot || "").toLowerCase();
         const borrowerName = (borrower?.name || loan.borrowerNameSnapshot || "").toLowerCase();
-        const phone = (borrower?.phoneFormatted || loan.borrowerPhoneSnapshot || "").toLowerCase();
-        return itemName.includes(q) || borrowerName.includes(q) || phone.includes(q);
+        const phone = (borrower?.phoneFormatted || (loan.borrowerPhoneSnapshot ? formatPhone(loan.borrowerPhoneSnapshot) : "") || "").toLowerCase();
+        const phoneDigits = phone.replace(/\D/g, "");
+        return itemName.includes(q) || borrowerName.includes(q) || phone.includes(q) || (qDigits && phoneDigits.includes(qDigits));
       });
     }
     const now = Date.now();
@@ -4299,6 +4306,24 @@ var CheckinFlow = class {
     if (earlierSection) earlierSection.style.display = earlier.length > 0 ? "" : "none";
     const overdueTitle = root.querySelector(".overdue-section .section-title");
     if (overdueTitle) overdueTitle.textContent = `OVERDUE (${overdue.length})`;
+    // Three hidden sections and nothing else is a blank screen under the search
+    // box, which reads as a page that failed to load. Say which of the two
+    // things happened -- nothing is out, or nothing matches what was typed --
+    // and echo the query back so it is obvious the filter is the reason.
+    const emptyEl = root.querySelector(".loans-empty");
+    if (emptyEl) {
+      const total = filtered.length;
+      if (total === 0) {
+        const typed = String(this.state.query || "").trim();
+        emptyEl.classList.remove("hidden");
+        emptyEl.textContent = typed
+          ? `Nothing out matches "${typed}". Clear the search to see everything that is out.`
+          : "Nothing is checked out right now.";
+      } else {
+        emptyEl.classList.add("hidden");
+        emptyEl.textContent = "";
+      }
+    }
   }
   _makeLoanRow(loan, isOverdue) {
     const item = this.state.items.get(loan.itemId);

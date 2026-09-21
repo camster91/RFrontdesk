@@ -345,7 +345,13 @@
 
     <div class="screen-body">
       <div class="search-container">
-        <input type="text" class="input search-input-lg" placeholder="Search by name, phone, or item..." maxlength="100" aria-label="Search by name, phone, or item" />
+        <!-- Both classes are load-bearing. `search-input` is what
+             CheckinFlow._wireDom looks for before it attaches the input
+             listener (app.js:4221); `search-input-lg` is the sizing rule. The
+             element used to carry only the latter, so the query matched
+             nothing, `_wireOnce` was still set, and the search box on this
+             screen silently did nothing for its whole life. -->
+        <input type="text" class="input search-input search-input-lg" placeholder="Search by name, phone, or item..." maxlength="100" aria-label="Search by name, phone, or item" />
       </div>
 
       <div class="loans-list">
@@ -363,6 +369,12 @@
           <h2 class="section-title">OUT EARLIER</h2>
           <div class="loan-items earlier-items"></div>
         </div>
+
+        <!-- Shown by _renderList when nothing is left to draw. It used to draw
+             nothing at all: hiding three empty sections left a blank page under
+             the search box, which reads as a screen that failed to load rather
+             than as "no matches". -->
+        <div class="loans-empty hidden"></div>
       </div>
     </div>
   </section>
