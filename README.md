@@ -47,7 +47,7 @@ Coming back is one tap, and it should be the last thing you do at the desk:
 | --- | --- | --- |
 | Kiosk | press and hold the Rotman logo | PIN screen |
 | PIN screen | Cancel | wherever you came from |
-| PIN screen | LOGIN | admin panel |
+| PIN screen | LOGIN, or the keypad's Done key | admin panel |
 | Admin panel | Back | the kiosk |
 | Admin panel | Front desk | staff home |
 | Staff home | Admin | PIN screen |

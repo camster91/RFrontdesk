@@ -12,12 +12,13 @@ this document and have since drifted** — Phases 1–5 all edited that file, so
 reference can be tens of lines out. Search by the function or class name quoted
 beside it rather than jumping to the number.
 
-**Status at 2026-09-21: Phases 1–8 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**eight** suites, all green). The sections
+**Status at 2026-09-21: Phases 1–9 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**nine** suites, all green). The sections
 that follow are kept as the record of what was wrong and why — they are no longer
-a to-do list. See "Phase 7" for the last round of fixes, "Phase 8" for shipping
+a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for shipping
 the app (icon, packaging, and what the package could have carried out with it),
-and "Known, not fixed" for what was found and deliberately left alone. The
+"Phase 9" for the PIN screen and the controls on it that could not be used, and
+"Known, not fixed" for what was found and deliberately left alone. The
 endpoint-agent question is in `docs/EDR_AND_SIGNING.md`.
 
 ## Verification status
@@ -1385,12 +1386,153 @@ different folders and survived with its hash unchanged and nothing quarantined.
 
 ---
 
+## Phase 9 — a door that could not be opened, and a Done key that did nothing
+
+Every phase before this one found defects by reading. This one found them by
+asking a single question of each interactive control: *can a person actually
+press this?* The answer on the admin PIN screen was no, for three of them.
+
+### The keypad covered the card, so LOGIN and Cancel could not be pressed
+
+The PIN screen is entered from the kiosk's press-and-hold, from the Admin button
+on the staff home, and from the kiosk screen's own route in. On every one of
+them, the on-screen keypad came up over the card.
+
+`.keyboard` is `position: fixed; bottom: 0` and reserves its space by setting
+`paddingBottom` on the active screen's `.screen-body`. `#screen-admin-login` has
+no `.screen-body` — it is a `.login-container` at `height: 100vh`, centring a
+`.login-card` — and padding does not clip overflowing content anyway. So the
+keypad was drawn over the card's lower half.
+
+Measured at 1280×800: the field `[473,306,334,80]`, LOGIN `[473,402,334,64]`,
+Cancel `[583,498,114,64]`, keypad `[0,327,1280,473]`. A real click at the centre
+of LOGIN or Cancel landed on a keycap, and every one of the four digits typed
+became `"21234"` in the field. At 375×667 LOGIN and Cancel were both covered.
+This is the one screen whose entire job is to let a member of staff in or out of
+the panel, and neither was possible without a hardware keyboard, which the
+hardware does not have.
+
+The fix publishes the keypad's height as `--keyboard-height` and adds
+`html.kbd-open` while it is up, so any layout can reserve the space rather than
+guess at it; `.login-container` reserves it, and with the keypad up the card
+sheds what it does not need — the "Admin Access" heading, and the stacked pair
+of buttons, which become one row of actions beside the field. Nothing is hidden
+that has no other route: LOGIN is also the keypad's Done key, and Cancel is now
+visible above the keypad at every width.
+
+Verified by doing it, not by measuring it: a real click on the field, real
+clicks on LOGIN, and the admin panel opens at 1280×800 and 375×667; the same at
+768×1024, where the card sits at `[225,427,202]` with the keypad top at 651. The
+layout suite now measures this screen **twice** — as it opens, and with the
+keypad up — because they are different layouts and only one of them was ever
+being checked.
+
+### The field itself was 28px wide, and my first fix for it was aimed at the wrong element
+
+With the keypad up the row read field-plus-button, and the field measured 28px
+at every width — unusable, and the letters of a typed PIN invisible.
+
+I read it as the input's `width: auto` resolving to its 20-character default,
+fixed that, and re-measured: unchanged, `[457,28,64]`. The measurement that
+settled it was printing the *button's* box as well as the field's:
+`loginW: 366`, exactly the container width. `.pin-submit { width: 100% }` is
+correct in the stacked layout and wrong in a row, because a flex-basis of `auto`
+resolves to that 100% — so the button alone claimed the whole row and the field
+was crushed to its floor. Setting `width: auto` on the button took the field to
+173px at 375 and 262px at wider. The rule I had written against the input was
+kept, since `flex: 1 1 0` is what makes it grow, but its comment now says what
+it is actually for.
+
+Worth recording because the wrong diagnosis was *plausible* and produced a
+confident comment explaining a cause that was not the cause. The comment was
+corrected along with the code.
+
+### The keypad's Done key did nothing on the PIN screen
+
+Done is how a touch user finishes typing: there is no Enter key on a numeric
+pad. On the PIN screen it closed the keypad and stopped. Typing the correct PIN
+and pressing Done left the screen on the PIN prompt with `1234` still in the
+field, at 1280×800 and at 375×667.
+
+The handler asked the **whole document** for a `.step.active`:
+
+```js
+const activeStep = document.querySelector(".step.active");
+```
+
+The checkout screen has one, and it is in the DOM whether or not checkout is
+showing. So on the PIN screen Done matched the hidden checkout step, clicked its
+CONTINUE button — invisible, on a screen nobody was looking at — and returned
+before ever reaching the branch that presses Enter in the focused field. The
+lookup is now scoped to the screen on show, which is what it was always meant to
+be and which leaves the checkout behaviour intact.
+
+Covered by eleven new checks in `tools/test-touch.cjs`, which type the PIN on
+the keypad over real touch input and press Done, and then do the same on the
+checkout step to prove the branch it exists for still works. The checks were
+**falsified** before being trusted: reverting the fix makes exactly the two PIN
+checks fail while the checkout check still passes.
+
+One trap the new checks fell into first, and the guard that now prevents it: a
+raw synthetic touch does not move focus to an input in headless Chromium, so the
+keypad was still showing the *previous* screen's four-row layout, off screen and
+inert, while "the keypad is up" read as true. The suite now asserts the layout is
+the numeric pad (five rows, digits present) and that the field genuinely holds
+focus, so a setup that has not happened cannot pass for one that has.
+
+### Three more places where the screen said something that was not so
+
+- **The admin header shipped fabricated counts.** `.admin-stats` was seeded in
+  the markup with `Out: 12 / Overdue: 3`, and `renderAdminStats()` is async — so
+  on every entry to the panel those numbers were on screen, briefly, as
+  real-looking figures that were not the library's. The markup is now empty and
+  the render fills it. Its two `catch (_) {}` blocks also went: a failed count
+  now logs and says "Counts unavailable" in the header rather than leaving the
+  last good figures up with nothing to say they are stale.
+- **The settings panel shipped a full set of controls that were not wired to
+  anything** — a PIN field, a loan duration reading 8, a theme select, a Save
+  button, ~30 lines in `index.html`, all replaced wholesale by `renderSettings()`.
+  Like the admin counts, "never seen" depended on that render succeeding. If it
+  ever failed, a staff member would get a convincing panel of settings that look
+  editable and are not. Removed; the panel is now an empty element that reads as
+  loading.
+- **The version line was hard-coded** (`v0.1`, long after 1.0.0 shipped). It now
+  renders from the running host, with a drift guard in the host-bridge suite
+  asserting that `WEB_VERSION`, `Build.Version` and `AssemblyVersion` agree
+  across `app.js`, `FrontDesk.cs` and `AssemblyInfo.cs`.
+
+While fixing the version line, three dead `onclick` attributes went with it —
+on `#btn-to-admin` and the two home buttons — left over from wiring that had
+since been replaced by events. They did nothing, and one of them would have
+opened the PIN screen with a dead LOGIN button had it ever run.
+
+### The check that would have caught all of this
+
+The layout suite measured sizes and overflow. It did not ask whether anything
+could be pressed, which is why a screen with two unusable controls passed 147
+checks. It now hit-tests every interactive element at every width by calling
+`elementFromPoint` at its centre and failing if the answer is neither the element
+nor one of its descendants — reported as "cannot be pressed", naming the element
+and what is on top of it.
+
+It carries one deliberate exclusion: elements with `pointer-events: none` are
+skipped, because between `hide()` and the end of the keypad's slide-out its keys
+are correctly untappable, and without that the suite reported a dozen false
+positives. The exclusion is on the computed style rather than on a class, so it
+cannot outlive the behaviour it describes.
+
+The layout suite itself turned out never to have been committed — five hundred
+lines of it sitting untracked while the README counted its checks. It is tracked
+now.
+
+Nine suites, 411 checks, all green.
+
+---
+
 ## Known, not fixed
 
-Four things found while working, left alone deliberately rather than silently
-changed.
-
-- **Typed item and category names are sentence-cased.** `sentenceCase`
+Five things found while working, left alone deliberately rather than silently
+changed.- **Typed item and category names are sentence-cased.** `sentenceCase`
   (`app.js:1837`) lowercases everything after the first letter, so "HDMI dongle"
   is stored as "Hdmi Dongle" and "AV Equipment" as "Av Equipment". This is
   pre-existing behaviour and it is applied to the catalog, not to display strings,
@@ -1416,3 +1558,10 @@ changed.
   fields and the admin search field both live in scrollable panels where a tap
   between keys is usually a mis-aimed key. Worth deleting the next time that
   handler is touched.
+- **The two header links on the staff home screen are 34px tall at mouse
+  widths** — the layout suite reports them as a note on a passing check. On touch
+  widths they are `--touch-min` (64px) via the `@media (pointer: coarse)` rule,
+  which is the case that matters on the hardware this runs on. 34px clears WCAG
+  2.2 AA's 24px target minimum with room to spare, and matches the rest of the
+  desktop UI, where a 44px-tall text link would look like a mistake. Left as is;
+  recorded so the suite's note is not mistaken for a defect someone should chase.
