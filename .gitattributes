@@ -1,0 +1,27 @@
+# Keep line endings stable across machines.
+#
+# This project is developed on Windows and its scripts run in PowerShell, so a
+# clone that rewrites CRLF to LF can break a .ps1 or a .cmd in ways that are
+# annoying to diagnose. The web assets and the Node test suites are indifferent,
+# and are normalised to LF so they do not churn.
+* text=auto
+
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.manifest text eol=crlf
+
+*.js   text eol=lf
+*.cjs  text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+
+# Binary: never normalise, never diff.
+*.ico  binary
+*.dll  binary
+*.exe  binary
+*.pdb  binary
+*.png  binary
+*.zip  binary

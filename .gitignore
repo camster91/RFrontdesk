@@ -1,0 +1,28 @@
+# The desk's own data. NEVER commit this.
+#
+# data/ holds the IndexedDB the front desk has been using, its backups and its
+# log. A backup is readable JSON: borrower names, phone numbers and loan
+# history in plain text. dist/data is the same thing for a machine that has run
+# the app from dist/.
+data/
+
+# Build output. Regenerate with host/build.ps1 -- it needs nothing installed.
+dist/
+
+# The distributable. Regenerate with tools/package.ps1.
+release/
+
+# WebView2 assemblies: Microsoft's redistributables, not this project's source.
+# host/fetch-deps.ps1 downloads the exact versions on a fresh clone, and
+# host/lib/LICENSE.txt and NOTICE.txt are kept in the repo beside them.
+host/lib/*.dll
+
+# Node, only used by the test suites and the dev server.
+node_modules/
+
+# Compiler and editor noise.
+*.pdb
+*.user
+.vs/
+Thumbs.db
+desktop.ini

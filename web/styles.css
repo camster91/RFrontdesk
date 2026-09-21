@@ -1,0 +1,3199 @@
+/* ═══════════════════════════════════════════════════
+   Rotman Front Desk App — Design System v1.0
+   Complete dark theme, touch-first, kiosk-optimized
+   ═══════════════════════════════════════════════════ */
+
+/* ── Reset & Tokens ── */
+*, *::before, *::after { 
+  box-sizing: border-box; 
+  margin: 0; 
+  padding: 0; 
+}
+
+:root {
+  /* Rotman Brand Colors */
+  --magenta: #E6007E;
+  --magenta-hover: #C5006B;
+  --magenta-soft: rgba(230, 0, 126, 0.08);
+  --magenta-glow: rgba(230, 0, 126, 0.35);
+  --magenta-soft-2: rgba(230, 0, 126, 0.15);
+
+  /* Dark Theme Backgrounds */
+  --bg: #0a0a0b;
+  --bg-alt: #13161a;
+  --bg-hover: #1c1f25;
+  --surface: #13161a;
+  --surface-elevated: #1c1f25;
+  --border: #2a2e36;
+  --border-strong: #3a3e46;
+
+  /* Text — all values meet WCAG AA (≥4.5:1) on --bg for normal text
+     and ≥3:1 for large/18px+ text. */
+  --text: #f0f0f2;
+  --text-secondary: #d4d6db;
+  --text-muted: #a0a4ad;
+
+  /* Semantic Colors */
+  --success: #10B981;
+  --success-soft: rgba(16, 185, 129, 0.15);
+  --warning: #F59E0B;
+  --warning-soft: rgba(245, 158, 11, 0.15);
+  --error: #EF4444;
+  --error-soft: rgba(239, 68, 68, 0.15);
+  --info: #3B82F6;
+  --info-soft: rgba(59, 130, 246, 0.15);
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 9999px;
+
+  /* Touch Targets */
+  --touch-min: 64px;
+  --touch-comfortable: 80px;
+
+  /* Shadows */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 0 1px var(--magenta-soft), 0 0 24px var(--magenta-glow);
+  --shadow-glow-strong: 0 0 0 2px var(--magenta), 0 0 32px var(--magenta-glow);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --transition-fast: 150ms var(--ease-out);
+  --transition: 250ms var(--ease-out);
+  --transition-slow: 400ms var(--ease-out);
+
+  /* Typography */
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* ── Light Theme ──
+   The Settings > Theme select could always be set to Light, and app.js has
+   always put `light` on <body> for it (app.js:8290 on load, app.js:6923 on
+   change) — but there were no rules here, so nothing ever changed on screen.
+   This block is the missing half.
+
+   Only colour tokens are redefined. Everything upstream is already expressed
+   in them (634 var() references against these 50 tokens), so redefining them
+   themes the whole app — no selector in the file needs to know the theme
+   exists. Anything below that hardcodes #fff is foreground on a coloured
+   fill, which is right in both themes.
+
+   Two values are not simply "the dark one, inverted":
+
+   --magenta is deepened. Brand magenta #E6007E on white is 4.46:1, just under
+   the 4.5:1 WCAG AA floor for normal text, and it is used as a text colour in
+   30 places (active tabs, badges, links). #C40069 is 5.9:1 on white and still
+   unmistakably the Rotman colour. Dark keeps the pure brand value.
+
+   The soft/glow variants keep their magenta rather than following --magenta,
+   so tinted fills stay the brand colour instead of the deepened one.
+
+   Shadows are rebuilt rather than reused: the dark set is a black glow that
+   reads as depth on a near-black page and as dirt on a white one. */
+body.light {
+  color-scheme: light;
+
+  --magenta: #C40069;
+  --magenta-hover: #A80059;
+  --magenta-soft: rgba(230, 0, 126, 0.08);
+  --magenta-soft-2: rgba(230, 0, 126, 0.14);
+  --magenta-glow: rgba(230, 0, 126, 0.22);
+
+  --bg: #f4f5f8;
+  --bg-alt: #ffffff;
+  --bg-hover: #e8eaef;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --border: #d7dae1;
+  --border-strong: #b9bec8;
+
+  --text: #16181d;
+  --text-secondary: #3f434c;
+  --text-muted: #5f6672;
+
+  --success: #047857;
+  --success-soft: rgba(4, 120, 87, 0.12);
+  --warning: #B45309;
+  --warning-soft: rgba(180, 83, 9, 0.12);
+  --error: #B91C1C;
+  --error-soft: rgba(185, 28, 28, 0.12);
+  --info: #1D4ED8;
+  --info-soft: rgba(29, 78, 216, 0.12);
+
+  --shadow-sm: 0 1px 3px rgba(16, 18, 24, 0.10);
+  --shadow: 0 6px 24px rgba(16, 18, 24, 0.12);
+  --shadow-lg: 0 16px 48px rgba(16, 18, 24, 0.18);
+  --shadow-glow: 0 0 0 1px var(--magenta-soft), 0 0 24px var(--magenta-glow);
+  --shadow-glow-strong: 0 0 0 2px var(--magenta), 0 0 32px var(--magenta-glow);
+}
+
+/* ── Base Styles ── */
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Screen System ── */
+.screen {
+  position: fixed;
+  inset: 0;
+  background: 
+    radial-gradient(ellipse 800px 500px at 50% 0%, var(--magenta-soft), transparent 70%),
+    var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.screen.hidden {
+  display: none;
+}
+
+/* Generic hide. Only .screen.hidden existed, so `classList.add("hidden")` on
+   anything else was a no-op -- the checkout "returning in 30s" countdown was
+   never actually hidden, and the keyboard's initial `hidden` class did nothing.
+   Kept low-specificity and last-word-free so a component rule can still win. */
+.hidden {
+  display: none;
+}
+
+.screen-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  min-height: var(--touch-min);
+}
+
+.screen-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.screen-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+/* ── Kiosk Welcome Screen ── */
+.kiosk-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  min-height: 64px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.kiosk-logo {
+  height: 56px;
+  width: auto;
+}
+
+.kiosk-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-7);
+  padding: var(--space-7);
+  position: relative;
+}
+
+.kiosk-greeting {
+  font-size: 64px;
+  font-weight: 800;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.kiosk-subtitle {
+  font-size: 24px;
+  color: var(--text-secondary);
+  margin: 0;
+  text-align: center;
+}
+
+.kiosk-actions {
+  display: flex;
+  gap: var(--space-7);
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 800px;
+}
+
+.btn-kiosk {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-7) var(--space-7);
+  min-width: 280px;
+  min-height: 240px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-xl);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.btn-kiosk:hover {
+  transform: translateY(-2px);
+  border-color: var(--magenta);
+  box-shadow: 0 0 32px var(--magenta-glow);
+}
+
+.btn-kiosk:active {
+  transform: scale(0.98);
+}
+
+.kiosk-icon {
+  font-size: 80px;
+  line-height: 1;
+}
+
+.kiosk-label {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.kiosk-sub {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.kiosk-footer {
+  position: absolute;
+  bottom: var(--space-5);
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+/* Replaced the old public "Staff: Admin Login" button — see .kiosk-logo's
+   press-and-hold handler in initKiosk(). Kept as a quiet hint so borrowers
+   know a human is available. */
+.kiosk-hint {
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: var(--space-2) var(--space-4);
+  user-select: none;
+}
+
+/* Kiosk flow screens (phone, name, need, done) */
+.kiosk-logo-sm {
+  height: 36px;
+  width: auto;
+  flex: 1;
+  text-align: center;
+  margin-right: 48px; /* visually balance the back button on the left */
+}
+
+.btn-back-kiosk {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 0 12px;
+  height: 48px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.btn-back-kiosk:hover {
+  border-color: var(--magenta);
+  background: var(--bg-hover);
+  color: var(--magenta);
+}
+
+.btn-back-kiosk:active {
+  transform: scale(0.96);
+}
+
+.btn-back-kiosk::before {
+  content: '‹';
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.kiosk-flow-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  padding: var(--space-7);
+}
+
+.kiosk-step-title {
+  font-size: 56px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  text-align: center;
+  max-width: 600px;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.kiosk-step-sub {
+  font-size: 22px;
+  color: var(--text-secondary);
+  margin: 0;
+  text-align: center;
+  max-width: 600px;
+  line-height: 1.4;
+}
+
+.kiosk-input {
+  font-size: 36px !important;
+  padding: var(--space-5) var(--space-5) !important;
+  width: 100% !important;
+  max-width: 600px !important;
+  text-align: center;
+  height: auto !important;
+}
+
+.kiosk-textarea {
+  resize: none;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.kiosk-phone-input-wrap,
+.kiosk-name-input-wrap {
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  justify-content: center;
+}
+
+.kiosk-cta {
+  margin-top: var(--space-3);
+  min-width: 140px;
+  font-size: 16px;
+  padding: var(--space-3) var(--space-5);
+}
+
+/* Skip button on the kiosk name-entry screen. Lets true walk-ins
+   submit a request without identifying themselves. */
+.btn-kiosk-skip {
+  display: block;
+  margin: var(--space-5) auto 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: inherit;
+}
+
+.btn-kiosk-skip:hover {
+  color: var(--text);
+}
+
+.kiosk-done-icon {
+  font-size: 96px;
+  line-height: 1;
+  margin-bottom: var(--space-3);
+}
+
+.kiosk-done-countdown {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-top: var(--space-3);
+}
+
+.kiosk-done-countdown #kiosk-done-countdown-num {
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.kiosk-done-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  margin: var(--space-4) 0;
+  max-width: 600px;
+  width: 100%;
+}
+
+.kiosk-suggestions {
+  margin-top: var(--space-3);
+  max-width: 600px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.kiosk-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  min-height: 64px;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.kiosk-suggestion:hover,
+.kiosk-suggestion:focus {
+  background: var(--bg-hover);
+  border-color: var(--magenta);
+  outline: none;
+}
+
+.kiosk-suggestion-category {
+  font-size: 14px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-left: var(--space-3);
+}
+
+/* Already checked out to someone else. Shown rather than hidden so the borrower
+   can see the item exists and ask the desk, instead of thinking it is gone. */
+.kiosk-suggestion.is-unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+.kiosk-suggestion.is-unavailable:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.kiosk-suggestion-empty {
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface);
+  border: 1px dashed var(--magenta);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.admin-recent-kiosk {
+  margin: var(--space-3) var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  background: rgba(230, 0, 126, 0.08);
+  border: 1px solid rgba(230, 0, 126, 0.3);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 14px;
+  color: var(--text);
+}
+
+.admin-recent-kiosk-text {
+  flex: 1;
+}
+
+.admin-recent-kiosk-text strong {
+  color: var(--magenta);
+}
+
+.admin-recent-kiosk-dismiss {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 var(--space-2);
+}
+
+.admin-recent-kiosk-dismiss:hover {
+  color: var(--text);
+}
+
+/* This element sets display:flex above, so it has to declare its own hidden
+   state: the generic .hidden at the top of this file is deliberately weak
+   (same specificity, earlier in the file) and loses on source order. .screen
+   and .dialog-container both carry the same rule for the same reason. Without
+   this, an empty 26px magenta strip is painted under the admin header on every
+   tab -- in both themes -- because renderRecentKiosk hides the strip by adding
+   a class that could not win. */
+.admin-recent-kiosk.hidden {
+  display: none;
+}
+
+.kiosk-done-label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.kiosk-done-text {
+  font-size: 32px;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.step-subhint {
+  font-size: 16px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 0 0 var(--space-4) 0;
+  max-width: 500px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Queue tab in the admin panel — shows pending borrower requests */
+.queue-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left: 4px solid var(--magenta);
+  margin-bottom: var(--space-3);
+}
+
+.queue-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  padding: var(--space-3) 0 var(--space-2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+
+.queue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.queue-borrower {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.queue-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.queue-phone {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.queue-age {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.queue-description {
+  font-size: 16px;
+  color: var(--text);
+  padding: var(--space-3);
+  background: var(--bg-alt, var(--bg));
+  border-radius: var(--radius-sm);
+  font-style: italic;
+  border-left: 3px solid var(--magenta);
+}
+
+.queue-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.tab-badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 8px;
+  background: var(--magenta);
+  color: #fff;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 700;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.tab-badge:empty,
+.tab-badge[data-count="0"] {
+  display: none;
+}
+
+/* Kiosk return list — borrower's own open loans */
+.kiosk-return-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 600px;
+  width: 100%;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.kiosk-return-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--magenta);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.kiosk-return-item:hover {
+  border-color: var(--magenta);
+  transform: translateY(-1px);
+  box-shadow: 0 0 16px var(--magenta-glow);
+}
+
+.kiosk-return-item.is-overdue {
+  border-left-color: #e74c3c;
+}
+
+.kiosk-return-item-name {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.kiosk-return-item-meta {
+  display: flex;
+  gap: var(--space-3);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.kiosk-return-item-overdue {
+  color: #e74c3c;
+  font-weight: 700;
+}
+
+/* Handed back, waiting for a staff member to confirm. Not tappable -- the
+   request is already in the staff queue, so the row is a status, not a button. */
+.kiosk-return-item.is-pending {
+  cursor: default;
+  border-left-color: var(--info);
+  background: var(--surface-elevated);
+}
+
+.kiosk-return-item.is-pending:hover {
+  border-color: var(--border);
+  border-left-color: var(--info);
+}
+
+.kiosk-return-item-pending {
+  color: var(--info);
+  font-weight: 600;
+}
+
+/* Two-step return condition prompt. Inline on the kiosk screen rather than a
+   dialog, because the "something's wrong" step has to stay open for the note. */
+.kiosk-condition-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+}
+
+.kiosk-condition-actions {
+  display: flex;
+  gap: var(--space-3);
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.kiosk-condition-actions .kiosk-cta {
+  flex: 1;
+  min-width: 180px;
+  min-height: var(--touch-comfortable);
+}
+
+.kiosk-condition-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.kiosk-return-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-7) var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  width: 100%;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.kiosk-return-empty-icon {
+  font-size: 56px;
+  line-height: 1;
+  margin-bottom: var(--space-2);
+}
+
+.kiosk-return-empty-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.kiosk-return-empty-body {
+  font-size: 18px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 360px;
+}
+
+/* Pending request row — visual treatment different from real loans
+   so the borrower understands they don't actually have the item yet. */
+.kiosk-return-item.is-request {
+  border-left-color: #f39c12;
+  background: linear-gradient(135deg, var(--surface) 0%, var(--surface) 80%, rgba(243, 156, 18, 0.08) 100%);
+  cursor: pointer;
+}
+
+.kiosk-return-item.is-request:hover {
+  border-color: #f39c12;
+  box-shadow: 0 0 16px rgba(243, 156, 18, 0.3);
+}
+
+.kiosk-return-item-action {
+  font-size: 12px;
+  color: #f39c12;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+
+/* Section dividers within the return list */
+.kiosk-return-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: var(--space-2) var(--space-2) 0;
+  margin-top: var(--space-3);
+}
+
+/* Disambiguation picker for multiple borrowers on the same phone */
+.kiosk-picker-hint {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+  text-align: center;
+}
+
+.kiosk-picker-card {
+  display: block;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.kiosk-picker-card:hover {
+  border-color: var(--magenta);
+  transform: translateY(-1px);
+  box-shadow: 0 0 12px var(--magenta-glow);
+}
+
+.kiosk-picker-name {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.kiosk-picker-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Sign-in / create account panel shown when a phone isn't found in
+   the return flow. Helps users on a new device see the system is
+   working, rather than being told to "ask staff." */
+.kiosk-signin-panel {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-5);
+  width: 100%;
+  max-width: 600px;
+}
+
+.kiosk-signin-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--magenta);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  width: 100%;
+}
+
+.kiosk-signin-icon {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.kiosk-signin-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+}
+
+.kiosk-signin-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 360px;
+  line-height: 1.4;
+}
+
+.kiosk-signin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  align-items: center;
+  margin-top: var(--space-3);
+}
+
+.kiosk-cta-secondary {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+}
+
+.kiosk-cta-secondary:hover {
+  color: var(--text);
+}
+
+/* ── Splash Screen ── */
+.splash-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.splash-logo {
+  height: 64px;
+  width: auto;
+  margin-bottom: var(--space-5);
+  opacity: 0.9;
+}
+
+.splash-title {
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--space-2);
+  letter-spacing: -0.02em;
+}
+
+.splash-subtitle {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-8);
+}
+
+.splash-action {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  /* Reset button defaults so it looks the same as the previous div */
+  background: none;
+  border: none;
+  padding: var(--space-4) var(--space-6);
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  /* Make the entire splash tappable, not just the small "Tap to start" */
+  min-width: 200px;
+  min-height: 80px;
+  border-radius: var(--radius);
+  transition: background-color 0.15s ease;
+}
+
+.splash-action:hover {
+  background: rgba(230, 0, 126, 0.08);
+}
+
+.splash-action:focus-visible {
+  outline: 3px solid var(--magenta);
+  outline-offset: 4px;
+}
+
+.splash-hint {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.splash-pulse {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--magenta);
+  opacity: 0.3;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ── Home Screen ── */
+.logo {
+  height: 32px;
+  width: auto;
+}
+
+.header-status {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.overdue-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-full);
+  opacity: 0.6;
+  transition: all var(--transition);
+}
+
+.overdue-badge[data-count="0"] {
+  opacity: 0.3;
+}
+
+.overdue-badge[data-count]:not([data-count="0"]) {
+  animation: pulse-glow 2s ease-in-out infinite;
+  opacity: 1;
+}
+
+.overdue-count {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--warning);
+}
+
+.overdue-label {
+  font-size: 12px;
+  color: var(--warning);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btn-admin-link {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+
+.btn-admin-link:hover {
+  border-color: var(--magenta);
+  color: var(--magenta);
+  background: var(--magenta-soft);
+}
+
+.home-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-7);
+  padding: var(--space-5);
+}
+
+/* Status bar at the top of the home screen: shows what's out, what's
+   overdue, and today's activity at a glance. */
+.home-status-bar {
+  display: flex;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 700px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.status-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 90px;
+}
+
+.status-chip-overdue {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.status-chip-overdue:hover {
+  transform: translateY(-2px);
+}
+
+.status-chip-overdue.has-overdue {
+  border-color: var(--error);
+  background: var(--error-soft);
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+.status-num {
+  font-size: 36px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1;
+}
+
+.status-chip-overdue .status-num {
+  color: var(--error);
+}
+
+.status-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+
+.home-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  max-width: 400px;
+}
+
+.btn-home-primary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-7);
+  background: linear-gradient(135deg, var(--magenta) 0%, var(--magenta-hover) 100%);
+  border: none;
+  border-radius: var(--radius-xl);
+  color: #fff;
+  text-align: center;
+  cursor: pointer;
+  min-height: 140px;
+  box-shadow: var(--shadow-glow);
+  transition: all var(--transition);
+  font-family: inherit;
+  width: 100%;
+}
+
+.btn-home-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-glow-strong);
+}
+
+.btn-home-primary:active {
+  transform: scale(0.98);
+}
+
+.btn-icon {
+  font-size: 48px;
+  opacity: 0.9;
+}
+
+.btn-label {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.btn-subtitle {
+  font-size: 14px;
+  opacity: 0.8;
+  font-weight: 400;
+}
+
+/* ── Step Navigation ── */
+.btn-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 0 12px;
+  height: 48px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+
+.btn-back::before {
+  content: '‹';
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.btn-back:hover {
+  background: var(--bg-hover);
+  border-color: var(--magenta);
+  color: var(--magenta);
+}
+
+.step-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: all var(--transition);
+}
+
+.dot.active {
+  background: var(--magenta);
+  box-shadow: 0 0 12px var(--magenta-glow);
+}
+
+.line {
+  width: 20px;
+  height: 2px;
+  background: var(--border);
+}
+
+.step-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-left: auto;
+}
+
+/* ── Form Elements ── */
+.input {
+  width: 100%;
+  padding: var(--space-4);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+  transition: all var(--transition);
+  min-height: var(--touch-comfortable);
+}
+
+.input:focus {
+  border-color: var(--magenta);
+  box-shadow: 0 0 0 3px var(--magenta-soft-2);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.input-lg {
+  padding: var(--space-5);
+  font-size: 20px;
+  min-height: 80px;
+}
+
+.input-container {
+  margin-bottom: var(--space-5);
+}
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-lg);
+  font-size: 16px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  min-height: var(--touch-min);
+  transition: all var(--transition);
+  text-decoration: none;
+  border: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--magenta) 0%, var(--magenta-hover) 100%);
+  color: #fff;
+  box-shadow: var(--shadow-glow);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-glow-strong);
+}
+
+.btn-primary:active {
+  transform: scale(0.98);
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--magenta);
+  background: var(--magenta-soft);
+  color: var(--magenta);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-xl {
+  padding: var(--space-6) var(--space-8);
+  font-size: 18px;
+  min-height: 80px;
+  width: 100%;
+  margin-top: var(--space-6);
+}
+
+.btn-success {
+  background: var(--success);
+  color: #fff;
+}
+
+.btn-success:hover {
+  background: #059669;
+  transform: translateY(-1px);
+}
+
+.btn-warning {
+  background: var(--warning);
+  color: #000;
+}
+
+.btn-warning:hover {
+  background: #D97706;
+  transform: translateY(-1px);
+}
+
+.btn-danger {
+  background: var(--error);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #DC2626;
+  transform: translateY(-1px);
+}
+
+.btn-return {
+  flex: 1;
+  margin: var(--space-2);
+  min-height: 80px;
+  font-size: 18px;
+}
+
+/* ── Steps ── */
+.step {
+  display: none;
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+  /* The step is a flex column that grows to fill the screen body.
+     This ensures the input is at the top and the CONTINUE button is
+     at the bottom, with the on-screen keyboard at the bottom of the
+     viewport but NOT covering the button. The screen-body is
+     scrollable so any overflow can be reached by scrolling. */
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.step.active {
+  display: flex;
+}
+
+.step-name-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.step-walkin {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.step-title {
+  font-size: 28px;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: var(--space-8);
+  color: var(--text);
+}
+
+/* The step's content. The CONTINUE button is anchored to the bottom
+   of the step's content area via flex (margin-top: auto), so it sits
+   just above the on-screen keyboard when one is open. The screen-body
+   has padding-bottom set to the keyboard height (via JS) so the
+   user can scroll the button above the keyboard if it's off-screen. */
+.step > .step-continue {
+  margin-top: auto;  /* push to bottom in flex column */
+  flex-shrink: 0;  /* don't let flexbox shrink the button */
+}
+
+/* ── Item Selection ── */
+.item-search {
+  margin-bottom: var(--space-6);
+}
+
+.search-input {
+  background: var(--surface-elevated);
+}
+
+.search-input-lg {
+  font-size: 18px;
+  padding: var(--space-4) var(--space-5);
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto var(--space-5);
+  display: block;
+}
+
+.item-sections {
+  margin-bottom: var(--space-6);
+}
+
+.item-section {
+  margin-bottom: var(--space-6);
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-3);
+}
+
+.frequent-items,
+.all-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--space-3);
+}
+
+.item-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-height: var(--touch-min);
+}
+
+.item-card:hover {
+  border-color: var(--magenta);
+  background: var(--surface-elevated);
+}
+
+.item-card.selected {
+  border-color: var(--magenta);
+  background: var(--magenta-soft);
+}
+
+.item-info {
+  flex: 1;
+}
+
+.item-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--space-1);
+}
+
+.item-category {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.item-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-alt);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+}
+
+/* ── Loan Lists ── */
+.loans-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.loan-section {
+  margin-bottom: var(--space-6);
+}
+
+.loan-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.loan-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-height: 120px;
+  position: relative;
+}
+
+.loan-item:hover {
+  background: var(--surface-elevated);
+  border-color: var(--magenta);
+  transform: translateY(-1px);
+}
+
+.loan-item.overdue {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.loan-item.overdue:hover {
+  border-color: var(--error);
+}
+
+/* Top row of the card: item name + status badge */
+.loan-item .loan-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.loan-item .item-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.loan-badge {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.badge-overdue {
+  background: var(--error);
+  color: #fff;
+}
+
+.badge-today {
+  background: var(--info);
+  color: #fff;
+}
+
+.badge-due-soon {
+  background: var(--warning);
+  color: #000;
+}
+
+/* Middle row: borrower + phone */
+.loan-item .loan-borrower {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 15px;
+  color: var(--text);
+}
+
+.loan-item .borrower-name {
+  font-weight: 600;
+}
+
+.loan-item .borrower-phone {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+/* Bottom row: timing info */
+.loan-item .loan-timing {
+  display: flex;
+  gap: var(--space-5);
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.loan-item .loan-timing .timing-label {
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.loan-item .loan-timing .timing-value {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.loan-item.overdue .loan-timing .timing-value.due {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.loan-details {
+  flex: 1;
+}
+
+.borrower-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.loan-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: var(--space-1);
+}
+
+/* ── Admin Panel ── */
+.admin-stats {
+  display: flex;
+  gap: var(--space-4);
+  margin-left: auto;
+}
+
+.stat {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.stat strong {
+  color: var(--text);
+}
+
+.stat.overdue strong {
+  color: var(--warning);
+}
+
+.tabs {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.tab {
+  flex: 1;
+  min-width: 120px;
+  padding: var(--space-4);
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--magenta);
+  border-bottom-color: var(--magenta);
+  background: var(--magenta-soft);
+}
+
+.tab-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.tab-panel {
+  display: none;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.admin-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.admin-list-item:hover {
+  background: var(--surface-elevated);
+  border-color: var(--magenta);
+}
+
+/* ── Duplicate item review ── */
+.dedup-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-lg);
+}
+
+.dedup-banner-text {
+  flex: 1;
+  min-width: 200px;
+}
+
+.dedup-banner-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.dedup-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dedup-member {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-height: var(--touch-min);
+}
+
+.dedup-member:hover {
+  border-color: var(--magenta);
+}
+
+/* Purely a hint at which entry is selected; the radio's checked state is the
+   source of truth, so an engine without :has() loses only the outline. */
+.dedup-member:has(input:checked) {
+  border-color: var(--magenta);
+  background: var(--magenta-soft);
+}
+
+.dedup-member input[type="radio"] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  accent-color: var(--magenta);
+}
+
+.dedup-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.dedup-actions .btn {
+  min-height: var(--touch-min);
+}
+
+/* ── Settings Panel ── */
+.settings-panel {
+  max-width: 500px;
+}
+
+.setting-group {
+  margin-bottom: var(--space-6);
+}
+
+.setting-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--space-2);
+}
+
+.setting-input {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: all var(--transition);
+}
+
+.setting-input:focus {
+  border-color: var(--magenta);
+  box-shadow: 0 0 0 3px var(--magenta-soft-2);
+}
+
+.setting-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* ── Settings: the Windows-app section ── */
+/* Folder paths are long and unbreakable, so these rows stack the path above
+   its button rather than letting a path shove the button off the panel. */
+.path-row,
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+}
+
+.path-row + .path-row,
+.backup-row + .backup-row {
+  border-top: 1px solid var(--border);
+}
+
+.path-row-main,
+.backup-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.path-value,
+.backup-row-name {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  margin: 2px 0;
+}
+
+.path-row .btn,
+.backup-row .btn {
+  flex: 0 0 auto;
+  min-height: var(--touch-min);
+}
+
+.backup-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 var(--space-4);
+  background: var(--surface);
+}
+
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-min);
+  margin-top: var(--space-4);
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.setting-toggle input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--magenta);
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+/* ── Reports ── */
+.report-toolbar {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+/* Period switch. A segmented control rather than a <select>: this is the one
+   control on the tab a person reaches for, and it is worth two taps saved. */
+.report-periods {
+  display: flex;
+  flex: 1 1 320px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 3px;
+}
+
+.report-period {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--transition), color var(--transition);
+}
+
+.report-period:hover {
+  color: var(--text);
+}
+
+.report-period.active {
+  background: var(--magenta);
+  color: #fff;
+}
+
+.report-toolbar .btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+
+.report-span {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-4);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.report-tile {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.report-tile-warn {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.report-tile-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-tile-label {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.report-tile-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report-empty {
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.report-section {
+  margin-bottom: var(--space-6);
+}
+
+.report-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 var(--space-3);
+}
+
+.report-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 140px;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.report-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.report-bar > span {
+  display: block;
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  background: var(--magenta);
+  opacity: 0.75;
+}
+
+.report-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report-note {
+  margin: var(--space-3) 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: var(--space-2);
+}
+
+.report-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-row-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-row-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.report-row-bar {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--magenta-soft);
+  overflow: hidden;
+}
+
+.report-row-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--magenta);
+}
+
+.report-row-count {
+  flex: 0 0 auto;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-idle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.report-idle-chip {
+  padding: 6px var(--space-3);
+  font-size: 14px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+}
+
+.item-list-empty {
+  grid-column: 1 / -1;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+@media (max-width: 600px) {
+  /* Four period labels side by side on a narrow screen leaves each one
+     ellipsised to "Last 3…". Wrap to two rows instead, and let the export
+     button take its own line. */
+  .report-periods {
+    flex-wrap: wrap;
+  }
+  .report-period {
+    flex: 1 1 calc(50% - 3px);
+  }
+  .report-toolbar .btn {
+    flex: 1 1 100%;
+  }
+  .report-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}
+
+/* ── Login Screen ── */
+.login-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: var(--space-6);
+}
+
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8) var(--space-6);
+  text-align: center;
+  max-width: 400px;
+  width: 100%;
+  box-shadow: var(--shadow-lg);
+}
+
+.login-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--space-6);
+}
+
+.pin-input-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.pin-input {
+  text-align: center;
+  font-size: 24px;
+  letter-spacing: 0.5em;
+  padding: var(--space-5);
+}
+
+.pin-submit {
+  width: 100%;
+}
+
+/* ── Keyboard ── */
+.keyboard {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--surface-elevated);
+  border-top: 1px solid var(--border);
+  padding: var(--space-4);
+  transform: translateY(100%);
+  transition: transform var(--transition-slow);
+  z-index: 100;
+}
+
+.keyboard.visible {
+  transform: translateY(0);
+}
+
+/* Only a keyboard that is actually up may take a tap.
+   Off-screen is a transform, so between hide() dropping `visible` and the end of
+   the slide-out the container is still across the bottom of the screen at
+   z-index 100 with its keys hit-testable -- and a tap landing there while it
+   was leaving went to a keycap instead of the button underneath. The class name
+   now means what it says, independently of how the slide is progressing. */
+.keyboard:not(.visible) {
+  pointer-events: none;
+}
+
+/* Off-screen is not hidden: with transform alone the ~40 keys stayed in the tab
+   order and in the accessibility tree, so Tab walked through an invisible
+   keyboard on every screen. JS sets `inert` (plus aria-hidden) on the container
+   in show()/hide() to take it out of both. That is done in script rather than
+   here because `visibility` is inherited and transitioned -- the keys stayed
+   invisible for the whole 400ms slide -- and because inert leaves the slide
+   animations untouched. */
+
+.keyboard.slide-in-up {
+  animation: slide-in-up var(--transition-slow) var(--ease-out);
+}
+
+.kbd-row {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.kbd {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--touch-comfortable);
+  height: var(--touch-comfortable);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  /* A key is not a scroll surface. Without this the browser can claim a drag
+     that starts on a keycap as a pan, which fires pointercancel and drops the
+     press-and-hold-to-clear halfway through. `manipulation` rather than `none`
+     because it still permits pinch-zoom, and it also removes the double-tap
+     zoom delay -- worth having on a keyboard people tap quickly. */
+  touch-action: manipulation;
+}
+
+.kbd:hover {
+  background: var(--surface-elevated);
+  border-color: var(--magenta);
+}
+
+.kbd:active {
+  transform: scale(0.95);
+  box-shadow: 0 0 12px var(--magenta-glow);
+}
+
+.kbd.space {
+  flex: 1;
+  max-width: 300px;
+}
+
+/* When a row has 3 keys [layout-toggle, space, done], the space should
+   flex to fill, layout-toggle and done stay fixed-width. */
+.kbd-row:has(.kbd.space):has(.kbd.done) .kbd.space {
+  max-width: none;
+}
+
+.kbd.done {
+  min-width: 100px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--magenta);
+  color: #fff;
+  border-color: var(--magenta);
+}
+
+.kbd.done:active {
+  background: var(--magenta-hover);
+  box-shadow: 0 0 16px var(--magenta-glow);
+}
+
+.kbd.backspace,
+.kbd.clear {
+  min-width: 100px;
+  font-size: 14px;
+}
+
+.kbd.layout-toggle {
+  min-width: 80px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--magenta);
+  border-color: var(--magenta-soft-2);
+  background: var(--magenta-soft);
+}
+
+.kbd.layout-toggle:active {
+  background: var(--magenta-soft-2);
+  box-shadow: 0 0 16px var(--magenta-glow);
+}
+
+.kbd-suggestions {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  overflow-x: auto;
+}
+
+.suggestion-chip {
+  padding: var(--space-2) var(--space-4);
+  background: var(--magenta-soft);
+  border: 1px solid var(--magenta);
+  border-radius: var(--radius-full);
+  color: var(--magenta);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+  /* Touch target. Chips were ~33px tall, well under the 64px this app uses
+     everywhere else -- and they sit directly above the keys, so a near-miss
+     lands on a key and types a character instead. */
+  min-height: 56px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.suggestion-chip:hover {
+  background: var(--magenta);
+  color: #fff;
+}
+
+/* ── Toast ── */
+.toast-container {
+  position: fixed;
+  top: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-6);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  margin-bottom: var(--space-3);
+  transform: translateY(-100px);
+  opacity: 0;
+  transition: all var(--transition);
+  pointer-events: auto;
+  max-width: 400px;
+}
+
+.toast.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.toast-success {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.toast-error {
+  border-color: var(--error);
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.toast-undo {
+  background: var(--info-soft);
+  border-color: var(--info);
+  color: var(--info);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.toast-undo-btn {
+  background: transparent;
+  border: 1px solid var(--info);
+  border-radius: var(--radius);
+  color: var(--info);
+  padding: var(--space-2) var(--space-3);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+  /* This is a 5-second-window affordance on a touch kiosk -- the one button a
+     borrower has to reach in a hurry after a wrong check-in. It was ~37px tall,
+     the smallest target in the app. */
+  min-height: 48px;
+  min-width: 88px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toast-undo-btn:hover {
+  background: var(--info);
+  color: #fff;
+}
+
+/* ── Dialog ── */
+.dialog-container {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition);
+  pointer-events: none;
+}
+
+.dialog-container.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The marker has to beat `.show`, not merely sit next to it.
+   Declared after it on purpose, for the specificity tie: `.hidden` above is a
+   no-op on this element (same specificity as `.dialog-container`, which comes
+   later), so a container carrying both classes was a live full-screen overlay
+   around nothing at all -- `opacity: 1` and `pointer-events: auto`. That was
+   not hypothetical: a dialog closed before its fade-in frame ran left `show`
+   behind on a container the teardown had already emptied, and the app silently
+   stopped responding to taps until the next dialog opened. The frame is guarded
+   at the source now, so this is the second lock -- it makes the class name mean
+   what it says. */
+.dialog-container.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.dialog-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8);
+  max-width: 500px;
+  width: 90vw;
+  box-shadow: var(--shadow-lg);
+  transform: scale(0.95);
+  transition: transform var(--transition);
+  position: relative;
+  z-index: 1;
+}
+
+.dialog-container.show .dialog-card {
+  transform: scale(1);
+}
+
+/* ── Confirmation Cards ── */
+.confirmation-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+  width: 100%;
+  max-width: 600px;
+}
+
+/* "Already has N items out" section on the confirm screen. Helps the
+   receptionist spot duplicate checkouts before they happen. */
+.confirm-current-loans {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.current-loans-header {
+  color: var(--text);
+  font-weight: 700;
+  margin-bottom: var(--space-2);
+}
+
+.current-loans-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.current-loan-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  color: var(--text);
+}
+
+.current-loan-item.overdue .cli-name {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.cli-name {
+  font-weight: 500;
+}
+
+.cli-time {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Print receipt toggle on the confirm step. */
+.confirm-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 600px;
+}
+
+.btn-print-receipt {
+  font-size: 13px;
+  padding: 6px 14px;
+  color: var(--text-muted);
+}
+
+.btn-print-receipt.btn-print-on {
+  background: var(--magenta-soft);
+  color: var(--magenta);
+  border: 1px solid var(--magenta);
+}
+
+.confirm-borrower {
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.confirm-phone {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--space-1);
+}
+
+.confirm-name {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.confirm-items {
+  margin-bottom: var(--space-4);
+}
+
+.confirm-due {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.due-label {
+  font-weight: 600;
+}
+
+.due-time {
+  color: var(--text);
+}
+
+.return-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.return-borrower {
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.return-name {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--space-1);
+}
+
+.return-phone {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.return-item {
+  margin-bottom: var(--space-4);
+}
+
+.return-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.notes-section {
+  margin-top: var(--space-6);
+}
+
+.notes-input {
+  resize: vertical;
+}
+
+/* ── Build Info ── */
+.build-info {
+  position: fixed;
+  bottom: var(--space-3);
+  right: var(--space-3);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+/* ── Animations ── */
+@keyframes pulse-glow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.8;
+    box-shadow: 0 0 20px var(--magenta-glow);
+  }
+}
+
+@keyframes slide-in-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes checkmark-draw {
+  0% {
+    stroke-dasharray: 0 100;
+  }
+  100% {
+    stroke-dasharray: 100 0;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Responsive Design ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (pointer: coarse) {
+  /* Enlarge touch targets for touch devices */
+  .btn {
+    min-height: var(--touch-comfortable);
+  }
+  
+  .input {
+    min-height: var(--touch-comfortable);
+  }
+  
+  .kbd {
+    min-width: 60px;
+    height: 60px;
+  }
+  
+  .tab {
+    min-height: var(--touch-comfortable);
+  }
+  
+  /* Remove hover effects that can get stuck on touch */
+  .btn:hover,
+  .item-card:hover,
+  .loan-item:hover {
+    transform: none;
+  }
+  
+  /* Add active states for touch feedback */
+  .btn:active {
+    transform: scale(0.96);
+  }
+  
+  .kbd:active {
+    transform: scale(0.9);
+  }
+}
+
+/* ── Tablet Optimizations ── */
+@media (max-width: 1024px) {
+  .home-actions {
+    max-width: 500px;
+  }
+  
+  .btn-home-primary {
+    min-height: 120px;
+  }
+  
+  .frequent-items,
+  .all-items {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  }
+  
+  .return-actions {
+    flex-direction: column;
+  }
+  
+  .btn-return {
+    margin: var(--space-2) 0;
+  }
+}
+
+/* ── Mobile Optimizations ── */
+@media (max-width: 768px) {
+  .screen-body {
+    padding: var(--space-4);
+  }
+  
+  .step-title {
+    font-size: 24px;
+  }
+  
+  .btn-label {
+    font-size: 20px;
+  }
+  
+  .btn-icon {
+    font-size: 40px;
+  }
+  
+  .frequent-items,
+  .all-items {
+    grid-template-columns: 1fr;
+  }
+  
+  .tabs {
+    overflow-x: auto;
+  }
+  
+  .tab {
+    min-width: 100px;
+    flex: none;
+  }
+  
+  .admin-stats {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  
+  .return-actions {
+    flex-direction: column;
+  }
+  
+  .setting-actions {
+    flex-direction: column;
+  }
+  
+  .setting-actions .btn {
+    width: 100%;
+  }
+}
+
+/* ── Kiosk Responsive: Tablet Portrait (1024px or narrower) ── */
+@media (max-width: 1024px) {
+  .kiosk-greeting {
+    font-size: 48px;
+  }
+  .kiosk-subtitle {
+    font-size: 20px;
+  }
+  .kiosk-actions {
+    gap: var(--space-5);
+  }
+  .btn-kiosk {
+    min-width: 240px;
+    min-height: 200px;
+    padding: var(--space-5);
+  }
+  .kiosk-icon {
+    font-size: 64px;
+  }
+  .kiosk-label {
+    font-size: 24px;
+  }
+  .kiosk-step-title {
+    font-size: 36px;
+  }
+  .kiosk-step-sub {
+    font-size: 18px;
+  }
+  .kiosk-cta {
+    min-width: 240px;
+    font-size: 20px;
+  }
+  .kiosk-done-icon {
+    font-size: 72px;
+  }
+}
+
+/* ── Kiosk Responsive: Mobile (600px or narrower) ── */
+@media (max-width: 600px) {
+  .kiosk-header {
+    padding: var(--space-4);
+  }
+  .kiosk-body {
+    gap: var(--space-5);
+    padding: var(--space-4);
+  }
+  .kiosk-greeting {
+    font-size: 36px;
+  }
+  .kiosk-subtitle {
+    font-size: 16px;
+  }
+  .kiosk-actions {
+    flex-direction: column;
+    gap: var(--space-3);
+    width: 100%;
+    max-width: 400px;
+  }
+  .btn-kiosk {
+    width: 100%;
+    min-width: 0;
+    min-height: 140px;
+    padding: var(--space-4);
+    flex-direction: row;
+    text-align: left;
+    gap: var(--space-4);
+  }
+  .kiosk-icon {
+    font-size: 48px;
+  }
+  .kiosk-label {
+    font-size: 20px;
+  }
+  .kiosk-sub {
+    font-size: 12px;
+  }
+  .kiosk-flow-body {
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+  .kiosk-step-title {
+    font-size: 28px;
+  }
+  .kiosk-step-sub {
+    font-size: 14px;
+  }
+  .kiosk-input {
+    font-size: 18px !important;
+    padding: var(--space-3) !important;
+  }
+  .kiosk-cta {
+    width: 100%;
+    min-width: 0;
+  }
+  .kiosk-done-icon {
+    font-size: 56px;
+  }
+  .kiosk-done-card {
+    padding: var(--space-3);
+  }
+  .kiosk-done-text {
+    font-size: 16px;
+  }
+  .kiosk-return-list {
+    max-height: 60vh;
+  }
+  .kiosk-return-item {
+    padding: var(--space-3);
+  }
+  .kiosk-return-item-name {
+    font-size: 16px;
+  }
+  .kiosk-signin-card {
+    padding: var(--space-4);
+  }
+  .kiosk-signin-title {
+    font-size: 14px;
+  }
+  .btn-back-kiosk {
+    left: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    font-size: 16px;
+  }
+  .btn-back-kiosk::before {
+    font-size: 22px;
+  }
+  .kiosk-footer {
+    position: relative;
+    margin-top: var(--space-5);
+  }
+  .btn-kiosk-staff {
+    font-size: 13px;
+  }
+  .kiosk-picker-card {
+    padding: var(--space-3);
+  }
+  .kiosk-picker-name {
+    font-size: 16px;
+  }
+  .kiosk-section-divider,
+  .kiosk-return-section-title {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+/* ── Kiosk Responsive: Tiny screens (under 400px, rare) ── */
+@media (max-width: 400px) {
+  .kiosk-greeting {
+    font-size: 28px;
+  }
+  .kiosk-label {
+    font-size: 18px;
+  }
+  .kiosk-step-title {
+    font-size: 22px;
+  }
+}
+
+/* ── Safe-area insets for notched phones / tablets with system bars ── */
+@supports (padding: env(safe-area-inset-top)) {
+  .kiosk-body {
+    padding-top: max(var(--space-7), env(safe-area-inset-top));
+    padding-bottom: max(var(--space-7), env(safe-area-inset-bottom));
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* ── High contrast / forced colors (accessibility) ── */
+@media (forced-colors: active) {
+  .btn-kiosk,
+  .kiosk-return-item,
+  .kiosk-signin-card,
+  .btn-back-kiosk {
+    border: 2px solid ButtonText;
+  }
+}
+
+/* ── Print Styles ── */
+@media print {
+  .screen {
+    position: static;
+    background: white;
+    color: black;
+  }
+
+  .screen-header,
+  .btn-back,
+  .keyboard,
+  .toast-container,
+  .dialog-container,
+  .build-info {
+    display: none !important;
+  }
+
+  .screen-body {
+    padding: 0;
+  }
+
+  .confirmation-card,
+  .return-card {
+    border: 2px solid black;
+    background: white;
+  }
+}
+
+/* Hidden by default; populated by JS for print receipts */
+.print-only {
+  display: none;
+}
+
+@media print {
+  .print-only {
+    display: block !important;
+  }
+  .screen, .keyboard, .toast-container, .dialog-container, .build-info, .btn-back {
+    display: none !important;
+  }
+}
+
+.print-receipt-content {
+  font-family: var(--font-sans);
+  max-width: 400px;
+  padding: 20px;
+  color: #000;
+  background: #fff;
+}
+
+.print-receipt-content .receipt-title {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+  border-bottom: 2px solid #000;
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+}
+
+.print-receipt-content .receipt-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 14px;
+  border-bottom: 1px dashed #ccc;
+}
+
+.print-receipt-content .receipt-row .label {
+  color: #555;
+}
+
+.print-receipt-content .receipt-item {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 12px 0;
+  padding: 8px;
+  background: #f5f5f5;
+  border: 1px solid #ccc;
+}
+
+.print-receipt-content .receipt-footer {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 2px solid #000;
+  text-align: center;
+  font-size: 12px;
+  color: #555;
+}

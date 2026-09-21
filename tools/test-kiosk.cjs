@@ -1,0 +1,549 @@
+// The kiosk: the unattended public surface, and the one with no other coverage.
+//
+//   node tools/test-kiosk.cjs
+//
+// This is where the worst findings in the review lived (D1-D7) -- a stranger
+// could reach the staff screens, close their own loan, invent catalog items, or
+// see other people's borrowing. Each of those is pinned below, end to end and
+// through the real UI, on a fresh profile with an empty database.
+//
+// It seeds the catalog the only way the app allows (a staff member adds items),
+// so it also exercises the staff-side entry: press-and-hold the logo, then PIN.
+
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
+const puppeteer = require("puppeteer");
+
+const ROOT = path.join(__dirname, "..", "web");
+const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const PORT = 8798;
+const PIN = "1234";
+// The staff-seeded borrower (exists, has nothing out), the kiosk borrower, and
+// a number this device has never seen.
+const SEED_PHONE = "4165550100";
+const KIOSK_PHONE = "4165550177";
+const STRANGER_PHONE = "4165550188";
+
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png"
+};
+
+let failures = 0;
+const check = (name, cond, detail) => {
+  if (cond) {
+    console.log(`  ok  ${name}`);
+    return;
+  }
+  failures++;
+  console.error(`FAIL  ${name}${detail === undefined ? "" : "  -> " + detail}`);
+};
+
+function startServer() {
+  const server = http.createServer((req, res) => {
+    const rel = decodeURIComponent(req.url.split("?")[0]);
+    if (rel === "/favicon.ico") return void res.writeHead(204).end();
+    const file = path.join(ROOT, rel === "/" ? "/index.html" : rel);
+    fs.readFile(file, (err, body) => {
+      if (err) return void res.writeHead(404).end("not found");
+      res.writeHead(200, {
+        "content-type": TYPES[path.extname(file)] || "application/octet-stream",
+        "cache-control": "no-store"
+      });
+      res.end(body);
+    });
+  });
+  return new Promise((r) => server.listen(PORT, "127.0.0.1", () => r(server)));
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+(async () => {
+  console.log("\nThe kiosk\n");
+
+  const server = await startServer();
+  const browser = await puppeteer.launch({
+    executablePath: EDGE,
+    headless: "new",
+    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+  });
+
+  const errors = [];
+
+  try {
+    const page = await browser.newPage();
+    page.on("console", (m) => {
+      if (m.type() === "error") errors.push(m.text());
+    });
+    page.on("pageerror", (e) => errors.push(String(e && e.message)));
+    await page.setViewport({ width: 1024, height: 1100 });
+
+    await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 30000 });
+
+    // Headless never finishes a CSS transition, so anything measured mid-slide
+    // is measured wrong. Nothing here asserts on animation, but removing them
+    // keeps hit-testing honest.
+    await page.addStyleTag({
+      content: "*, *::before, *::after { transition: none !important; animation: none !important; }"
+    });
+
+    const screen = () =>
+      page.evaluate(() => {
+        const el = document.querySelector(".screen:not(.hidden)");
+        return el ? el.id : null;
+      });
+
+    // Scoped to a screen: two screens carry [data-action="kiosk-back-home"], so
+    // a document-wide querySelector would happily click the hidden one.
+    const clickIn = (screenId, sel) =>
+      page.evaluate(
+        ({ screenId, sel }) => {
+          const root = document.getElementById(screenId);
+          const el = root && root.querySelector(sel);
+          if (!el) return el === null ? "no element: " + sel : "no screen";
+          el.scrollIntoView({ block: "center", behavior: "instant" });
+          el.click();
+          return "ok";
+        },
+        { screenId, sel }
+      );
+
+    const textIn = (screenId, sel) =>
+      page.evaluate(
+        ({ screenId, sel }) => {
+          const root = document.getElementById(screenId);
+          const el = root && root.querySelector(sel);
+          return el ? el.textContent.trim() : null;
+        },
+        { screenId, sel }
+      );
+
+    const toastText = () => page.evaluate(() => (document.getElementById("toast") || {}).textContent || "");
+    // A stale toast would make a "the app refused it" check pass on the previous
+    // message, so clear it before each assertion that reads one.
+    const clearToasts = () =>
+      page.evaluate(() => {
+        const c = document.getElementById("toast");
+        if (c) c.textContent = "";
+      });
+    const waitToast = (re) => page.waitForFunction((src) => new RegExp(src).test((document.getElementById("toast") || {}).textContent || ""), { timeout: 8000 }, re.source);
+
+    const fill = (sel, value) =>
+      page.evaluate(
+        ({ sel, value }) => {
+          const el = document.querySelector(sel);
+          el.focus();
+          el.value = value;
+          try {
+            el.setSelectionRange(value.length, value.length);
+          } catch (_) {}
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        },
+        { sel, value }
+      );
+
+    const gotoWelcome = () => page.evaluate(() => window.app.goToScreen("welcome"));
+
+    const logoPoint = () =>
+      page.evaluate(() => {
+        const el = document.querySelector("#screen-welcome .kiosk-logo");
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const at = document.elementFromPoint(x, y);
+        return {
+          x,
+          y,
+          hits: !!at && (at === el || el.contains(at) || at.contains(el)),
+          atPoint: at ? at.className || at.tagName : null
+        };
+      });
+
+    // A toast sits top-centre with pointer-events: auto and will happily swallow
+    // the press, so the hold silently never starts. Clear them, and check the
+    // point really is the logo, so a miss is reported rather than timing out.
+    const holdLogo = async () => {
+      await clearToasts();
+      const p = await logoPoint();
+      // The logo only measures correctly while the welcome screen is the visible
+      // one; on any other screen the rect is all zeros and the press lands in the
+      // corner, which shows up as a bare timeout. Say so instead.
+      if (!p || !p.hits) {
+        throw new Error(`the logo is not reachable from ${await screen()}: ${JSON.stringify(p)}`);
+      }
+      await page.mouse.move(p.x, p.y);
+      await page.mouse.down();
+      await sleep(2400);
+      await page.mouse.up();
+      return p;
+    };
+
+    // ── 1. the kiosk cannot be navigated out of ───────────────────────────
+    for (const target of ["home", "checkout", "admin-login", "checkin"]) {
+      const reached = await page.evaluate(async (t) => {
+        window.app.goToScreen(t);
+        await new Promise((r) => setTimeout(r, 200));
+        const el = document.querySelector(".screen:not(.hidden)");
+        return el ? el.id : null;
+      }, target);
+      check(`goToScreen("${target}") from the kiosk is refused`, reached === "screen-welcome", `ended on ${reached}`);
+    }
+
+    const staffLinkOnKiosk = await page.evaluate(() => {
+      const w = document.getElementById("screen-welcome");
+      const links = w.querySelectorAll(".btn-admin-link, [onclick*='admin']");
+      const visible = Array.from(links).filter((l) => l.offsetParent !== null);
+      return { total: links.length, visible: visible.length };
+    });
+    check(
+      "the welcome screen carries no visible staff link",
+      staffLinkOnKiosk.visible === 0,
+      JSON.stringify(staffLinkOnKiosk)
+    );
+
+    // ── 2. staff entry is a deliberate hold, not a tap ────────────────────
+    // Every hold below depends on the press reaching the logo, so assert that
+    // once, by name, instead of letting a miss show up as a timeout.
+    const firstPoint = await logoPoint();
+    check("the logo is reachable on the welcome screen", !!firstPoint && firstPoint.hits, JSON.stringify(firstPoint));
+
+    await page.mouse.click(firstPoint.x, firstPoint.y);
+    await sleep(400);
+    check("a quick tap on the logo does not open the staff login", (await screen()) === "screen-welcome", await screen());
+
+    await holdLogo();
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    check("a two-second hold on the logo opens the staff login", true);
+
+    // Cancelling must go back to the kiosk, never to the staff home screen.
+    await clickIn("screen-admin-login", ".pin-cancel, [data-action='cancel']");
+    await sleep(300);
+    let afterCancel = await screen();
+    if (afterCancel === "screen-admin-login") {
+      // Fall back to the app's own cancel if the selector above missed.
+      await page.evaluate(() => window.app.cancelAdminLogin());
+      await sleep(300);
+      afterCancel = await screen();
+    }
+    check("cancelling the login returns to the kiosk, not the staff home", afterCancel === "screen-welcome", afterCancel);
+
+    // ── 3. get in, and seed the catalog ───────────────────────────────────
+    await holdLogo();
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    await page.type("#screen-admin-login .pin-input", PIN);
+    await clickIn("screen-admin-login", ".pin-submit");
+    await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 15000 });
+    check("the PIN opens the admin panel", true);
+
+    // The catalog can only be filled from the staff side, which is the point of
+    // D5: the public cannot invent items.
+    await page.evaluate(() => window.dispatchEvent(new Event("frontdesk:checkout-start")));
+    await page.waitForSelector("#screen-checkout:not(.hidden)", { timeout: 10000 });
+    await page.waitForFunction(() => !!window.__checkoutFlow && window.__checkoutFlow._wireOnce, { timeout: 10000 });
+
+    await page.type("#screen-checkout .step-phone .input", "4165550100");
+    await clickIn("screen-checkout", ".step-phone .step-continue");
+    await page.waitForFunction(() => !document.querySelector("#screen-checkout .step-name").classList.contains("hidden"), { timeout: 15000 });
+    await page.type("#screen-checkout .step-name .input", "Seed Person");
+    await clickIn("screen-checkout", ".step-name .step-continue");
+    await page.waitForFunction(() => !document.querySelector("#screen-checkout .step-items").classList.contains("hidden"), { timeout: 15000 });
+
+    for (const name of ["Clicker", "HDMI dongle"]) {
+      await fill("#screen-checkout .step-items .search-input", name);
+      await page.waitForSelector("#screen-checkout .all-items .add-new-row", { timeout: 15000 });
+      await clickIn("screen-checkout", ".all-items .add-new-row");
+      await page.waitForFunction((n) => document.querySelectorAll("#screen-checkout .all-items .item-card").length === n, { timeout: 15000 }, ["Clicker", "HDMI dongle"].indexOf(name) + 1);
+    }
+    const catalogCount = await page.evaluate(() => document.querySelectorAll("#screen-checkout .all-items .item-card").length);
+    check("two items are in the catalog", catalogCount === 2, catalogCount);
+
+    // Leave without committing, so both items stay on the shelf.
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    // ── 4. a borrower borrows ─────────────────────────────────────────────
+    await clickIn("screen-welcome", ".btn-kiosk-borrow");
+    await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 8000 });
+    check("Borrow something opens the phone step", true);
+
+    await fill("#kiosk-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-borrow-phone", '[data-action="kiosk-phone-continue"]');
+    await page.waitForSelector("#screen-kiosk-borrow-name:not(.hidden)", { timeout: 8000 });
+    check("an unknown number is asked for a name", true);
+
+    await fill("#kiosk-name", "Kiosk Person");
+    await clickIn("screen-kiosk-borrow-name", '[data-action="kiosk-name-continue"]');
+    await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)", { timeout: 8000 });
+    check("the item step greets the borrower by name", (await textIn("screen-kiosk-borrow-need", "#kiosk-greeting-name")) === "Kiosk Person");
+
+    await fill("#kiosk-need", "Clicker");
+    await page.waitForSelector("#kiosk-need-suggestions .kiosk-suggestion", { timeout: 8000 });
+    const picks = () =>
+      page.evaluate(() =>
+        Array.from(document.querySelectorAll("#kiosk-need-suggestions .kiosk-suggestion")).map((b) => ({
+          text: (b.querySelector("span") || {}).textContent || "",
+          disabled: !!b.disabled,
+          unavailable: b.classList.contains("is-unavailable")
+        }))
+      );
+    const clickerPick = (await picks()).find((p) => p.text.toLowerCase() === "clicker");
+    check("the item list offers the catalog item", !!clickerPick && !clickerPick.disabled, JSON.stringify(await picks()));
+
+    await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll("#kiosk-need-suggestions .kiosk-suggestion")).find((x) => ((x.querySelector("span") || {}).textContent || "").toLowerCase() === "clicker");
+      if (b) b.click();
+    });
+    await page.waitForSelector("#screen-kiosk-borrow-done:not(.hidden)", { timeout: 15000 });
+    check("tapping it completes the checkout", true);
+    check("and the confirmation names the item", (await textIn("screen-kiosk-borrow-done", "#kiosk-done-text")) === "Clicker", await textIn("screen-kiosk-borrow-done", "#kiosk-done-text"));
+    await clickIn("screen-kiosk-borrow-done", '[data-action="kiosk-back-home"]');
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    // ── 5. free text cannot invent a catalog item ─────────────────────────
+    await clickIn("screen-welcome", ".btn-kiosk-borrow");
+    await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-borrow-phone", '[data-action="kiosk-phone-continue"]');
+    // A known number goes straight to the item step -- no name asked again.
+    await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)", { timeout: 8000 });
+    check("a returning borrower is not asked for their name again", true);
+
+    await fill("#kiosk-need", "Squeaky Rubber Duck");
+    await clearToasts();
+    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
+    await waitToast(/not on the list/i);
+    check("an item that is not in the catalog is refused", /not on the list/i.test(await toastText()), await toastText());
+    check("and the borrower stays on the item step", (await screen()) === "screen-kiosk-borrow-need", await screen());
+
+    // ── 6. an item that is already out cannot be taken twice ──────────────
+    await fill("#kiosk-need", "Clicker");
+    await page.waitForFunction(() => {
+      const b = Array.from(document.querySelectorAll("#kiosk-need-suggestions .kiosk-suggestion")).find((x) => ((x.querySelector("span") || {}).textContent || "").toLowerCase() === "clicker");
+      return !!b && b.disabled;
+    }, { timeout: 8000 });
+    const outPick = (await picks()).find((p) => p.text.toLowerCase() === "clicker");
+    check("an item that is already out is shown disabled", !!outPick && outPick.disabled && outPick.unavailable, JSON.stringify(outPick));
+
+    await clearToasts();
+    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
+    await waitToast(/already out/i);
+    check("and taking it by name is refused too", /already out/i.test(await toastText()), await toastText());
+    check("still on the item step", (await screen()) === "screen-kiosk-borrow-need", await screen());
+
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    // ── 7. returns: your own records, and never a false "all clear" ───────
+    // A number this device has never seen must not be told "You're all clear" --
+    // that would be a lie about a record it simply does not have.
+    await clickIn("screen-welcome", ".btn-kiosk-return");
+    await page.waitForSelector("#screen-kiosk-return-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-return-phone", STRANGER_PHONE);
+    await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
+    await page.waitForSelector("#screen-kiosk-return-phone .kiosk-signin-panel", { timeout: 10000 });
+    check("an unknown number is offered sign-in rather than an empty list", true);
+    check("and never reaches the item list", (await screen()) === "screen-kiosk-return-phone", await screen());
+
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    // The seeded borrower is real and has nothing out. Their list must be empty,
+    // and must not contain the other borrower's item.
+    await clickIn("screen-welcome", ".btn-kiosk-return");
+    await page.waitForSelector("#screen-kiosk-return-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-return-phone", SEED_PHONE);
+    await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
+    await page.waitForSelector("#screen-kiosk-return-items .kiosk-return-empty", { timeout: 10000 });
+    const seedPanel = await textIn("screen-kiosk-return-items", "#kiosk-return-list");
+    check("a borrower with nothing out sees an empty list", /all clear/i.test(seedPanel || ""), seedPanel);
+    check("and it does not show another borrower's item", !/Clicker/.test(seedPanel || ""), seedPanel);
+
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+    await clickIn("screen-welcome", ".btn-kiosk-return");
+    await page.waitForSelector("#screen-kiosk-return-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-return-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
+    await page.waitForSelector("#kiosk-return-list .kiosk-return-item", { timeout: 10000 });
+    const ownRows = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("#kiosk-return-list .kiosk-return-item")).map((r) => (r.querySelector(".kiosk-return-item-name") || {}).textContent || "")
+    );
+    check("the borrower's own loan is listed", ownRows.length === 1 && /Clicker/.test(ownRows[0]), JSON.stringify(ownRows));
+
+    // ── 8. a return is a request, not a close ─────────────────────────────
+    await page.evaluate(() => {
+      const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
+      if (row) row.click();
+    });
+
+    // Handing something back is a commitment, so it is confirmed first rather
+    // than fired by a stray tap.
+    await page.waitForSelector(".dialog-actions .btn", { timeout: 10000 });
+    const dialogButtons = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".dialog-actions .btn")).map((b) => b.textContent.trim())
+    );
+    check("tapping to return asks for confirmation first", dialogButtons.some((t) => /handing it in/i.test(t)), JSON.stringify(dialogButtons));
+
+    await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll(".dialog-actions .btn")).find((x) => /handing it in/i.test(x.textContent));
+      if (b) b.click();
+    });
+    // Condition is asked, not assumed (D7): "good" used to be hardcoded, which
+    // silently overwrote whatever the borrower actually reported.
+    await page.waitForSelector('.kiosk-condition-actions [data-cond="good"]', { timeout: 10000 });
+    check("and then asks whether it is coming back in good shape", true);
+
+    await page.evaluate(() => document.querySelector('[data-cond="good"]').click());
+    await page.waitForFunction(() => {
+      const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
+      return !!row && row.classList.contains("is-pending");
+    }, { timeout: 10000 });
+    check("reporting a return marks it pending", true);
+
+    const pendingAfter = await page.evaluate(() => document.querySelectorAll("#kiosk-return-list .kiosk-return-item.is-pending").length);
+    await page.evaluate(() => {
+      const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
+      if (row) row.click();
+    });
+    await sleep(400);
+    const pendingAfter2 = await page.evaluate(() => document.querySelectorAll("#kiosk-return-list .kiosk-return-item.is-pending").length);
+    check("tapping it again does not double-report", pendingAfter === 1 && pendingAfter2 === 1, `${pendingAfter} -> ${pendingAfter2}`);
+
+    // The loan must still be open: if the borrower's tap had closed it, the item
+    // would be back on the shelf and pickable again.
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+    await clickIn("screen-welcome", ".btn-kiosk-borrow");
+    await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-borrow-phone", '[data-action="kiosk-phone-continue"]');
+    await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-need", "Clicker");
+    await page.waitForFunction(() => {
+      const b = Array.from(document.querySelectorAll("#kiosk-need-suggestions .kiosk-suggestion")).find((x) => ((x.querySelector("span") || {}).textContent || "").toLowerCase() === "clicker");
+      return !!b && b.disabled;
+    }, { timeout: 8000 });
+    check("the loan is still open, so the item is still not pickable", true);
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    // ── 9. staff confirm closes it ────────────────────────────────────────
+    await holdLogo();
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    await page.type("#screen-admin-login .pin-input", PIN);
+    await clickIn("screen-admin-login", ".pin-submit");
+    await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 15000 });
+
+    await clickIn("screen-admin", '.tab[data-tab="queue"]');
+    await page.waitForSelector('#screen-admin [data-action="confirm-return"]', { timeout: 15000 });
+    check("the queue lists the return to confirm", true);
+    await clickIn("screen-admin", '[data-action="confirm-return"]');
+    await page.waitForFunction(() => !document.querySelector('#screen-admin [data-action="confirm-return"]'), { timeout: 15000 });
+    check("confirming it clears it from the queue", true);
+
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+    await clickIn("screen-welcome", ".btn-kiosk-borrow");
+    await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-borrow-phone", '[data-action="kiosk-phone-continue"]');
+    await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-need", "Clicker");
+    await page.waitForSelector("#kiosk-need-suggestions .kiosk-suggestion", { timeout: 8000 });
+    const backOnShelf = (await picks()).find((p) => p.text.toLowerCase() === "clicker");
+    check("once staff confirm, the item is pickable again", !!backOnShelf && !backOnShelf.disabled, JSON.stringify(backOnShelf));
+
+    // ── 10. a damaged report survives all the way to the staff queue ──────
+    // The page is already on the item step from the check above.
+    await fill("#kiosk-need", "HDMI dongle");
+    await page.waitForSelector("#kiosk-need-suggestions .kiosk-suggestion", { timeout: 8000 });
+    await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll("#kiosk-need-suggestions .kiosk-suggestion")).find((x) => ((x.querySelector("span") || {}).textContent || "").toLowerCase() === "hdmi dongle");
+      if (b) b.click();
+    });
+    await page.waitForSelector("#screen-kiosk-borrow-done:not(.hidden)", { timeout: 15000 });
+    const doneName = (await textIn("screen-kiosk-borrow-done", "#kiosk-done-text")) || "";
+    // The app sentence-cases catalog names, so this is stored as "Hdmi Dongle".
+    check("the second item can be borrowed", doneName.toLowerCase() === "hdmi dongle", doneName);
+    await clickIn("screen-kiosk-borrow-done", '[data-action="kiosk-back-home"]');
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+
+    await clickIn("screen-welcome", ".btn-kiosk-return");
+    await page.waitForSelector("#screen-kiosk-return-phone:not(.hidden)", { timeout: 8000 });
+    await fill("#kiosk-return-phone", KIOSK_PHONE);
+    await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
+    await page.waitForSelector("#kiosk-return-list .kiosk-return-item", { timeout: 10000 });
+    await page.evaluate(() => {
+      const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
+      if (row) row.click();
+    });
+    await page.waitForSelector(".dialog-actions .btn", { timeout: 10000 });
+    await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll(".dialog-actions .btn")).find((x) => /handing it in/i.test(x.textContent));
+      if (b) b.click();
+    });
+    await page.waitForSelector('[data-cond="damaged"]', { timeout: 10000 });
+    await page.evaluate(() => document.querySelector('[data-cond="damaged"]').click());
+    await page.waitForSelector('.kiosk-condition-note[data-role="note-wrap"]:not(.hidden)', { timeout: 8000 });
+    check("choosing Something's wrong asks for a note", true);
+
+    // An empty note must not be accepted; capturing what is actually wrong is
+    // the entire reason this step exists.
+    await clearToasts();
+    await page.evaluate(() => document.querySelector('[data-role="note-submit"]').click());
+    await waitToast(/what's wrong/i);
+    check("an empty note is refused", /what's wrong/i.test(await toastText()), await toastText());
+    const panelStays = await page.evaluate(() => !!document.querySelector('[data-role="note-wrap"]:not(.hidden)'));
+    check("and the panel stays open until something is said", panelStays);
+
+    await fill('[data-role="note"]', "one key is bent");
+    await page.evaluate(() => document.querySelector('[data-role="note-submit"]').click());
+    await page.waitForFunction(() => {
+      const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
+      return !!row && row.classList.contains("is-pending");
+    }, { timeout: 10000 });
+    check("sending the note marks it pending", true);
+
+    // Back to the kiosk first: the staff hold reads the welcome logo's position,
+    // and the tablet sits idle on the kiosk between borrowers anyway.
+    await gotoWelcome();
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+    await holdLogo();
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    await page.type("#screen-admin-login .pin-input", PIN);
+    await clickIn("screen-admin-login", ".pin-submit");
+    await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 15000 });
+    await clickIn("screen-admin", '.tab[data-tab="queue"]');
+    await page.waitForFunction(() => /one key is bent/.test(document.querySelector("#screen-admin").textContent), { timeout: 15000 });
+    const queueRow = await page.evaluate(() => {
+      const row = Array.from(document.querySelectorAll("#screen-admin .queue-row")).find((r) => /one key is bent/.test(r.textContent));
+      return row
+        ? { note: /one key is bent/.test(row.textContent), label: (row.querySelector('[data-action="confirm-return"]') || {}).textContent || "" }
+        : null;
+    });
+    check("the borrower's note reaches the staff queue", !!queueRow && queueRow.note, JSON.stringify(queueRow));
+    check("and the button says it is accepting damage, not good condition", !!queueRow && /damaged/i.test(queueRow.label), JSON.stringify(queueRow));
+
+    const realErrors = errors.filter((e) => !/favicon/.test(e));
+    check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));
+  } finally {
+    await browser.close();
+    server.close();
+  }
+
+  if (failures) {
+    console.error(`\n${failures} check(s) failed.\n`);
+    process.exit(1);
+  }
+  console.log("\nall checks passed\n");
+})().catch((err) => {
+  console.error("\nThe run itself failed:", err && err.message);
+  process.exit(1);
+});
