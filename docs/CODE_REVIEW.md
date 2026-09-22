@@ -12,8 +12,11 @@ this document and have since drifted** — Phases 1–5, 10 and 11 all edited th
 file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
-**Status at 2026-09-21: Phases 1–11 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**nine** suites, 504 checks, all green). The
+**Status at 2026-09-22: Phases 1–12 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**eleven** suites, 662 checks, all green) —
+except the items listed under "Still open", which are the findings from the most
+recent passes that remain unfixed, and which are tracked as issues on this
+repository. The
 sections that follow are kept as the record of what was wrong and why — they are
 no longer a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for
 shipping the app (icon, packaging, and what the package could have carried out
@@ -21,7 +24,8 @@ with it), "Phase 9" for the PIN screen and the controls on it that could not be
 used, "Phase 10" for the headings that were not headings and the light-theme
 contrast nobody had measured, "Phase 11" for the rest of that contrast work —
 the accents used as ink, and a brand mark that was invisible on four screens —
-and "Known, not
+"Phase 12" for the catalog at scale, the host's own two holes, and three
+refusals that used to be silent, and "Known, not
 fixed" for what was found and deliberately left alone. The endpoint-agent
 question is in `docs/EDR_AND_SIGNING.md`.
 
@@ -1770,6 +1774,229 @@ compositing that catches the pulse, and the nine placements of the mark. The
 browser UI suite alone goes from 115 to 172.
 
 Nine suites, 504 checks, all green.
+
+---
+
+## Phase 12 — a catalog nobody could search, a host with no floor, and three refusals that said nothing
+
+Two reports came in from the desk, and both turned out to be about the same thing:
+a surface that accepts something, hands it to code that refuses it, and says
+nothing at all.
+
+> That item is not on the list. Please ask the front desk. -- THERES NO ITEMS
+
+> there could be 10000 items we need to be able to create items instantly and be
+> able to combine and merge duplicate items if people are entering Room 115 or 115
+> or 115 Key for example
+
+### The empty catalog was not the bug; the dead end was
+
+The running app's database really was empty (a fresh portable folder), so the
+message was accurate. What it exposed is that **the empty catalog and a typo are
+the same screen**: with nothing in the catalog the kiosk's item step draws a blank
+box, and the same "not on the list" line answers both "there is no catalog" and
+"you spelled it wrong". There is no way forward from either state.
+
+Investigating it also turned up a latent instance of the second report's own
+complaint. `getAllItems()` caches the catalog for the kiosk, and
+`invalidateItemsCache()` is not called from `createItem`. So an item a staff
+member adds from the checkout step's `+ Add "…" to catalog` is in IndexedDB but
+**invisible to the kiosk until the page reloads**. "Create items instantly" is
+exactly what it was not.
+
+### One key, three tiers, and an alias that makes a merge stick
+
+The requirement behind `Room 115` / `115` / `115 Key` is a canonical form. There
+is now one: `itemKey` normalises, splits on any non-alphanumeric run (so `USB-C`,
+`USB C` and `USB_C` agree — the old scorer treated `-` as a word boundary while
+`normalize` did not, which is why `USB C` did not even *suggest* `USB-C`), drops
+the noise words `room`, `rm`, `the`, `a`, `an`, and joins with a space. `key(115)`
+is `115`, and `key(Room 115)` is `115`.
+
+Resolution runs in three tiers: an exact key, then an alias, then — only when the
+typed key is not itself an item and **exactly one** live item's token *multiset* is
+a strict superset — a silent attach. Two guards carry the safety argument, because
+silent attach was the desk owner's deliberate choice:
+
+- **Exact beats subset.** Typing `Projector` in a catalog holding `Projector` and
+  `Projector Screen` gives `Projector`.
+- **A unique winner is required.** `Cable`, with both `Cable HDMI` and `Cable VGA`
+  present, attaches to **neither** and offers both. Ambiguity never resolves
+  silently.
+
+Every silent attach records what was typed as an **alias** on the survivor, so the
+next person who types it gets a tier-1 hit. That is also the missing piece in the
+merge: `mergeItems` already re-pointed loans and summed counters, but copied no
+fields and could not be undone, so the losing name came back by lunchtime.
+`mergeItems` now unions the victim's name and aliases onto the keeper, records
+`mergeMeta` on the victim and `itemNameSnapshotBefore` on each moved loan, and
+`unmergeItem` puts all of it back — counters, loans, snapshots, and only the
+aliases the merge itself added.
+
+### 10,000 items
+
+Three screens rendered the whole catalog as DOM nodes with no cap, and the kiosk
+typeahead re-read every open loan on every keystroke with no debounce. Now:
+`ITEMS_RENDER_CAP = 200` with a count line that reports the true total and a
+Show-more control, `CHECKOUT_LIST_CAP = 60` on the staff items step, a 120ms
+debounce on both search boxes, and `listItems` cached behind the existing
+invalidation point — with **the invalidation gap fixed first**, because a stale
+catalog cache is precisely the "no items" failure this phase is about. Both caps
+are above the layout suite's 36 seeded items, so no existing layout check changed
+meaning.
+
+Measured, in the suite's own words: `the Items list opens in reasonable time at
+10009 items` and `the kiosk answers a keystroke at 10009 items inside 1.5s`.
+
+### The kiosk may create — with the guard rails the removed control lacked
+
+The control that used to let the public add an item was deleted once, and the code
+comment recording why said it wrote a permanent catalog row with *"no
+confirmation, no cap and no rate limit"*. The desk owner asked for it back, so it
+is back with all three: an explicit button press rather than a bare Enter, at
+least two alphanumerics after noise-stripping and at most 60 characters, at most
+three creations per kiosk session and one per distinct key, and the row stamped
+`createdBy: "kiosk"` and `needsReview: true` so staff can find it. The slot is
+claimed *before* the write, so a double tap cannot create two rows.
+
+### The host: a startup entry that dropped a flag, and a window with no floor
+
+Two findings from the review's host pass, H1 and H2.
+
+**H1.** The autostart Run value was built from a fixed string,
+`"<exe>" --minimized`, whenever the box was ticked — regardless of how the app was
+actually running. So a kiosk install, started with `--no-devtools`, wrote a startup
+entry that dropped the flag: the tablet would come back after a reboot with
+DevTools available again, and nothing said so. The value is now built from
+`StartupOptions.Current`, the same parse the process itself used, and the exact
+command is readable in Settings and in the tray tooltip.
+
+**H2.** Nothing constrained what the window could load. A page loaded into it could
+navigate anywhere, and `NewWindowRequested` was unhandled. Now only
+`https://frontdesk.local` (the virtual host the app is served from) and inert
+`about:blank` may load, in the main frame or any child frame; a popup is cancelled;
+and `tel:`, `sms:` and `mailto:` are handed to Windows on an ordinary install and
+**refused** on a `--no-devtools` install, which is the locked-down one. Everything
+refused is logged with the URL that was refused.
+
+Runtime evidence, not just unit checks: launching `dist\RotmanFrontDesk.exe
+--minimized --no-devtools` produced no `blocked navigation` or `navigation failed`
+lines, and the page's own IndexedDB directory
+(`…/IndexedDB/https_frontdesk.local_0.indexeddb.leveldb/`) was written during that
+launch — so the app really did load and run behind the guard rather than being
+blocked by it, which is how a navigation guard fails loudly.
+
+**What could not be run.** The end-to-end proof of H1 is writing the Run key and
+reading it back. That means changing a real logon setting on this machine, and the
+attempt was stopped — the sandbox classifier refused it as
+`[Unauthorized Persistence]`, correctly, since a test suite is not the place to
+create a logon entry and an interrupted run would leave one behind. So what is
+pinned by `tools/test-host.cjs` is the decision (`Autostart.Command()` given this
+command line), not the registry round trip. **H1's write path is verified by
+reading, not by observation.** Writing it once, by hand, on a machine where that is
+acceptable is the remaining step.
+
+### Three refusals that used to be silent
+
+Found re-reading the source in this phase, each one a case of the same shape.
+
+- **CSV formula injection.** `csvEscape` escaped quotes, commas and newlines and
+  nothing else. Excel, Numbers and Sheets evaluate a cell beginning with `=`, `+`,
+  `-` or `@`, and not every cell is the desk's own — the kiosk lets a borrower name
+  an item, and a name is all it takes. A cell that would be read as a formula is now
+  written with a leading apostrophe, which is visible, so `'=1+1` reads as what it
+  is. The suite that owns `csvEscape` used to hold a *copy* of it, so a fix here
+  could ship while the checks kept testing the old behaviour; it now lifts the
+  function out of `web/js/app.js` by marker, like the rest of that suite.
+- **A Call link with an empty `href`.** `telUri` and `smsUri` return `""` for
+  anything that is not ten digits, and the overdue card rendered Call and Text
+  whenever the phone field was non-empty. `href=""` is not inert: the browser
+  resolves it to the current page, so a tap on Call **reloaded the whole app** and
+  lost whatever the staff member had open. The two buttons now exist only when they
+  have a URI. The same card shows the phone through a new `displayPhone`, which
+  formats a dialable number and otherwise shows the field exactly as entered —
+  the extension `x1234` was being shown as "(123) 4", which is worse than what the
+  desk typed and is what Copy would have handed over.
+- **A throw from a handler whose dialog had already closed.** `createItem` refuses
+  a name with no letters or digits in it, and it is right to — matching strips
+  punctuation, so such a name has no key and could never be found again. But both
+  creation surfaces checked only for *empty*, so typing `...` or `???` closed the
+  dialog, wrote nothing, and put the rejection in the console. The rule now lives in
+  `itemNameProblem`, which returns the sentence to show; the surfaces check it
+  before they close, and both `createItem` calls are wrapped so a refusal can never
+  again be silent.
+
+### The measurements
+
+- Eleven suites, **662 checks**, all green: 10 host bridge, 38 host flags and
+  navigation, 11 toast stack, 8 screen router, 17 report aggregation, 34 keyboard
+  touch, 172 browser UI, 56 kiosk, 153 layout at real widths, 59 backup round trip,
+  104 catalog at scale.
+- Two new suites. **catalog at scale** (`tools/test-catalog.cjs`, port 8793) seeds
+  10,000 items in its own browser profile and drives everything through the real UI.
+  **host flags and navigation** (`tools/test-host.cjs`) compiles
+  `tools/HostTests.cs` *together with* `host/FrontDesk.cs` — the shipping source,
+  not a copy — and runs it three times, once as a kiosk install.
+- The kiosk suite's three policy checks that asserted the *old* rule ("the public
+  cannot invent items") were rewritten to the new one rather than left to pass, as
+  the plan required.
+
+---
+
+## Still open
+
+The findings from the most recent passes that are **not fixed**. Everything not
+listed here is either fixed and covered by the battery, or recorded under "Known,
+not fixed" as a deliberate decision. Each open finding below is an issue on this
+repository, so it can be assigned, discussed and closed where the work happens.
+
+### Closed in the final pass (2026-09-22)
+
+Ten findings from the adversarial read of the source that followed Phase 12, all
+fixed in one pass and each covered by a check that fails without the fix. Recorded
+here because the reasoning is the part worth keeping; the code carries its own
+comments.
+
+| | Finding | What it was | Now |
+|---|---|---|---|
+| D1 | `csvEscape` | escaped quotes, commas and newlines and nothing else, so a borrower-named item beginning `=` was a formula in Excel | a leading apostrophe on any cell starting `= + - @` (or a tab, or a CR) |
+| D2 | `itemNameProblem` | both creation surfaces checked only for *empty*, so `???` closed the dialog, wrote nothing, and threw into the console | the rule lives in one function that returns the sentence to show, checked before the dialog closes |
+| D3 | adding a person on a taken number | "Borrower added" was reported while the typed name was discarded and the record kept the number's owner | the desk is told whose number it is and that nobody was added; a genuinely new number still adds |
+| D4 | `phoneFormatted` drift | the field was seeded `""` and never written, so a corrected number could not reach the overdue list and People could not be searched by a formatted number; editing a number left every open loan quoting the old one | written wherever `phone` is, and open loans follow an edit while returned ones stay history |
+| D5 | salvage counting | the count followed the `put` *call*, not the write, and a rolled-back transaction reported whatever the counters had reached | the count follows the request; a rollback reports `failed` and says nothing was carried over |
+| L1 | `displayPhone` | `formatPhone("x1234")` renders "(123) 4", which is worse than what the desk typed and is what Copy handed over | a dialable number is formatted; anything else is shown exactly as entered |
+| L2 | date bounds | already fixed before this pass — local-midnight bounds in the all-loans list and CSV | no action |
+| L3 | swallowed error | the `result.errors` branch is dead: `undoLoansAtomic` initialises the array and never pushes, and a real failure rejects and is caught | the dead branch is gone rather than "fixed" |
+| L4 | duplicate render | `showAdmin` called `_renderActiveTab()` as well as the tab's enter hook, so the first tab rendered twice | the enter hook is the single path |
+| L5 | path containment | the dev server and four test doubles compared with `startsWith(root)`, so a sibling directory whose name shares the prefix escaped the root | `startsWith(root + path.sep)` |
+
+Two of the checks are worth naming because of *how* they test. The phone fix is
+driven through the People tab — open the person, edit, save — and then reads the
+borrower and both loans in one transaction; and the salvage fix replaces the
+database with one of the wrong shape and reloads onto it, so the recovery sentence
+the desk reads is asserted against records that are really there. A unit test on
+`_restoreSalvage` would have passed with the counting bug still in place.
+
+### Open
+
+*(each of these is filed as an issue on this repository)*
+
+1. **H1's registry round trip is verified by reading, not by observation.** The
+   startup entry is now built from the same parse the process used, and
+   `tools/test-host.cjs` pins that decision — but nothing has written the Run key
+   and read it back. Doing so changes a real logon setting on a real machine, and
+   the attempt was refused by the sandbox classifier as `[Unauthorized
+   Persistence]`, correctly: a test suite is not the place to create a logon entry,
+   and an interrupted run could leave one behind. The remaining step is to write it
+   once by hand on a machine where that is acceptable.
+2. **Two surfaces have no check of their own**: `_wipeData` (the typed-`DELETE`
+   confirmation that empties every store) and the kiosk's control that leaves the
+   DONE screen. Both are reachable from the UI and both destroy or end something,
+   which is exactly the shape that should be pinned rather than watched.
+3. **Five items under "Known, not fixed"** below are deliberate decisions rather
+   than oversights. Two of them are desk-owner calls, not engineering ones: whether
+   already-saved names should be normalised retroactively, and what the README's
+   "Known quirks" should say about the kiosk's catalogue.
 
 ---
 

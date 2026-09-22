@@ -258,7 +258,15 @@ body {
 /* Generic hide. Only .screen.hidden existed, so `classList.add("hidden")` on
    anything else was a no-op -- the checkout "returning in 30s" countdown was
    never actually hidden, and the keyboard's initial `hidden` class did nothing.
-   Kept low-specificity and last-word-free so a component rule can still win. */
+
+   Deliberately weak -- same specificity, earlier in the file, no `!important` --
+   because a component may need to hide itself by something other than
+   `display`. `.dialog-container.hidden` is the case that matters: it fades via
+   `opacity` and `pointer-events`, and a `display: none` from here would cut the
+   close animation dead. So this class cannot be made authoritative, and the cost
+   is that **any component rule that sets `display` must declare its own hidden
+   state** (`X.hidden { display: none }`). `.screen`, `.admin-recent-kiosk`,
+   `.dialog-container` and `.kiosk-condition-note` all carry one. */
 .hidden {
   display: none;
 }
@@ -624,6 +632,42 @@ body {
   background: var(--surface);
 }
 
+/* "Add "<name>"" under the item box. A real affordance, not a hint: the public
+   may add an item, and it is stamped for staff review.
+   Deliberately not classed .kiosk-suggestion, because that class means "a
+   catalog item you can tap" and several behaviours key on it -- an add row that
+   answered to it would make "the list offers the item" true when no item exists.
+   Sized and bordered like a suggestion so it reads as the same kind of object. */
+.kiosk-add-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  min-height: var(--touch-min);
+  border: 2px solid var(--magenta);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kiosk-add-new:hover,
+.kiosk-add-new:focus {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.kiosk-add-new:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .kiosk-suggestion-empty {
   padding: var(--space-4) var(--space-5);
   background: var(--surface);
@@ -896,6 +940,17 @@ body {
   flex-direction: column;
   gap: var(--space-3);
   width: 100%;
+}
+
+/* This element sets `display: flex` above, so it has to declare its own hidden
+   state -- see the note on the generic `.hidden` at the top of this file.
+   Without it the class was a no-op, and the kiosk's condition panel opened with
+   the damage-note field and its SEND TO FRONT DESK button already showing: the
+   borrower was invited to use a control that only exists for a step they had not
+   taken yet, and a note submitted that way wrote `conditionIn: "damaged"` on the
+   loan without anyone having said anything was wrong. */
+.kiosk-condition-note.hidden {
+  display: none;
 }
 
 .kiosk-return-empty {
@@ -1814,6 +1869,36 @@ img[data-logo] { filter: var(--logo-filter); }
   color: var(--on-accent);
 }
 
+/* "Added at the kiosk - not reviewed yet" on the item detail card. Same fill and
+   ink as .badge-due-soon, and for the same measured reason: --on-accent is the
+   only ink that follows a fill which inverts between themes. */
+.item-review-chip {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--warning);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* An inline text button, used for "Merged into <name>" so the archived entry
+   can reach the one that absorbed its loans. --magenta is the one accent this
+   project documents as safe *as text* in both themes; the pure brand value was
+   deepened on the light theme for exactly this use. */
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--magenta);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: none;
+}
+
 /* Middle row: borrower + phone */
 .loan-item .loan-borrower {
   display: flex;
@@ -2383,6 +2468,26 @@ img[data-logo] { filter: var(--logo-filter); }
   padding: var(--space-4);
   text-align: center;
   color: var(--text-muted);
+}
+
+/* Explains a match the desk did not ask for -- "Using 115 Key - matched from
+   Room 115" -- and the ambiguous case that deliberately offers no create
+   button. Sits inside the item grid, so it needs the full span.
+   Deliberately unfilled: it carries text, and a tint of its own hue is exactly
+   where this project has broken contrast before (see the README's note on the
+   overdue row and the success toast). On --bg both tokens are already AA. */
+.item-match-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--magenta);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.item-match-note em {
+  color: var(--text);
+  font-style: normal;
+  font-weight: 600;
 }
 
 @media (max-width: 600px) {

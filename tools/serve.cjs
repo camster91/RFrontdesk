@@ -27,8 +27,11 @@ http
   .createServer((req, res) => {
     const rel = decodeURIComponent(req.url.split("?")[0]);
     const file = path.join(root, rel === "/" ? "/index.html" : rel);
-    // Never serve outside web/.
-    if (!file.startsWith(root)) {
+    // Never serve outside web/. The separator matters: a bare prefix test lets any
+    // sibling whose name *begins* with "web" through, so `/../web-backup/notes.txt`
+    // normalises to a path that startsWith("...\web") and was served. Requiring
+    // the separator is what makes this a boundary rather than a substring.
+    if (!file.startsWith(root + path.sep)) {
       res.writeHead(403).end("forbidden");
       return;
     }

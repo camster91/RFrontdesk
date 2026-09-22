@@ -190,6 +190,10 @@ namespace FrontDeskHost
                 b.Append("\"logFile\":").Append(Json.Str(Paths.LogFile)).Append(",");
                 b.Append("\"keepBackups\":").Append(Build.KeepBackups.ToString(CultureInfo.InvariantCulture)).Append(",");
                 b.Append("\"autostart\":").Append(Json.Bool(Autostart.IsEnabled())).Append(",");
+                // What the startup entry will run, so the Settings screen can say
+                // it rather than leaving the operator to guess. DevTools off is
+                // part of it and used to be dropped on the floor here.
+                b.Append("\"autostartArgs\":").Append(Json.Str(Autostart.Args())).Append(",");
                 b.Append("\"runtime\":").Append(Json.Str(MainForm.RuntimeVersion ?? ""));
                 b.Append("}");
                 return b.ToString();
@@ -486,10 +490,96 @@ namespace FrontDeskHost
         }
     }
 
+    /// <summary>
+    /// The command line, parsed once and rendered back to a string.
+    ///
+    /// This exists because the autostart entry has to reproduce the way the app
+    /// was *started*, not merely the fact of it. DevTools are on by default and
+    /// --no-devtools at launch is the only way to turn them off, so a Run value
+    /// that hard-coded "--minimized" quietly undid a kiosk lockdown: the tablet
+    /// rebooted, Windows started the app from the Run key, and DevTools -- which
+    /// on the kiosk screen are a way around its PIN -- were back, with nothing
+    /// said. Whatever flags this process is running under are the flags the next
+    /// logon gets.
+    /// </summary>
+    public sealed class StartupOptions
+    {
+        public bool Minimized;
+        public bool DevTools = true;
+
+        /// <summary>
+        /// How this process was started. Read from the real command line rather
+        /// than threaded through the app, so that the two places which can switch
+        /// autostart on -- the tray menu and the page's own Settings toggle --
+        /// cannot disagree about what to write.
+        /// </summary>
+        public static readonly StartupOptions Current = Parse(FromCommandLine(Environment.GetCommandLineArgs()));
+
+        /// <summary>
+        /// The command line with the program name dropped.
+        ///
+        /// The two ways to reach a process's arguments differ in exactly this:
+        /// Main's <c>args</c> have already had the program name removed, while
+        /// Environment.GetCommandLineArgs() still has it at index 0. Treating one
+        /// as the other either turns an exe path into a settings change or
+        /// silently drops the first real flag -- so the difference is dealt with
+        /// once, here, and Parse below has one meaning.
+        /// </summary>
+        private static string[] FromCommandLine(string[] argv)
+        {
+            if (argv == null || argv.Length <= 1) return new string[0];
+            string[] rest = new string[argv.Length - 1];
+            Array.Copy(argv, 1, rest, 0, rest.Length);
+            return rest;
+        }
+
+        /// <summary>
+        /// Every element is a flag. Anything unrecognised is ignored, so a flag
+        /// from a newer build reaching an older one is not an error.
+        /// </summary>
+        public static StartupOptions Parse(string[] argv)
+        {
+            StartupOptions o = new StartupOptions();
+            if (argv == null) return o;
+            foreach (string a in argv)
+            {
+                if (string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase)) o.Minimized = true;
+                else if (string.Equals(a, "--devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = true;
+                else if (string.Equals(a, "--no-devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = false;
+            }
+            return o;
+        }
+    }
+
     internal static class Autostart
     {
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string ValueName = "RotmanFrontDesk";
+
+        /// <summary>
+        /// The arguments the startup entry should use.
+        ///
+        /// --minimized is not conditional on anything: starting in the tray is
+        /// what "start with Windows" means in this app -- the desk should be ready
+        /// before anyone arrives, without a window thrown over whatever the
+        /// operator was already doing. That was the old value's only flag, and it
+        /// stays.
+        ///
+        /// --no-devtools is the part that was being lost. DevTools are on by
+        /// default and the flag is the only way to turn them off, so an install
+        /// started that way has to come back that way: on a kiosk, DevTools are a
+        /// way around the very PIN the kiosk screen exists to protect.
+        /// </summary>
+        public static string Args()
+        {
+            return StartupOptions.Current.DevTools ? "--minimized" : "--minimized --no-devtools";
+        }
+
+        /// <summary>The command Windows will run at logon, as it stands now.</summary>
+        public static string Command()
+        {
+            return "\"" + Application.ExecutablePath + "\" " + Args();
+        }
 
         public static bool IsEnabled()
         {
@@ -517,8 +607,9 @@ namespace FrontDeskHost
                 if (k == null) throw new InvalidOperationException("Cannot open the Run key for this user.");
                 if (enabled)
                 {
-                    string exe = Application.ExecutablePath;
-                    k.SetValue(ValueName, "\"" + exe + "\" --minimized");
+                    // Not a fixed string: see StartupOptions. A kiosk install
+                    // started with --no-devtools must come back up that way.
+                    k.SetValue(ValueName, Command());
                 }
                 else
                 {
@@ -545,13 +636,11 @@ namespace FrontDeskHost
         private ToolStripMenuItem _autostartItem;
         private ToolStripMenuItem _devToolsItem;
         private bool _fullScreen;
-        private readonly bool _startMinimized;
-        private readonly bool _enableDevTools;
+        private readonly StartupOptions _startup;
 
-        public MainForm(bool startMinimized, bool enableDevTools)
+        public MainForm(StartupOptions startup)
         {
-            _startMinimized = startMinimized;
-            _enableDevTools = enableDevTools;
+            _startup = startup;
 
             Text = "Rotman Front Desk";
             StartPosition = FormStartPosition.CenterScreen;
@@ -573,7 +662,7 @@ namespace FrontDeskHost
             base.OnLoad(e);
             // Start in the tray when Windows launched us, so autostart does not
             // throw a window over whatever the operator was already doing.
-            if (_startMinimized)
+            if (_startup.Minimized)
             {
                 WindowState = FormWindowState.Minimized;
                 Hide();
@@ -616,7 +705,7 @@ namespace FrontDeskHost
             s.IsZoomControlEnabled = false;
             s.IsPasswordAutosaveEnabled = false;
             s.IsGeneralAutofillEnabled = false;
-            s.AreDevToolsEnabled = _enableDevTools;
+            s.AreDevToolsEnabled = _startup.DevTools;
             s.IsSwipeNavigationEnabled = false;
             // Browser accelerators stay on so Ctrl+C/Ctrl+V work in the app's
             // fields; F5 reloading is useful rather than harmful here.
@@ -626,6 +715,9 @@ namespace FrontDeskHost
             _web.CoreWebView2.AddHostObjectToScript("frontDeskHost", new Bridge(this));
             _web.CoreWebView2.DownloadStarting += OnDownloadStarting;
             _web.CoreWebView2.ProcessFailed += OnProcessFailed;
+            _web.CoreWebView2.NavigationStarting += OnNavigationStarting;
+            _web.CoreWebView2.FrameNavigationStarting += OnFrameNavigationStarting;
+            _web.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
             _web.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             _web.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
@@ -659,6 +751,134 @@ namespace FrontDeskHost
         {
             if (!e.IsSuccess)
                 Paths.Log("navigation failed: " + e.WebErrorStatus);
+        }
+
+        /// <summary>
+        /// True for the app's own pages: the virtual host, over https.
+        ///
+        /// https matters rather than being picked for tidiness -- the folder
+        /// mapping is served over the virtual https origin, and
+        /// http://frontdesk.local is a *different* origin with its own empty
+        /// storage, so allowing it would be allowing a second, separate copy of
+        /// the desk with none of its records in it.
+        ///
+        /// about:blank is allowed because it is inert: opaque origin, no storage,
+        /// and only reachable from a page that already has full access.
+        ///
+        /// internal rather than private so the host's own test suite -- which is
+        /// compiled against this file -- can hold the decision table to account.
+        /// The allow/deny boundary is the part of this that has to be right.
+        /// </summary>
+        internal static bool IsAppUri(string uri)
+        {
+            if (string.IsNullOrEmpty(uri)) return false;
+            if (string.Equals(uri, "about:blank", StringComparison.OrdinalIgnoreCase)) return true;
+            Uri u;
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out u)) return false;
+            return u.Scheme == Uri.UriSchemeHttps &&
+                   string.Equals(u.Host, Build.VirtualHost, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// A phone number or an address rather than a page. Windows has handlers
+        /// for all three (Phone Link, Mail) and the overdue list's Call and Text
+        /// buttons are built from exactly these schemes.
+        /// </summary>
+        internal static bool IsShellScheme(string uri)
+        {
+            if (string.IsNullOrEmpty(uri)) return false;
+            if (uri.Length > 512) return false;
+            return uri.StartsWith("tel:", StringComparison.OrdinalIgnoreCase) ||
+                   uri.StartsWith("sms:", StringComparison.OrdinalIgnoreCase) ||
+                   uri.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Hand a phone number or an address to Windows. Returns false for
+        /// anything else.
+        ///
+        /// This is here because the guard below would otherwise turn those Call
+        /// and Text buttons into dead ones: a WebView2 navigation to tel: does not
+        /// reach the shell on its own, it just fails. The app is for a desk that
+        /// phones people.
+        ///
+        /// Not on a locked-down install, though. --no-devtools is how a kiosk is
+        /// marked, and a public tablet reaching the shell at all -- a Phone Link
+        /// window, a mail composer, whatever the handler turns out to be -- is a
+        /// way off the page it is supposed to be showing. The kiosk has no overdue
+        /// list; nothing legitimate is lost by refusing there.
+        /// </summary>
+        private bool TryShellScheme(string uri)
+        {
+            if (!IsShellScheme(uri)) return false;
+            if (!_startup.DevTools)
+            {
+                Paths.Log("refused shell link on a locked-down install: " + uri);
+                return true;
+            }
+            try
+            {
+                Uri u;
+                // Parsed before it is handed to the shell: an unparseable string is
+                // not something to launch a process over.
+                if (!Uri.TryCreate(uri, UriKind.Absolute, out u)) return false;
+                Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // No handler registered, or the shell refused it. The click did
+                // nothing, and the log is where a "the Call button doesn't work"
+                // report gets answered from.
+                Paths.Log("could not open " + uri + ": " + ex.Message);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Nothing but the app's own pages is allowed to load.
+        ///
+        /// The kiosk is a public tablet showing a screen with a PIN behind it,
+        /// and this WebView has a host object attached to it -- the page can call
+        /// into the Windows side to write files, read folders and change the
+        /// startup entry. That object is scoped to the virtual host, so a
+        /// navigated page never gets it; but a page that replaced the app in this
+        /// window would sit in front of a signed-in desk on a machine the desk
+        /// trusts, and that is not a state worth being able to reach by a stray
+        /// click or a paste into the address bar of whatever ends up in front.
+        /// There is no route back, so the navigation never starts.
+        /// </summary>
+        private void OnNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (IsAppUri(e.Uri)) return;
+            // A phone number or an address is not a page: give it to Windows.
+            if (TryShellScheme(e.Uri)) { e.Cancel = true; return; }
+            Paths.Log("blocked navigation: " + e.Uri);
+            e.Cancel = true;
+        }
+
+        /// <summary>
+        /// The same rule for frames. This app has no frames today; the handler is
+        /// here so that adding one cannot quietly add a way to load a second
+        /// origin inside the page.
+        /// </summary>
+        private void OnFrameNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (IsAppUri(e.Uri)) return;
+            if (TryShellScheme(e.Uri)) { e.Cancel = true; return; }
+            Paths.Log("blocked frame navigation: " + e.Uri);
+            e.Cancel = true;
+        }
+
+        /// <summary>
+        /// No popups. Unhandled, WebView2 opens its own window for these, which
+        /// would be a browser window outside everything above.
+        /// </summary>
+        private void OnNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            if (TryShellScheme(e.Uri)) { e.Handled = true; return; }
+            Paths.Log("blocked new window: " + e.Uri);
+            e.Handled = true;
         }
 
         private void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
@@ -829,11 +1049,10 @@ namespace FrontDeskHost
                 SyncMenu();
             };
             menu.Items.Add(_autostartItem);
-
             _devToolsItem = new ToolStripMenuItem("Developer tools");
             _devToolsItem.CheckOnClick = false;
             _devToolsItem.Click += delegate { ToggleDevTools(); };
-            _devToolsItem.Visible = _enableDevTools;
+            _devToolsItem.Visible = _startup.DevTools;
             menu.Items.Add(_devToolsItem);
 
             menu.Items.Add(new ToolStripSeparator());
@@ -851,7 +1070,14 @@ namespace FrontDeskHost
         {
             try
             {
-                if (_autostartItem != null) _autostartItem.Checked = Autostart.IsEnabled();
+                if (_autostartItem != null)
+                {
+                    _autostartItem.Checked = Autostart.IsEnabled();
+                    // The flags are part of the setting now, so they are worth
+                    // showing: on a kiosk the difference between this entry and a
+                    // plain one is whether DevTools come back at the next logon.
+                    _autostartItem.ToolTipText = "Starts as: " + Autostart.Command();
+                }
                 if (_devToolsItem != null && _web.CoreWebView2 != null)
                     _devToolsItem.Checked = _web.CoreWebView2.Settings.AreDevToolsEnabled;
             }
@@ -903,7 +1129,7 @@ namespace FrontDeskHost
                 ToggleFullScreen();
                 e.Handled = true;
             }
-            else if (e.KeyCode == Keys.F12 && _enableDevTools)
+            else if (e.KeyCode == Keys.F12 && _startup.DevTools)
             {
                 ToggleDevTools();
                 e.Handled = true;
@@ -1061,18 +1287,17 @@ namespace FrontDeskHost
                 return;
             }
 
-            bool minimized = false;
             // DevTools are on by default: this is a staff tool and the built-in
             // debugging is worth having. A kiosk tablet running the same build
             // should be started with --no-devtools, since the kiosk is the
             // public surface and DevTools would be a way around its PIN.
-            bool devTools = true;
-            foreach (string a in args)
-            {
-                if (string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase)) minimized = true;
-                else if (string.Equals(a, "--devtools", StringComparison.OrdinalIgnoreCase)) devTools = true;
-                else if (string.Equals(a, "--no-devtools", StringComparison.OrdinalIgnoreCase)) devTools = false;
-            }
+            //
+            // Parsed once, in StartupOptions, because the same flags have to be
+            // written back into the autostart entry -- a second parser here is a
+            // second copy of the defaults, and the two drifted: the Run value
+            // always said "--minimized" and nothing else, so a --no-devtools
+            // kiosk came back from a reboot with DevTools enabled.
+            StartupOptions startup = StartupOptions.Current;
 
             Paths.Resolve();
             Application.EnableVisualStyles();
@@ -1086,7 +1311,7 @@ namespace FrontDeskHost
                                 "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Error);
             };
 
-            MainForm form = new MainForm(minimized, devTools);
+            MainForm form = new MainForm(startup);
             Application.Run(form);
 
             if (_instance != null)

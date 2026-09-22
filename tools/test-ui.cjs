@@ -45,7 +45,8 @@ function startServer() {
       return;
     }
     const file = path.join(ROOT, rel === "/" ? "/index.html" : rel);
-    if (!file.startsWith(ROOT)) {
+    // The separator, not a bare prefix: "...\web-backup" also startsWith("...\web").
+    if (!file.startsWith(ROOT + path.sep)) {
       res.writeHead(403).end("forbidden");
       return;
     }

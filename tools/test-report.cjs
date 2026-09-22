@@ -21,6 +21,18 @@ if (from < 0 || to < 0 || to < from) {
 }
 const section = src.slice(from, to);
 
+// csvEscape lives outside that section, so it is lifted by its own marker rather
+// than copied. It decides whether a spreadsheet reads an exported cell as text or
+// as a formula, and a copy would let a fix ship in app.js while this suite went on
+// checking the behaviour that was fixed.
+const csvFrom = src.indexOf("function csvEscape(s) {");
+const csvTo = src.indexOf("\n}\n", csvFrom);
+if (csvFrom < 0 || csvTo < 0) {
+  console.error("FAIL: could not find csvEscape in app.js");
+  process.exit(1);
+}
+const csvEscapeSource = src.slice(csvFrom, csvTo + 2);
+
 let failures = 0;
 const check = (name, cond, detail) => {
   if (cond) return;
@@ -47,14 +59,11 @@ const sandbox = {
   formatPhone: (p) => {
     const d = String(p || "").replace(/\D/g, "").slice(-10);
     return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || "");
-  },
-  csvEscape: (s) => {
-    const str = String(s ?? "");
-    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
   }
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
+vm.runInContext(csvEscapeSource + "\nglobalThis.csvEscape = csvEscape;", sandbox);
 // `const` at the top level of a script is a lexical binding, not a property of
 // the sandbox object, so the period table is lifted out explicitly.
 vm.runInContext(section + "\nglobalThis.REPORT_PERIODS = REPORT_PERIODS;", sandbox);
@@ -360,6 +369,43 @@ console.log("\nReport aggregation\n");
     now: NOW
   });
   check("a quote inside a value is doubled, not left to break the file", /"The ""good"" dongle"/.test(q), q.split("\n")[1]);
+
+  // A cell a spreadsheet would treat as a formula rather than as text. The name
+  // can come from a borrower: the kiosk lets anyone name an item they are taking.
+  const formula = sandbox.reportToCsv({
+    loans: [loan({ id: 10, itemId: 20, item: "=1+1", out: at(1) })],
+    items: [],
+    borrowers: [],
+    period: "week",
+    now: NOW
+  });
+  check("a cell starting with = is neutralised, not left to be evaluated on open",
+    /,'=1\+1,/.test(formula), formula.split("\n")[1]);
+
+  const each = sandbox.reportToCsv({
+    loans: [
+      loan({ id: 11, itemId: 21, item: "+1", out: at(1, 9) }),
+      loan({ id: 12, itemId: 22, item: "-1", out: at(1, 10) }),
+      loan({ id: 13, itemId: 23, item: "@SUM(A1)", out: at(1, 11) })
+    ],
+    items: [],
+    borrowers: [],
+    period: "week",
+    now: NOW
+  });
+  check("and so is one starting with +", /,'\+1,/.test(each), each.split("\n").find((l) => l.includes("+1")));
+  check("and one starting with -", /,'-1,/.test(each), each.split("\n").find((l) => l.includes("-1")));
+  check("and one starting with @", /,'@SUM\(A1\),/.test(each), each.split("\n").find((l) => l.includes("@SUM")));
+
+  const plain = sandbox.reportToCsv({
+    loans: [loan({ id: 14, itemId: 24, item: "Dongle", out: at(1) })],
+    items: [],
+    borrowers: [],
+    period: "week",
+    now: NOW
+  });
+  check("an ordinary name is not given an apostrophe it does not need",
+    !/'/.test(plain) && /,Dongle,/.test(plain), plain.split("\n")[1]);
 
   // A period with nothing in it: the same loans, read a season later.
   const none = sandbox.reportToCsv({ loans, items, borrowers, period: "week", now: NOW + 60 * DAY });

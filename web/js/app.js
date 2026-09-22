@@ -225,17 +225,46 @@ function _restoreSalvage(snapshot) {
     for (const name of names) {
       const store = t.objectStore(name);
       for (const rec of snapshot[name]) {
+        let req;
         try {
-          store.put(rec);
-          result.restored++;
+          req = store.put(rec);
         } catch (_) {
           result.skipped++;
+          continue;
         }
+        // The count follows the *request*, not the call. `put` only throws
+        // synchronously for a shape it can reject outright; a unique index the
+        // new schema added, or anything else the store refuses on write, fails
+        // asynchronously -- and a failure that was merely queued used to be
+        // counted as restored. Containing it here is also what keeps one bad
+        // record from aborting the restore of the other 299.
+        req.onsuccess = () => {
+          result.restored++;
+        };
+        req.onerror = (e) => {
+          result.skipped++;
+          if (e && e.preventDefault) e.preventDefault();
+          if (e && e.stopPropagation) e.stopPropagation();
+        };
       }
     }
     t.oncomplete = () => resolve(result);
-    t.onerror = () => resolve(result);
-    t.onabort = () => resolve(result);
+    // The transaction failed or was aborted, so it rolled back: nothing was
+    // written, whatever the request counters reached before it died. Reporting
+    // those counts here is a lie at the worst possible moment -- the person is
+    // being told how much survived a rebuild.
+    t.onerror = () => resolve({
+      restored: 0,
+      skipped: result.skipped,
+      stores: names,
+      failed: true
+    });
+    t.onabort = () => resolve({
+      restored: 0,
+      skipped: result.skipped,
+      stores: names,
+      failed: true
+    });
   });
 }
 
@@ -247,7 +276,10 @@ function _recordRecoveryReport(report, missing) {
       missing: missing.slice(),
       salvaged: report.restored,
       skipped: report.skipped,
-      stores: report.stores
+      stores: report.stores,
+      // The whole restore rolled back. Kept separate from `skipped` because it is
+      // a different sentence to the person reading it.
+      failed: report.failed === true
     };
     localStorage.setItem("frontdesk.lastRecovery", JSON.stringify(payload));
   } catch (_) {
@@ -294,6 +326,21 @@ function runTx(storeNames, mode, fn) {
     } catch (e) {
       fnError = e;
     }
+    // The callback is async, so a throw inside it *rejects this promise* instead of
+    // throwing here, and that rejection is how the caller is told what went wrong.
+    // The handler for it is attached further down -- in `oncomplete`, or in
+    // `onerror`/`onabort` -- which is a macrotask later, and the browser reports an
+    // unhandled rejection at the end of the turn it was rejected in. Nothing is
+    // actually unhandled, but the page says it is, and this app forwards unhandled
+    // rejections to the host's log file, stopping after twenty.
+    //
+    // So a page of ordinary refusals crowds out the one real crash that log exists
+    // for. "Both entries are checked out. Check one in before merging" is a correct
+    // answer, shown to staff as a toast, and it was arriving in the log as
+    // "Unhandled rejection" alongside every other rule this app enforces. Claiming
+    // it here does not change what the caller sees: the handlers below still run,
+    // and the transaction's own outcome still decides the result.
+    if (fnResult && typeof fnResult.then === "function") fnResult.then(undefined, () => {});
     if (fnError) {
       try {
         transaction.abort();
@@ -302,6 +349,18 @@ function runTx(storeNames, mode, fn) {
       return reject(fnError);
     }
     transaction.oncomplete = () => {
+      // Any committed write can change what the catalog resolves to, or what is
+      // available, so both caches are dropped here rather than at each call site.
+      // Central is the point: the previous arrangement called the invalidator from
+      // four places and `createItem` was not one of them, so an item a staff member
+      // added from the checkout step was in the database but invisible to the
+      // kiosk picker until the page reloaded.
+      if (mode !== "readonly") {
+        if (storeNames.indexOf("items") !== -1) invalidateItemsCache();
+        // Availability comes from `loans`, not `items`: a check-in writes only a
+        // loan, and missing that is a borrower refused an item that is on the shelf.
+        if (storeNames.indexOf("loans") !== -1) invalidateAvailabilityCache();
+      }
       Promise.resolve(fnResult).then(resolve, reject);
     };
     transaction.onerror = () => reject(transaction.error);
@@ -318,11 +377,18 @@ async function get(store, id) {
 }
 async function put(store, value) {
   await openDB();
-  return asPromise(tx(store, "readwrite").put(value));
+  const result = await asPromise(tx(store, "readwrite").put(value));
+  // See the note in `runTx`: these are the two stores the read caches derive from.
+  if (store === "items") invalidateItemsCache();
+  if (store === "loans") invalidateAvailabilityCache();
+  return result;
 }
 async function del(store, id) {
   await openDB();
-  return asPromise(tx(store, "readwrite").delete(id));
+  const result = await asPromise(tx(store, "readwrite").delete(id));
+  if (store === "items") invalidateItemsCache();
+  if (store === "loans") invalidateAvailabilityCache();
+  return result;
 }
 async function getByIndex(store, indexName, value) {
   await openDB();
@@ -332,10 +398,40 @@ async function getAllByIndex(store, indexName, value) {
   await openDB();
   return asPromise(tx(store).index(indexName).getAll(value));
 }
-async function listItems({ includeArchived = false, sortBy = "name" } = {}) {
+/**
+ * Every item record, cached for a moment.
+ *
+ * `listItems` is the hot path in this app: it is called on every keystroke of
+ * every search box, and each call used to be a full `getAll("items")` plus an
+ * in-memory sort. That is invisible at 20 items and ruinous at 10,000, which is
+ * the catalog size this app has to hold.
+ *
+ * The TTL is a backstop, not the mechanism. The mechanism is
+ * `invalidateItemsCache()`, which every item-writing path calls. The TTL exists
+ * because a *missed* invalidation here is not a slow screen, it is a "the item
+ * you just created does not exist" bug -- and that is exactly the bug this work
+ * was opened to fix. A cache that heals itself in 1.5s is a delay; a cache that
+ * never heals is a data-loss report.
+ *
+ * Callers always get a fresh array, because `searchItems` sorts what it is
+ * handed and `_renderItemsList` sorts what it is handed.
+ */
+var _itemsRawCache = null;
+var _itemsRawCachedAt = 0;
+var ITEMS_CACHE_TTL_MS = 1500;
+async function _allItemRecords() {
+  const now = Date.now();
+  if (_itemsRawCache && now - _itemsRawCachedAt < ITEMS_CACHE_TTL_MS) {
+    return _itemsRawCache;
+  }
   await openDB();
-  const allItems = await getAll("items");
-  let items = includeArchived ? allItems : allItems.filter((item) => !item.isArchived);
+  _itemsRawCache = await getAll("items");
+  _itemsRawCachedAt = now;
+  return _itemsRawCache;
+}
+async function listItems({ includeArchived = false, sortBy = "name" } = {}) {
+  const allItems = await _allItemRecords();
+  let items = includeArchived ? allItems.slice() : allItems.filter((item) => !item.isArchived);
   items.sort((a, b) => {
     if (sortBy === "timesCheckedOut") {
       return b.timesCheckedOut - a.timesCheckedOut;
@@ -351,19 +447,55 @@ async function findItemByName(name) {
   await openDB();
   return getByIndex("items", "nameLower", name.toLowerCase().trim());
 }
-async function createItem({ name, category, location: location2, condition, notes }) {
+/**
+ * What is wrong with this name for a catalog entry, or "" if nothing is.
+ *
+ * `createItem` refuses these by throwing, which is right for the one choke point
+ * -- but a throw from a click handler whose dialog has already closed is
+ * invisible: the dialog goes, no item appears, and the only trace is a rejection
+ * in the log. Typing "..." or "???" did exactly that. So this is the same answer
+ * in a form a caller can show, and the surfaces that create check it *before*
+ * they put a toast up; `createItem` still throws it as the backstop behind them.
+ *
+ * The letters-or-digits rule is not fussiness: matching strips punctuation, so a
+ * name made only of punctuation has no match key and could never be found again.
+ */
+function itemNameProblem(name) {
+  const clean = String(name == null ? "" : name).trim();
+  if (!clean) return "Please enter a name";
+  if (!matchKey(clean)) return "That name needs at least one letter or digit";
+  return "";
+}
+/**
+ * Create a catalog entry. The single choke point for that, so every rule about
+ * what a name may be lives here rather than in each caller.
+ *
+ * The length cap and the "must reduce to something" check are not cosmetic. Both
+ * surfaces offer to create an item from whatever is in a text box, and the kiosk
+ * offers it to the public, so without a cap a paste of 100KB becomes a catalog
+ * row that every list, export and backup then carries forever.
+ *
+ * `extra` lets a caller stamp fields the desk will want to see -- the kiosk uses
+ * it for `createdBy` and `needsReview` -- without this function having to know
+ * what those mean.
+ */
+async function createItem({ name, category, location: location2, condition, notes, extra } = {}) {
   await openDB();
+  const clean = String(name == null ? "" : name).trim().slice(0, 120);
+  const problem = itemNameProblem(clean);
+  if (problem) throw new Error(problem);
   const item = {
-    name: name.trim(),
-    nameLower: name.trim().toLowerCase(),
+    name: clean,
+    nameLower: clean.toLowerCase(),
     category: category || "Other",
     location: location2 || "",
     condition: condition || "good",
-    notes: notes || "",
+    notes: String(notes || "").slice(0, 500),
     timesCheckedOut: 0,
     lastCheckedOutAt: null,
     isArchived: false,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    ...(extra || {})
   };
   const id = await put("items", item);
   return {
@@ -408,13 +540,19 @@ async function upsertBorrower({ phone, name, contact2 }) {
     if (existing.length > 0) {
       const borrower2 = existing[0];
       borrower2.lastSeenAt = Date.now();
+      // Kept in step with `phone` wherever the number is set. It was seeded as ""
+      // and never written, so every screen that prefers "the live number if there
+      // is one" fell back to the loan's snapshot instead -- a corrected number
+      // could not reach the overdue list, and People could not be searched by a
+      // formatted number at all.
+      borrower2.phoneFormatted = formatPhone(borrower2.phone);
       if (contact2) borrower2.contact2 = contact2;
       await s.req(store.put(borrower2));
       return borrower2;
     }
     const borrower = {
       phone: normalizedPhone,
-      phoneFormatted: "",
+      phoneFormatted: formatPhone(normalizedPhone),
       name: trimmedName,
       nameLower: trimmedName.toLowerCase(),
       contact2: contact2 || "",
@@ -493,10 +631,45 @@ async function updateBorrowerPhone(borrowerId, newPhone) {
   const borrower = await get("borrowers", borrowerId);
   if (!borrower) throw new Error(`Borrower ${borrowerId} not found`);
   borrower.phone = newPhone;
+  borrower.phoneFormatted = formatPhone(newPhone);
   borrower.lastSeenAt = Date.now();
-  return put("borrowers", borrower);
+  await put("borrowers", borrower);
+  await _syncOpenLoanPhones(borrowerId, newPhone);
+  return borrower;
 }
-async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOut, notes, recordedBy, customName }) {
+/**
+ * Carry a corrected phone number onto the loans that are still open.
+ *
+ * A loan stores the borrower's number as it was when the loan was booked, and for
+ * a loan that has been returned that snapshot is the honest record of the receipt
+ * that was handed over, so it is left alone. An **open** loan is not history: it
+ * is a live obligation and the row the desk rings someone about, and the overdue
+ * card and the loan export both read this field. Leaving it stale meant a
+ * corrected number never reached the one place it was needed.
+ *
+ * Called from both paths that can change a number -- `updateBorrowerPhone` and the
+ * admin's Edit borrower dialog -- so the two cannot diverge.
+ */
+async function _syncOpenLoanPhones(borrowerId, phone) {
+  return runTx([
+    "loans"
+  ], "readwrite", async (s) => {
+    const store = s.get("loans");
+    const loans = await s.req(store.index("borrowerId").getAll(borrowerId));
+    let updated = 0;
+    for (const loan of loans) {
+      if (isLoanOpen(loan) && loan.borrowerPhoneSnapshot !== phone) {
+        loan.borrowerPhoneSnapshot = phone;
+        await s.req(store.put(loan));
+        updated++;
+      }
+    }
+    return {
+      updated
+    };
+  });
+}
+async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOut, notes, recordedBy, customName, matchedFrom, walkIn }) {
   await openDB();
   return runTx([
     "loans",
@@ -531,17 +704,30 @@ async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOu
     if (borrowerId != null) {
       borrower = await s.req(s.get("borrowers").get(borrowerId));
       if (!borrower) throw new Error(`Borrower ${borrowerId} not found`);
-    } else if (!customName) {
-      throw new Error("Walk-in borrowers require a customName for the loan");
+    } else if (!walkIn) {
+      // A loan with no borrower is a walk-in, and has to say so.
+      //
+      // This gate used to require `customName` instead -- which is about the
+      // *item* ("a loan against something not in the catalog"), not about the
+      // borrower at all. Two consequences: the desk's own "Walk-in -- no name"
+      // button failed on every press, because no caller passes `customName`, and
+      // the error it produced named an argument nobody had heard of. It made
+      // walk-ins unrecordable, which is why `totals.walkIns` sat at zero in every
+      // report the desk ever ran.
+      throw new Error("A loan needs a borrower; pass walkIn: true for a walk-in");
     }
     const loan = {
       itemId: itemId || null,
       itemNameSnapshot: itemName,
       borrowerId: borrowerId || null,
-      // For walk-ins, fall back to the borrower data passed in
-      // (or just a placeholder) instead of crashing.
-      borrowerPhoneSnapshot: borrower && borrower.phone || (notes && notes.startsWith("walk-in") ? "walk-in" : "") || "",
-      borrowerNameSnapshot: borrower && borrower.name || (notes && notes.startsWith("walk-in") ? "(walk-in)" : ""),
+      // A walk-in's snapshots are written deliberately rather than sniffed out of
+      // the notes. They were derived from `notes.startsWith("walk-in")` before,
+      // which nothing ever passed, so both fields came out empty and the loan
+      // rendered as "(unknown)" at check-in. The literal "walk-in" is load-bearing
+      // for the report, which tells anonymous walk-ins apart on exactly this
+      // value (see `buildReport`).
+      borrowerPhoneSnapshot: borrower ? borrower.phone : walkIn ? "walk-in" : "",
+      borrowerNameSnapshot: borrower ? borrower.name : walkIn ? "(walk-in)" : "",
       checkedOutAt: checkedOutAt || Date.now(),
       dueAt,
       returnedAt: null,
@@ -551,6 +737,9 @@ async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOu
       notes: notes || "",
       recordedBy: recordedBy || ""
     };
+    // Only set when there is something to say: a loan whose name was typed
+    // exactly does not need an empty field riding along on every export.
+    if (matchedFrom) loan.matchedFrom = String(matchedFrom).trim().slice(0, 120);
     const loanResult = await s.req(s.get("loans").add(loan));
     loan.id = loanResult;
     if (item) {
@@ -858,6 +1047,31 @@ async function updateSettings(updates) {
   await put("settings", settings);
   return settings;
 }
+/**
+ * Merge one catalog entry into another.
+ *
+ * The keeper absorbs the victim's loans and counters, and -- the part that makes
+ * a merge actually stick -- the victim's **name and aliases**, recorded as
+ * aliases of the keeper. Without that, the losing name is forgotten the moment
+ * the merge commits, so the next person to type "Room 115" creates the duplicate
+ * again by lunchtime. That is the whole reason this function changed.
+ *
+ * `itemNameSnapshot` on the moved loans is rewritten to the keeper's name. That
+ * is deliberate and it is honest: the snapshot means "the item's name at the
+ * time of this loan", and after a merge the item has one name. Nothing reads it
+ * as a historical record -- reports group on `itemId` whenever it is set -- and
+ * leaving two names on one item's loans only makes the history look like it
+ * belongs to two items. For a loan that is *still out*, an undo puts the old name
+ * back, because that loan's item is once again the victim.
+ *
+ * Nothing is deleted. The victim is archived with `mergedIntoId` and a
+ * `mergeMeta` audit of everything an undo needs, and `unmergeItem` is that undo.
+ * It is reachable from the victim's own detail screen, where the Archive button
+ * reads "Undo merge" while the item is merged -- one control and one code path,
+ * so "archived but still the keeper's alias" is a state nothing can reach.
+ *
+ * See `unmergeItem` for what it does and does not put back.
+ */
 async function mergeItems(keepId, mergeId, { allowBothOpen = false } = {}) {
   if (keepId === mergeId) throw new Error("Cannot merge an item into itself");
   await openDB();
@@ -884,21 +1098,214 @@ async function mergeItems(keepId, mergeId, { allowBothOpen = false } = {}) {
       loan.itemNameSnapshot = keep.name;
       await s.req(loansStore.put(loan));
     }
-    keep.timesCheckedOut = (keep.timesCheckedOut || 0) + (merge.timesCheckedOut || 0);
-    keep.lastCheckedOutAt = Math.max(keep.lastCheckedOutAt || 0, merge.lastCheckedOutAt || 0) || null;
+    // The victim's name, and every name the victim was itself known by, now mean
+    // the keeper. `keep`'s own key is skipped -- an item is not its own alias.
+    const keepKey = matchKey(keep.name);
+    const aliasMap = new Map();
+    for (const a of keep.aliases || []) {
+      if (a && a.k) aliasMap.set(a.k, a);
+    }
+    const remember = (k, label) => {
+      if (!k || k === keepKey || aliasMap.has(k)) return;
+      aliasMap.set(k, { k, label: String(label || "").trim().slice(0, 60), addedAt: Date.now() });
+    };
+    // The keeper's aliases as they stood *before* this merge, so an undo can tell
+    // the ones this merge added from the ones that were already there. Getting
+    // that wrong would let an undo delete a name the keeper was legitimately known
+    // by, and the desk would see a name stop resolving for no reason they could
+    // see.
+    const beforeKeys = new Set((keep.aliases || []).map((a) => a && a.k).filter(Boolean));
+    // What the victim is about to lose. `unmergeItem` puts these back, and the
+    // merge is destructive to them on its own: it sums the keeper's counter with
+    // the victim's and then zeroes the victim, so without this record the victim's
+    // "checked out 14 times" is unrecoverable -- it is not derivable from the loans,
+    // which is why it is copied rather than recomputed.
+    const victimCounters = {
+      timesCheckedOut: merge.timesCheckedOut || 0,
+      lastCheckedOutAt: merge.lastCheckedOutAt || null
+    };
+    const victimNeedsReview = merge.needsReview === true;
+    remember(matchKey(merge.name), merge.name);
+    for (const a of merge.aliases || []) {
+      if (a && a.k) remember(a.k, a.label);
+    }
+    const nextAliases = Array.from(aliasMap.values()).slice(-8);
+    keep.aliases = nextAliases;
+    keep.timesCheckedOut = (keep.timesCheckedOut || 0) + victimCounters.timesCheckedOut;
+    keep.lastCheckedOutAt = Math.max(keep.lastCheckedOutAt || 0, victimCounters.lastCheckedOutAt || 0) || null;
     await s.req(itemsStore.put(keep));
     merge.timesCheckedOut = 0;
     merge.lastCheckedOutAt = null;
     merge.isArchived = true;
     merge.mergedIntoId = keepId;
+    merge.needsReview = false;
+    merge.mergeMeta = {
+      keepId,
+      keepName: keep.name,
+      mergedAt: Date.now(),
+      loansMoved: mergeLoans.length,
+      // The three things an undo needs and cannot re-derive: which loans moved,
+      // which aliases this merge added (post-cap, so only ones that survived),
+      // and what the victim's counters were.
+      loanIds: mergeLoans.map((l) => l.id),
+      aliasesAdded: nextAliases.filter((a) => !beforeKeys.has(a.k)).map((a) => a.k),
+      counters: victimCounters,
+      needsReview: victimNeedsReview
+    };
     await s.req(itemsStore.put(merge));
     return {
       keepId,
       mergedId: mergeId,
+      keepName: keep.name,
+      mergedName: merge.name,
       loansMoved: mergeLoans.length
     };
   });
 }
+/**
+ * Undo a merge: put the victim back in the catalog as its own item.
+ *
+ * This exists because the desk owner chose **silent attachment** for near
+ * matches. That is the aggressive option, and what makes it survivable is that a
+ * wrong attach can be undone -- so the undo has to actually restore the state,
+ * not just unarchive a row and leave the catalog asserting something that is no
+ * longer true.
+ *
+ * Three things have to go back, and the first is not obvious:
+ *
+ *   1. **The alias.** The merge taught the keeper that the victim's name means
+ *      the keeper. Leaving it after an undo means the name the desk just
+ *      resurrected still quietly resolves to the *other* item whenever the
+ *      resurrected one is not an exact hit -- so the item is back and the desk
+ *      can still never reach it by typing its own name. Only the aliases this
+ *      merge added are removed; the ones the keeper already had stay, which is
+ *      why `mergeMeta.aliasesAdded` is recorded post-cap.
+ *   2. **The counters.** The merge summed them into the keeper and zeroed the
+ *      victim, so the victim's history is put back and the keeper gives back what
+ *      it borrowed. `lastCheckedOutAt` on the keeper is left alone: a maximum
+ *      cannot be un-taken, and a date that is too recent is a smaller lie than
+ *      one that is too early.
+ *   3. **The loans that are still out.** An open loan is the physical object
+ *      being out *right now*, so its item is unambiguous and it moves back with
+ *      its original name restored. Loans that have already been returned stay
+ *      with the keeper and are counted in the result, because their snapshots are
+ *      history and re-pointing them would rewrite a record of something that
+ *      happened. The caller says the count out loud rather than hiding it.
+ *
+ * Refuses on an item that was not merged, so a stray call cannot archive or
+ * unarchive anything by accident.
+ */
+async function unmergeItem(victimId) {
+  await openDB();
+  return runTx([
+    "items",
+    "loans"
+  ], "readwrite", async (s) => {
+    const itemsStore = s.get("items");
+    const loansStore = s.get("loans");
+    const victim = await s.req(itemsStore.get(victimId));
+    if (!victim) throw new Error(`Item ${victimId} not found`);
+    const keepId = victim.mergedIntoId;
+    if (keepId == null) {
+      throw new Error(`"${victim.name}" was not merged into anything, so there is nothing to undo`);
+    }
+    const meta = victim.mergeMeta || {};
+    const counters = meta.counters || {};
+    const keep = await s.req(itemsStore.get(keepId));
+    if (keep) {
+      const added = Array.isArray(meta.aliasesAdded) ? meta.aliasesAdded : [];
+      if (added.length > 0) {
+        keep.aliases = (keep.aliases || []).filter((a) => !(a && added.indexOf(a.k) !== -1));
+      }
+      keep.timesCheckedOut = Math.max(0, (keep.timesCheckedOut || 0) - (Number(counters.timesCheckedOut) || 0));
+      await s.req(itemsStore.put(keep));
+    }
+    const ids = Array.isArray(meta.loanIds) ? meta.loanIds : [];
+    let movedBack = 0;
+    for (const id of ids) {
+      const loan = await s.req(loansStore.get(id));
+      // `itemId !== keepId` means the loan has been re-pointed by a later merge,
+      // so it is no longer this victim's to claim.
+      if (!loan || loan.itemId !== keepId) continue;
+      if (!(loan.isOpen === "open" && !loan.returnedAt)) continue;
+      loan.itemId = victimId;
+      loan.itemNameSnapshot = victim.name;
+      await s.req(loansStore.put(loan));
+      movedBack++;
+    }
+    victim.isArchived = false;
+    victim.mergedIntoId = null;
+    victim.mergeMeta = null;
+    victim.timesCheckedOut = Number(counters.timesCheckedOut) || 0;
+    victim.lastCheckedOutAt = counters.lastCheckedOutAt || null;
+    victim.needsReview = meta.needsReview === true;
+    await s.req(itemsStore.put(victim));
+    return {
+      victimId,
+      keepId,
+      name: victim.name,
+      keepName: meta.keepName || (keep && keep.name) || `item ${keepId}`,
+      loansMovedBack: movedBack,
+      loansStayed: ids.length - movedBack
+    };
+  });
+}
+/**
+ * What a merge would do, without doing it.
+ *
+ * The duplicate-review screen shows this before the merge button commits, so the
+ * desk is told how many loans will move rather than discovering it afterwards.
+ * Read-only, so it needs no lock and cannot half-happen.
+ */
+async function previewMerge(keepId, mergeId) {
+  if (keepId === mergeId) return null;
+  await openDB();
+  return runTx(["items", "loans"], "readonly", async (s) => {
+    const keep = await s.req(s.get("items").get(keepId));
+    const merge = await s.req(s.get("items").get(mergeId));
+    if (!keep || !merge) return null;
+    const loans = await s.req(s.get("loans").index("itemId").getAll(mergeId));
+    const openLoans = loans.filter((l) => l.isOpen === "open" && !l.returnedAt);
+    return {
+      keepName: keep.name,
+      mergeName: merge.name,
+      loansMoved: loans.length,
+      openLoansMoved: openLoans.length,
+      checkOutsMoved: merge.timesCheckedOut || 0,
+      bothOpen: openLoans.length > 0 &&
+        (await s.req(s.get("loans").index("itemId").getAll(keepId))).some((l) => l.isOpen === "open" && !l.returnedAt)
+    };
+  });
+}
+/**
+ * Catalog entries that look like the same thing.
+ *
+ * Two tiers, because the two kinds of duplicate need different levels of
+ * confidence from the desk.
+ *
+ * `duplicates` -- entries whose names match exactly (case and spacing aside).
+ * This is what the app has always reported, and a group of them is close to
+ * certainly one thing recorded repeatedly.
+ *
+ * `nearDuplicates` -- entries that do **not** match exactly but share a
+ * distinctive word, which is what `Room 115` / `115` / `115 Key` are. The
+ * matcher now *attaches* these silently when they are typed, so this exists for
+ * the entries that got into the catalog before it did, and for the pairs the
+ * silent rule deliberately refuses (`Cable HDMI` alongside `Cable VGA` is two
+ * cables, not a duplicate, but the desk should still get to say so once).
+ *
+ * "Distinctive" is the whole trick. Entries are connected through a word only
+ * when that word is rare enough to identify something -- appearing in at most
+ * `NEAR_TOKEN_MAX` entries, or 5% of the catalog for a big one. A word that
+ * appears more often than that is category vocabulary, not identity: joining
+ * every entry containing "usb" would produce one group of twenty and teach the
+ * desk to ignore the banner. `Cable HDMI` and `Cable VGA` have only "cable" in
+ * common, and in any catalog big enough to contain both, "cable" is common, so
+ * they stay apart -- which is what the desk wants.
+ *
+ * Cheap by construction: one pass to count words, one pass to union, no
+ * pairwise comparison anywhere, so 10,000 entries cost the same per entry as 10.
+ */
 async function findDuplicateItems() {
   await openDB();
   const all = await getAll("items");
@@ -911,16 +1318,71 @@ async function findDuplicateItems() {
     groups.get(key).push(item);
   }
   const duplicates = [];
+  const inExactGroup = new Set();
   for (const [, items] of groups) {
     if (items.length < 2) continue;
     items.sort((a, b) => (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0) || (a.createdAt || 0) - (b.createdAt || 0));
     duplicates.push(items);
+    for (const it of items) inExactGroup.add(it.id);
   }
   duplicates.sort((a, b) => b.length - a.length);
+
+  // --- near duplicates: union entries that share a distinctive word ---
+  const remaining = live.filter((it) => !inExactGroup.has(it.id));
+  const wordsOf = new Map();
+  for (const it of remaining) wordsOf.set(it.id, new Set(itemTokens(it.name)));
+  const wordCount = new Map();
+  for (const [, words] of wordsOf) {
+    for (const w of words) wordCount.set(w, (wordCount.get(w) || 0) + 1);
+  }
+  const NEAR_TOKEN_MAX = Math.max(3, Math.ceil(remaining.length * 0.05));
+  const parent = new Map();
+  const find = (id) => {
+    let r = id;
+    while (parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(id) !== r) {
+      const next = parent.get(id);
+      parent.set(id, r);
+      id = next;
+    }
+    return r;
+  };
+  for (const it of remaining) parent.set(it.id, it.id);
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  const byWord = new Map();
+  for (const [id, words] of wordsOf) {
+    for (const w of words) {
+      if ((wordCount.get(w) || 0) > NEAR_TOKEN_MAX) continue;
+      if (!byWord.has(w)) byWord.set(w, []);
+      byWord.get(w).push(id);
+    }
+  }
+  for (const [, ids] of byWord) {
+    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+  }
+  const nearGroups = new Map();
+  for (const it of remaining) {
+    const root = find(it.id);
+    if (!nearGroups.has(root)) nearGroups.set(root, []);
+    nearGroups.get(root).push(it);
+  }
+  const nearDuplicates = [];
+  for (const [, items] of nearGroups) {
+    if (items.length < 2) continue;
+    items.sort((a, b) => (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+    nearDuplicates.push(items);
+  }
+  nearDuplicates.sort((a, b) => b.length - a.length);
+
   return {
     duplicates,
+    nearDuplicates,
     scanned: live.length,
-    itemCount: duplicates.reduce((n, g) => n + g.length, 0)
+    itemCount: duplicates.reduce((n, g) => n + g.length, 0) + nearDuplicates.reduce((n, g) => n + g.length, 0)
   };
 }
 async function runDailyDedup() {
@@ -929,15 +1391,19 @@ async function runDailyDedup() {
   // (two physical "HDMI Cable" units are not duplicates), and the merge also
   // re-ran against already-archived victims, compounding their counters upward
   // on every launch. Duplicates are now surfaced for a human to resolve.
-  const { duplicates, scanned, itemCount } = await findDuplicateItems();
-  if (duplicates.length > 0) {
-    console.warn(`[dedup] ${duplicates.length} duplicate name group(s), ${itemCount} items. Not merging automatically — resolve in Admin → Items → Duplicates.`);
+  const { duplicates, nearDuplicates, scanned } = await findDuplicateItems();
+  const exactItems = duplicates.reduce((n, g) => n + g.length, 0);
+  const nearItems = nearDuplicates.reduce((n, g) => n + g.length, 0);
+  if (duplicates.length > 0 || nearDuplicates.length > 0) {
+    console.warn(`[dedup] ${duplicates.length} duplicate name group(s) (${exactItems} items) and ${nearDuplicates.length} similar-name group(s) (${nearItems} items). Not merging automatically — resolve in Admin → Items → Duplicates.`);
   }
   return {
     merged: 0,
     scanned,
     duplicateGroups: duplicates.length,
-    duplicateItems: itemCount
+    duplicateItems: exactItems,
+    nearGroups: nearDuplicates.length,
+    nearItems
   };
 }
 
@@ -955,26 +1421,48 @@ function _dedupSignature(items) {
 }
 
 /**
+ * The acknowledgement key for a group. `near` groups get a prefix, so that
+ * "these are three different things" said about `Room 115` / `115` / `115 Key`
+ * is not also read as saying it about a later exact pair that starts with the
+ * same entry. One function so the three places that build this key -- the
+ * scanner, the merge and the dismiss -- cannot drift apart.
+ */
+function _dedupKeyFor(itemOrNameLower, near) {
+  const base = typeof itemOrNameLower === "string"
+    ? itemOrNameLower
+    : (itemOrNameLower && (itemOrNameLower.nameLower || itemOrNameLower.name)) || "";
+  const key = String(base).trim().toLowerCase();
+  return near ? `near:${key}` : key;
+}
+
+/**
  * The duplicate groups a human should still be shown: unacknowledged, and not
  * silently acknowledged by a stale signature.
+ *
+ * Exact and near groups are acknowledged under separate keys. A near group's key
+ * is prefixed so that dismissing "Room 115 / 115 / 115 Key" as three different
+ * things cannot also dismiss a *later* exact "Room 115" / "Room 115" pair whose
+ * first member happens to be the same entry.
  */
 async function findUnreviewedDuplicates() {
-  const { duplicates, scanned, itemCount } = await findDuplicateItems();
+  const { duplicates, nearDuplicates, scanned } = await findDuplicateItems();
   const settings = await getSettings();
   const seen = settings.dedupAcknowledged && typeof settings.dedupAcknowledged === "object"
     ? settings.dedupAcknowledged
     : {};
-  const pending = duplicates.filter((group) => {
-    const nameKey = (group[0].nameLower || group[0].name || "").trim().toLowerCase();
-    return seen[nameKey] !== _dedupSignature(group);
-  });
+  const keyFor = (group, near) => _dedupKeyFor(group[0], near);
+  const pendingFor = (list, near) => list.filter((group) => seen[keyFor(group, near)] !== _dedupSignature(group));
+  const groups = pendingFor(duplicates, false);
+  const nearGroups = pendingFor(nearDuplicates, true);
+  const count = (list) => list.reduce((n, g) => n + g.length, 0);
   return {
-    groups: pending,
+    groups,
+    nearGroups,
     scanned,
-    itemCount: pending.reduce((n, g) => n + g.length, 0),
+    itemCount: count(groups) + count(nearGroups),
     // Counts across *all* groups, acknowledged or not, so the banner can say
     // "you have already looked at the rest" rather than hiding the work.
-    totalGroups: duplicates.length
+    totalGroups: duplicates.length + nearDuplicates.length
   };
 }
 
@@ -1940,6 +2428,336 @@ function fuzzyMatch(q, c) {
     mismatchPenalty: penalty
   };
 }
+
+// ── Matching: is this the same thing? ──────────────────────────────────────
+//
+// The desk types one object several ways. "Room 115", "115" and "115 Key" are
+// the same room, and before this the app treated them as three unrelated
+// strings: a merge existed but copied no fields, so the losing name was not
+// remembered and the next person retyped it and recreated the duplicate.
+//
+// `normalize` cannot see the equivalence on its own. It does not split on "-"
+// or "_", while `isWordBoundary` a few lines above treats all three as word
+// boundaries -- and that inconsistency is why "USB C" does not even *suggest*
+// "USB-C" today. So matching works on a token list instead: split on any
+// non-alphanumeric run, drop the words that carry no identity in a room-and-
+// equipment catalog, and compare the *multiset* of what is left, order-blind.
+//
+// Counts rather than a set, deliberately: "Cable Cable" is not a subset of
+// "Cable".
+var _itemNoiseWords = null;
+function _noiseWords() {
+  if (!_itemNoiseWords) {
+    // Two words, both room-and-equipment vocabulary. Deliberately narrow.
+    //
+    // "key" is NOT here: a key to room 115 is a different physical object from
+    // the room, and `createLoan` refuses a second open loan against one item --
+    // so collapsing them would make the room read as "out" whenever its key
+    // was out. They are told apart by the merge and alias machinery instead.
+    //
+    // "the", "a" and "an" are NOT here either, and the reason is not style:
+    // "A Frame" would canonicalise to "frame" and collide with a bare "Frame",
+    // and "Room A" would canonicalise to nothing at all.
+    _itemNoiseWords = new Set(["room", "rm"]);
+  }
+  return _itemNoiseWords;
+}
+function itemTokens(name) {
+  const n = normalize(name);
+  if (!n) return [];
+  // Split on any non-alphanumeric run, not just whitespace. `normalize` does not
+  // split on "-" or "_", which is why this app cannot currently match "USB C"
+  // to "USB-C" at all -- while `isWordBoundary` a few lines up treats those
+  // same characters as boundaries. Tokenising here fixes that without touching
+  // `normalize`, whose output every scorer in the app depends on.
+  const all = [];
+  for (const w of n.split(/[^a-z0-9]+/)) {
+    if (w) all.push(w);
+  }
+  const stripped = all.filter((w) => !_noiseWords().has(w));
+  // Never let stripping empty a name: "Room" alone is still the name "room".
+  return stripped.length ? stripped : all;
+}
+/**
+ * The canonical form of a name, for comparing two names and nothing else.
+ *
+ * Tokens are sorted, so word order stops mattering: "Key 115" and "115 Key"
+ * are one key. Never shown to anyone -- every screen displays `item.name`.
+ *
+ * Named `matchKey` rather than `itemKey` because `buildReport` has a local
+ * `itemKey` of its own, and a shadowed function is a trap for the next reader.
+ */
+function matchKey(name) {
+  return itemTokens(name).slice().sort().join(" ");
+}
+function _tokenCounts(tokens) {
+  const m = new Map();
+  for (const t of tokens) m.set(t, (m.get(t) || 0) + 1);
+  return m;
+}
+/**
+ * Does one of these token lists strictly contain all of the other? No guard.
+ *
+ * This is the raw relation: symmetric, and willing to pair "cable" with "cable
+ * hdmi". It is only ever used to *suggest*. Attaching uses `isSilentSubset`.
+ */
+function isSubsetKey(aTokens, bTokens) {
+  if (aTokens.length === 0 || bTokens.length === 0) return false;
+  const [small, large] = aTokens.length <= bTokens.length ? [aTokens, bTokens] : [bTokens, aTokens];
+  if (small.length === large.length) return false;
+  const need = _tokenCounts(small);
+  const have = _tokenCounts(large);
+  for (const [tok, n] of need) {
+    if ((have.get(tok) || 0) < n) return false;
+  }
+  return true;
+}
+/**
+ * May the desk attach silently on this pair?
+ *
+ * This is the tier that pairs "115" with "115 Key" -- the desk owner's example.
+ * It is by far the loosest rule in the matcher, so `isSubsetKey` alone is not
+ * enough and it carries a guard, measured against real vocabulary rather than
+ * guessed:
+ *
+ *   the shorter key must be a SINGLE token that CONTAINS A DIGIT
+ *
+ * Without it, every one of these silently attaches to the wrong object:
+ *   "iPad 2"       -> "iPad"          a different device
+ *   "USB Hub"      -> "USB"           a different object
+ *   "Key Card"     -> "Key"           a different object
+ *   "Cable HDMI"   -> "Cable"         and worse, being MORE specific
+ *                                     reaches a different item
+ * With it, all four fall through to a suggestion instead, and the desk still
+ * gets to type "115" and mean the 115 whose key is also on the list. Every
+ * example the owner gave is numeric, so the guard costs them nothing.
+ *
+ * It also preserves the ability to catalogue a second physical unit: once
+ * "115 Key" exists, "115 Key 2" is two tokens against two, so it does not
+ * attach and can be created -- which is the whole point of the existing
+ * "These are different units" path.
+ *
+ * Counts, not a set: a doubled token is not a subset.
+ */
+function isSilentSubset(aTokens, bTokens) {
+  if (!isSubsetKey(aTokens, bTokens)) return false;
+  const small = aTokens.length <= bTokens.length ? aTokens : bTokens;
+  return small.length === 1 && /\d/.test(small[0]);
+}
+/**
+ * An item's key and tokens, memoised.
+ *
+ * Derived from `item.name` every time rather than stored on the record. A
+ * stored copy would be one more field to keep in step across rename, import,
+ * restore and salvage -- and a stale stored key means two names that should
+ * find each other silently stop doing so, which is the whole bug being fixed.
+ * The memo is validated against the name it was built from, so a rename heals
+ * itself even if nothing invalidated the cache.
+ */
+var _nameKeyMemo = null;
+function _nameKeyOf(item) {
+  if (!_nameKeyMemo) _nameKeyMemo = new Map();
+  // Bounded: an import or a wipe can walk ids past the live catalog, and the
+  // memo is only ever an optimisation -- dropping it costs one rebuild, never
+  // correctness.
+  if (_nameKeyMemo.size > 2e4) _nameKeyMemo.clear();
+  const id = item && item.id;
+  if (id != null) {
+    const cached = _nameKeyMemo.get(id);
+    if (cached && cached.name === item.name) return cached;
+  }
+  const tokens = itemTokens(item.name);
+  const rec = {
+    name: item.name,
+    key: tokens.slice().sort().join(" "),
+    tokens
+  };
+  if (id != null) _nameKeyMemo.set(id, rec);
+  return rec;
+}
+var _catalogIdxCache = null;
+/**
+ * The live catalog, arranged for matching: by name key, by alias, and as a
+ * list of tokens for the subset pass.
+ *
+ * Both maps hold **arrays**, not single items, and that is load-bearing. Two
+ * catalog entries can share one canonical key -- "Room A" and "A" both reduce to
+ * "a" -- and picking a winner for them by any rule at all (busiest, lowest id,
+ * first inserted) would be an arbitrary choice dressed up as an answer. A key
+ * held by more than one item is reported as ambiguity instead, so the desk sees
+ * the duplicate rather than one of them silently absorbing the other's loans.
+ *
+ * Rebuilt whenever `getAllItems()` hands back a different array — i.e. exactly
+ * when the catalog actually changed — so there is one invalidation path, not
+ * two caches with two ways to go stale.
+ */
+async function _getCatalogIndex() {
+  const items = await getAllItems();
+  if (_catalogIdxCache && _catalogIdxCache.src === items) return _catalogIdxCache;
+  const byKey = new Map();
+  const byAlias = new Map();
+  const entries = [];
+  const addTo = (map, key, item) => {
+    const cur = map.get(key);
+    if (cur) cur.push(item);
+    else map.set(key, [item]);
+  };
+  for (const item of items) {
+    const rec = _nameKeyOf(item);
+    entries.push({
+      item,
+      tokens: rec.tokens
+    });
+    if (rec.key) addTo(byKey, rec.key, item);
+    for (const alias of item.aliases || []) {
+      const k = alias && typeof alias === "object" ? alias.k : null;
+      if (k) addTo(byAlias, k, item);
+    }
+  }
+  _catalogIdxCache = {
+    src: items,
+    byKey,
+    byAlias,
+    entries
+  };
+  return _catalogIdxCache;
+}
+/**
+ * What does the desk mean by this name?
+ *
+ * Three tiers, in order, and nothing else in the app should need to guess:
+ *
+ *   1. `exact`  — the typed form canonicalises to a live item's own name.
+ *   2. `alias`  — it canonicalises to a form that item was once known by,
+ *                 recorded when it was merged away or typed an extra way.
+ *   3. `subset` — the typed form is not itself an item, and exactly one live
+ *                 item's tokens strictly contain it, under the numeric guard
+ *                 documented on `isSilentSubset`.
+ *
+ * The two guards are the point of the design, and both exist because the desk
+ * owner asked for silent attachment and silent attachment is only survivable if
+ * it refuses to guess:
+ *
+ *   - **Exact beats subset.** Typing "Projector" in a catalog holding both
+ *     "Projector" and "Projector Screen" gives the Projector. Tier 3 is only
+ *     reached when the typed form is not itself an item.
+ *   - **A unique winner is required**, at every tier. Typing "Cable" where both
+ *     "Cable HDMI" and "Cable VGA" exist matches two supersets, so nothing
+ *     attaches and the caller is handed both. Two entries sharing one canonical
+ *     key ("Room A" and "A") are the same situation and are treated the same
+ *     way. Ambiguity never resolves silently.
+ *
+ * Returns `{ item, tier, matchedFrom, alternatives }`, or `null` when the typed
+ * string is blank. `item` is null when nothing resolved; `alternatives` then
+ * carries the candidates the caller should offer instead, and is non-empty
+ * exactly when the answer was *ambiguous* rather than unknown. Keeping those two
+ * apart matters: "Cable" matching both "Cable HDMI" and "Cable VGA" is a question
+ * for the desk, while "Widget" matching nothing is an offer to create.
+ *
+ * `alternatives` always uses the unguarded relation, deliberately: it is the list
+ * of things a person might have meant, so it must include the pairs too loose to
+ * attach to. That is how "Cable" still ends up showing both cables even though it
+ * attaches to neither.
+ *
+ * `matchedFrom` is the string the person actually typed when it differs from the
+ * item's name, so the loan can record what was meant rather than only what it
+ * became.
+ */
+async function resolveItem(name) {
+  const typed = String(name == null ? "" : name).trim();
+  if (!typed) return null;
+  const idx = await _getCatalogIndex();
+  const key = matchKey(typed);
+  if (!key) return null;
+  const exact = idx.byKey.get(key);
+  if (exact && exact.length === 1) {
+    return { item: exact[0], tier: "exact", matchedFrom: null, alternatives: [] };
+  }
+  if (exact) {
+    // One key, several live items: report the duplicate rather than pick one.
+    return { item: null, tier: null, matchedFrom: null, alternatives: exact.slice() };
+  }
+  const viaAlias = idx.byAlias.get(key);
+  if (viaAlias && viaAlias.length === 1) {
+    return { item: viaAlias[0], tier: "alias", matchedFrom: typed, alternatives: [] };
+  }
+  if (viaAlias) {
+    return { item: null, tier: null, matchedFrom: null, alternatives: viaAlias.slice() };
+  }
+  // One pass, two lists: everything that could be meant, and the subset of that
+  // which the guard permits attaching to. Collected together so the scan cost
+  // does not double at 10,000 items.
+  const tokens = key.split(" ");
+  const candidates = [];
+  const attachable = [];
+  for (const entry of idx.entries) {
+    if (!isSubsetKey(tokens, entry.tokens)) continue;
+    candidates.push(entry.item);
+    if (isSilentSubset(tokens, entry.tokens)) attachable.push(entry.item);
+  }
+  if (attachable.length === 1) {
+    return { item: attachable[0], tier: "subset", matchedFrom: typed, alternatives: [] };
+  }
+  return { item: null, tier: null, matchedFrom: null, alternatives: candidates };
+}
+/**
+ * Remember that an item is also known by this name.
+ *
+ * Called on every silent attach. This is the mechanism that makes a merge
+ * permanent: the losing name becomes an alias of the survivor, so the next
+ * person to type it gets a tier-1 exact hit instead of recreating the duplicate.
+ * The merge carries the victim's aliases across for the same reason.
+ */
+async function addItemAlias(item, typed, { label } = {}) {
+  const k = matchKey(typed);
+  if (!k) return item;
+  const own = _nameKeyOf(item).key;
+  if (k === own) return item;
+  const aliases = Array.isArray(item.aliases) ? item.aliases.slice() : [];
+  if (aliases.some((a) => a && a.k === k)) return item;
+  aliases.push({
+    k,
+    label: String(label || typed).trim().slice(0, 60),
+    addedAt: Date.now()
+  });
+  // Newest kept, and few of them. An alias list is a memory of how people got
+  // the name wrong, not an archive: a handful covers every real desk, and a long
+  // one would ride along on every export and every `_nameKeyOf` alias pass.
+  const capped = aliases.slice(-8);
+  const next = Object.assign({}, item, { aliases: capped });
+  await put("items", next);
+  return next;
+}
+/**
+ * The name an item is also known by, for display. Empty when there are none.
+ */
+function itemAliasLabels(item) {
+  return (item && Array.isArray(item.aliases) ? item.aliases : []).map((a) => a && a.label).filter(Boolean);
+}
+/**
+ * Attach to an item the person reached by a name that is not its name.
+ *
+ * Two jobs, and both matter. It records the typed form as an alias, which is
+ * what stops the same near-name being typed again tomorrow and creating the
+ * duplicate this whole area exists to prevent. And it says out loud what it did,
+ * because a silent attach that is genuinely silent is indistinguishable from the
+ * app picking the wrong thing -- the desk has to be able to see the decision it
+ * did not make.
+ *
+ * Used by both surfaces, so staff and kiosk cannot disagree about what a typed
+ * name means, and both say the same sentence when they attach.
+ */
+async function attachToItem(item, typed) {
+  const saved = await addItemAlias(item, typed, { label: typed });
+  const label = String(typed).trim();
+  if (normalize(label) !== normalize(saved.name)) {
+    showToast(`Using "${saved.name}" — matched from "${label}"`, {
+      type: "info",
+      duration: 4e3
+    });
+  }
+  return saved;
+}
 async function searchItems(query, { limit = 30 } = {}) {
   const all = await listItems({
     includeArchived: false
@@ -1953,12 +2771,26 @@ async function searchItems(query, { limit = 30 } = {}) {
     }));
   }
   const scored = [];
+  const qk = matchKey(query);
   for (const item of all) {
-    const score = scoreMatch(q, normalize(item.name));
-    if (score > 0) {
+    // The raw string comparison stays first: it is what gives typos and
+    // partial words their tolerance.
+    let best = scoreMatch(q, normalize(item.name));
+    // Then the canonical form and the remembered names, so "Room 115" finds
+    // "115" and a merged-away name still finds its survivor. The raw
+    // comparison cannot see any of that -- "115" neither contains nor
+    // prefixes "room 115".
+    if (qk) {
+      const rec = _nameKeyOf(item);
+      best = Math.max(best, scoreMatch(qk, rec.key));
+      for (const alias of item.aliases || []) {
+        if (alias && alias.k) best = Math.max(best, scoreMatch(qk, alias.k));
+      }
+    }
+    if (best > 0) {
       scored.push({
         item,
-        score,
+        score: best,
         matchedAs: "name"
       });
     }
@@ -2946,6 +3778,18 @@ function isValidPhone(input) {
   const d = normalizePhone(input);
   return d.length === 10;
 }
+/**
+ * The phone as a person should read it.
+ *
+ * `formatPhone` is for a number someone typed as a number. On anything else it
+ * half-formats -- "x1234", an extension, comes back as "(123) 4" -- which is
+ * worse than what the desk typed, and it is what Copy would hand over too. So a
+ * value that cannot be dialled is shown exactly as it was entered.
+ */
+function displayPhone(phone) {
+  if (isValidPhone(phone)) return formatPhone(phone);
+  return String(phone == null ? "" : phone);
+}
 function telUri(phone) {
   const normalized = normalizePhone(phone);
   if (!normalized || normalized.length !== 10) return "";
@@ -3037,6 +3881,25 @@ init_ui();
 var DRAFT_KEY = "frontdesk.draft";
 var RECENT_KEY = "frontdesk.recentPhones";
 var HOME_EVENT = "frontdesk:home";
+
+// The four conditions an item can come back in, and the only four. This is the
+// list `_confirmAndReturn` checks a condition against before interpolating it
+// into a class attribute, and the list the return sheet's buttons are written
+// from -- `good`/`fair`/`damaged`/`lost`, matching `returnLoan`'s default and
+// the damaged/lost counts on the admin dashboard. It is deliberately not
+// "whatever the caller passed": see the note in `_confirmAndReturn`.
+var RETURN_CONDITIONS = ["good", "fair", "damaged", "lost"];
+
+/**
+ * How many catalog cards the checkout step draws before the box is the way in.
+ *
+ * This step used to render the entire catalog -- 10,000 cards, each a DOM node
+ * with a click handler, built on every visit to the step. The frequent strip
+ * above is what people actually pick from, and 60 is comfortably more than a
+ * hand's-width scroll; the search box below covers everything else and the count
+ * line says how much is not shown.
+ */
+var CHECKOUT_LIST_CAP = 60;
 var CheckoutFlow = class {
   constructor() {
     this.state = {
@@ -3272,6 +4135,23 @@ var CheckoutFlow = class {
     });
     borrower.phoneFormatted = formatPhone(borrower.phone);
     this.state.borrower = borrower;
+    // The number wins over the name, and it should: the phone is the identity
+    // here, and the schema allows one borrower per number. But the staff member
+    // has just typed a different name, and without this it is discarded in
+    // silence -- the loan is booked to whoever the number belongs to and the
+    // name on screen never appears anywhere. Say so while the number can still
+    // be corrected, rather than leaving it to be noticed on a receipt.
+    //
+    // The ordinary path does not reach this: `handlePhone` finds one match and
+    // skips the name step, and finds none and the record cannot appear here. It
+    // is the resume-and-race case -- a draft resumed after the number was taken
+    // in another tab -- which is exactly when nobody is looking.
+    if (normalize(borrower.name) !== normalize(trimmed)) {
+      showToast(`Using ${borrower.name} — ${formatPhone(borrower.phone)} is already on record for them. Fix the number if this is someone else.`, {
+        type: "info",
+        duration: 8e3
+      });
+    }
     learnWords(tokensFromName(trimmed));
     this._saveDraft();
     this._gotoStep(3);
@@ -3299,26 +4179,42 @@ var CheckoutFlow = class {
    * @param {string} name
    * @param {string} [category]
    * @param {Object} [opts]
-   * @param {boolean} [opts.skipDialog] - if true and a duplicate exists,
-   *   return the existing item instead of prompting. Used for the
+   * @param {boolean} [opts.skipDialog] - if true and the name is already taken
+   *   *verbatim*, return the existing item instead of prompting. Used for the
    *   frictionless "Add to catalog" button.
+   *
+   * Matching goes through `resolveItem`, so the desk gets the same answer here
+   * as on the kiosk. The one case that still asks a question is the literal
+   * duplicate: typing "115" when an item is named exactly "115" is genuinely
+   * ambiguous -- it is either the 115 that exists or a second physical unit of
+   * it -- and no rule can tell those apart, which is what the existing "These
+   * are different units" flow is for. Everything else is a spelling of
+   * something already catalogued, and attaches.
    */
   async handleNewItem(name, category = "Other", opts = {}) {
     const trimmed = sentenceCase(String(name || "").trim());
-    if (!trimmed) {
-      showToast("Please enter an item name", {
+    const problem = itemNameProblem(trimmed);
+    if (problem) {
+      showToast(problem, {
         type: "error"
       });
       return null;
     }
-    const existing = await findItemByName(trimmed);
-    if (existing) {
+    const res = await resolveItem(trimmed);
+    if (res && res.item) {
+      const literal = normalize(trimmed) === normalize(res.item.name);
+      if (!literal) {
+        // "Room 115" for "115", "115" for "115 Key", "usb c" for "USB-C".
+        // No dialog: the desk owner asked for these to attach, and the naming
+        // toast is how a silent attach stays visible rather than surprising.
+        return await attachToItem(res.item, trimmed);
+      }
       if (opts.skipDialog) {
-        return existing;
+        return res.item;
       }
       const choice = await showDialog({
         title: "Item already exists",
-        body: `<p>An item named <strong>${escapeHtml(existing.name)}</strong> already exists (${existing.timesCheckedOut || 0} check-outs).</p><p>Add another with the same name?</p>`,
+        body: `<p>An item named <strong>${escapeHtml(res.item.name)}</strong> already exists (${res.item.timesCheckedOut || 0} check-outs).</p><p>Add another with the same name?</p>`,
         buttons: [
           {
             label: "Use existing",
@@ -3337,14 +4233,32 @@ var CheckoutFlow = class {
           }
         ]
       });
-      if (choice === "existing") return existing;
+      if (choice === "existing") return res.item;
       if (choice !== "new") return null;
+    } else if (res && res.alternatives.length) {
+      // Two or more items could be meant. Never guess, and never create --
+      // creating here is what produces the duplicate this work exists to stop.
+      showToast("Several items match that name — pick one from the list", {
+        type: "error",
+        duration: 5e3
+      });
+      return null;
     }
-    const created = await createItem({
-      name: trimmed,
-      category
-    });
-    return created;
+    try {
+      const created = await createItem({
+        name: trimmed,
+        category
+      });
+      return created;
+    } catch (err) {
+      // createItem is the choke point and can still refuse something the check
+      // above did not predict. Saying so beats a handler that dies quietly.
+      showToast(err?.message || "Could not add that item", {
+        type: "error",
+        duration: 5e3
+      });
+      return null;
+    }
   }
   /**
    * Commit all selected items as loans. Shows success toast with Undo,
@@ -3390,6 +4304,10 @@ var CheckoutFlow = class {
         const loan = await createLoan({
           itemId: item.id,
           borrowerId: this.state.borrower ? this.state.borrower.id : null,
+          // No borrower means the desk pressed "Walk-in — no name". Saying so is
+          // what the loan record needs; without it `createLoan` refuses, which is
+          // how this button came to fail on every press.
+          walkIn: !this.state.borrower,
           checkedOutAt: Date.now(),
           dueAt,
           conditionOut: "good"
@@ -3424,10 +4342,13 @@ var CheckoutFlow = class {
     }
     const undo = async () => {
       try {
-        const result = await undoLoansAtomic(created.map((c) => c.loan));
-        if (result.errors && result.errors.length > 0) {
-          console.warn("undo: partial errors", result.errors);
-        }
+        // `undoLoansAtomic` either undoes all of them or throws -- it works in one
+        // transaction, so there is no partial result to report. The branch that
+        // used to sit here logged `result.errors` and then toasted success
+        // regardless; it could never fire, because that function has no path that
+        // puts anything in `errors`. Removed rather than kept as decoration: a
+        // reader has to be able to trust that a failure means the catch below.
+        await undoLoansAtomic(created.map((c) => c.loan));
         showToast("Checkout undone", {
           type: "info",
           duration: 2e3
@@ -3787,7 +4708,17 @@ var CheckoutFlow = class {
       allWrap.innerHTML = "";
       const heading = root.querySelector(".item-section:nth-of-type(2) .section-title");
       if (heading) heading.textContent = `ALL ITEMS (${rest.length})`;
-      for (const item of rest) allWrap.appendChild(this._makeItemCard(item));
+      const shown = rest.slice(0, CHECKOUT_LIST_CAP);
+      for (const item of shown) allWrap.appendChild(this._makeItemCard(item));
+      if (rest.length > shown.length) {
+        // Says so rather than trailing off. A list that stops without a word looks
+        // like the catalog is that size, and the desk goes hunting for an item it
+        // was never shown.
+        const more = document.createElement("p");
+        more.className = "item-list-empty";
+        more.textContent = `Showing the first ${shown.length} of ${rest.length} — type below to find the rest.`;
+        allWrap.appendChild(more);
+      }
       if (all.length === 0) {
         const empty = document.createElement("p");
         empty.className = "item-list-empty";
@@ -3805,17 +4736,41 @@ var CheckoutFlow = class {
       for (const { item } of results) allWrap.appendChild(this._makeItemCard(item));
     }
     const typed = (query || "").trim();
+    // Resolve before deciding whether to offer creation, so the two cannot
+    // disagree: this is the screen where the desk types "Room 115" and needs to
+    // be told it means the 115 already on the list, not offered a new one.
+    const res = typed ? await resolveItem(typed) : null;
+    const resolved = (res && res.item) || null;
+    const ambiguous = !!(res && !res.item && res.alternatives.length);
+    // Only the verbatim repeat is a question for the desk.
+    const literal = !!(resolved && normalize(typed) === normalize(resolved.name));
+    if (resolved && !literal) {
+      // Say so before the tap, not after it. The item card is already in the
+      // list above; this explains why tapping anything up there is fine.
+      const note = document.createElement("p");
+      note.className = "item-match-note";
+      note.appendChild(document.createTextNode(`Using ${resolved.name} — matched from `));
+      const typedEl = document.createElement("em");
+      typedEl.textContent = `"${typed}"`;
+      note.appendChild(typedEl);
+      allWrap.appendChild(note);
+    }
     let showAddNew = false;
-    if (typed) {
-      const exactMatch = await findItemByName(typed);
-      if (!exactMatch) {
-        const results = await searchItems(typed, {
-          limit: 1
-        });
-        if (results.length === 0) {
-          showAddNew = true;
-        }
+    if (typed && !resolved && !ambiguous) {
+      const results = await searchItems(typed, {
+        limit: 1
+      });
+      if (results.length === 0) {
+        showAddNew = true;
       }
+    }
+    if (ambiguous) {
+      // Two or more entries could be meant. Offer nothing to create, because
+      // creating here is exactly how "Cable" becomes three catalog rows.
+      const note = document.createElement("p");
+      note.className = "item-match-note";
+      note.textContent = `Several items match "${typed}" — pick one from the list above.`;
+      allWrap.appendChild(note);
     }
     if (showAddNew) {
       const addNew = document.createElement("button");
@@ -4107,6 +5062,13 @@ var CheckinFlow = class {
   async _confirmAndReturn(condition, notes) {
     const loan = this.state.selectedLoan;
     if (!loan) return;
+    // `condition` is interpolated into a class attribute below, so it is checked
+    // against the four the app can produce rather than trusted. Nothing passes
+    // anything else today -- it comes from the button's own `data-condition`,
+    // which the app wrote -- but "it comes from our own markup" is a property of
+    // today's callers, not of this function, and a class attribute is somewhere a
+    // quote character escapes from.
+    if (RETURN_CONDITIONS.indexOf(condition) === -1) condition = "good";
     const item = this.state.items.get(loan.itemId);
     const borrower = loan.borrowerId != null ? this.state.borrowers.get(loan.borrowerId) : null;
     const itemName = item?.name || loan.itemNameSnapshot || "?";
@@ -4120,7 +5082,7 @@ var CheckinFlow = class {
       fair: "~ Returned in fair condition",
       damaged: "\u26A0 Returned damaged",
       lost: "\u2717 Marked as LOST"
-    }[condition] || condition;
+    }[condition];
     const confirmBody = `
       <div class="confirm-summary">
         <div class="summary-row">
@@ -4785,10 +5747,18 @@ function triggerDownload(data, filename) {
 }
 function csvEscape(s) {
   const str = String(s ?? "");
-  if (/[",\n\r]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
+  // A cell beginning with = + - @ (or a tab, or a carriage return) is a *formula*
+  // to Excel, Numbers and Sheets, not text. A spreadsheet evaluates it on open,
+  // and the app's cells are not all the desk's own: the kiosk lets a borrower name
+  // an item, and a borrower could name one "=HYPERLINK(...)" -- which would then
+  // run the moment anyone opened an exported report. A leading apostrophe is the
+  // standard way to say "this is text"; it is what OWASP recommends for CSV
+  // exports, and it is visible, so nothing is hidden from the person reading it.
+  const safe = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+  if (/[",\n\r]/.test(safe)) {
+    return `"${safe.replace(/"/g, '""')}"`;
   }
-  return str;
+  return safe;
 }
 async function getOrCreateBackupDir() {
   let handle = await loadHandle();
@@ -4961,12 +5931,22 @@ function initKiosk() {
   if (nameContinue) {
     nameContinue.onclick = () => handleNameSubmit();
   }
-  // There used to be a "Skip — no name" button here. It set isWalkIn, and
-  // createLoan throws "Walk-in borrowers require a customName for the loan"
-  // because no kiosk caller passes customName -- so every walk-in ended in a
-  // failure toast, and the loan it was trying to make would have had a null
-  // borrowerId, meaning the borrower could never return it at the kiosk either.
-  // The kiosk now requires a name; anyone who won't give one is sent to the desk.
+  // There used to be a "Skip — no name" button here, which set isWalkIn.
+  //
+  // Two things were wrong with it, and only one of them was the obvious one.
+  // It failed on every press, because `createLoan` then demanded a `customName`
+  // that no kiosk caller ever passed -- a crash, visible as a failure toast.
+  // That gate has since been replaced: `createLoan` takes `walkIn` explicitly
+  // now, so the button would no longer throw.
+  //
+  // It would still be wrong. A walk-in loan has no borrowerId, and the kiosk's
+  // return step finds a loan by the person standing there -- see the
+  // "Please ask staff for help" state in `_renderKioskReturnItems`, which says
+  // in as many words that walk-in returns cannot be processed at the kiosk. A
+  // borrower who skipped the name could take an item out and then have no way
+  // to hand it back, on a tablet with nobody at it. So the kiosk requires a
+  // name, and anyone who won't give one is sent to the desk. Removing the
+  // button is about the return path; the crash it used to cause is history.
   const nameInput = document.getElementById("kiosk-name");
   if (nameInput) {
     nameInput.addEventListener("keydown", (e) => {
@@ -4975,7 +5955,7 @@ function initKiosk() {
   }
   const needInput = document.getElementById("kiosk-need");
   if (needInput) {
-    needInput.addEventListener("input", () => _updateTypeahead());
+    needInput.addEventListener("input", () => _onNeedInput());
     needInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -4987,9 +5967,15 @@ function initKiosk() {
   if (confirmBtn) {
     confirmBtn.onclick = () => _handleCommit();
   }
-  const doneBtn = document.querySelector('[data-action="kiosk-back-home"]');
-  if (doneBtn) {
-    doneBtn.onclick = () => _kioskBackHome();
+  // `querySelectorAll`, not `querySelector`: two screens carry this action --
+  // the borrow confirmation and the list a borrower sees after a return -- and
+  // `querySelector` binds only the first in document order. The return screen's
+  // DONE button was therefore dead: tapping an item to report a return and then
+  // tapping DONE did nothing at all, and the only way off that screen was Back,
+  // through the phone step, to the welcome screen. Nothing caught it because the
+  // kiosk suite clicks this action scoped to the *borrow* screen.
+  for (const btn of document.querySelectorAll('[data-action="kiosk-back-home"]')) {
+    btn.onclick = () => _kioskBackHome();
   }
   const returnPhoneContinue = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (returnPhoneContinue) {
@@ -5095,15 +6081,77 @@ async function handleNameSubmit() {
   }, 100);
 }
 var _allItemsCache = null;
+var _allItemsCachedAt = 0;
 async function getAllItems() {
-  if (_allItemsCache) return _allItemsCache;
+  const now = Date.now();
+  if (_allItemsCache && now - _allItemsCachedAt < ITEMS_CACHE_TTL_MS) {
+    return _allItemsCache;
+  }
   _allItemsCache = await listItems({
     includeArchived: false
   });
+  _allItemsCachedAt = now;
   return _allItemsCache;
 }
+/**
+ * The single invalidation point for every catalog read cache.
+ *
+ * **You almost certainly do not need to call this.** It is wired into `runTx`'s
+ * `oncomplete`, `put` and `del`, so any committed write that touches the `items`
+ * store drops all three caches by itself. Call it directly only for a change
+ * that is not an item write but does change what the catalog resolves to --
+ * importing a backup, or wiping the database.
+ *
+ * That placement is the fix for a real bug, not tidiness. It used to be called
+ * from four hand-picked places and `createItem` was not among them, so an item a
+ * staff member added from the checkout step existed in the database but was
+ * invisible to the kiosk picker until the page reloaded. Created instantly, still
+ * not there. A per-call-site list cannot be kept complete; this can.
+ */
 function invalidateItemsCache() {
   _allItemsCache = null;
+  _itemsRawCache = null;
+  _catalogIdxCache = null;
+}
+/**
+ * Drop the "which items are out" cache. Called from the same central place as
+ * `invalidateItemsCache`, but keyed on `loans` rather than `items`.
+ *
+ * The two are separate on purpose. Check-in writes only to `loans`, so a single
+ * cache keyed on the items list would keep reporting a returned item as still
+ * out -- refusing a borrower something that is on the shelf, until an unrelated
+ * item edit happened to clear it.
+ */
+function invalidateAvailabilityCache() {
+  _outItemIdsCache = null;
+}
+/**
+ * Which items are out right now, cached.
+ *
+ * Deliberately **not** folded into `_allItemsCache`. Availability is derived from
+ * `loans`, not from `items`, so it goes stale on a completely different write:
+ * returning an item writes only to `loans`, and a cache keyed on the items list
+ * would have gone on saying "already out" until somebody happened to add or edit
+ * an item. That is a borrower being refused an item that is sitting on the shelf.
+ *
+ * Its own invalidation, wired into the same central place as the item caches --
+ * see `invalidateAvailabilityCache`.
+ */
+var _outItemIdsCache = null;
+var _outItemIdsCachedAt = 0;
+async function _outItemIds() {
+  const now = Date.now();
+  if (_outItemIdsCache && now - _outItemIdsCachedAt < ITEMS_CACHE_TTL_MS) {
+    return _outItemIdsCache;
+  }
+  const openLoans = await getOpenLoans();
+  const ids = new Set();
+  for (const loan of openLoans) {
+    if (loan.itemId != null) ids.add(loan.itemId);
+  }
+  _outItemIdsCache = ids;
+  _outItemIdsCachedAt = now;
+  return ids;
 }
 /**
  * Items a borrower may actually take right now: in the catalog, not archived,
@@ -5116,41 +6164,119 @@ function invalidateItemsCache() {
  */
 async function getKioskPickableItems() {
   const items = await getAllItems();
-  const openLoans = await getOpenLoans();
-  const outItemIds = new Set();
-  for (const loan of openLoans) {
-    if (loan.itemId != null) outItemIds.add(loan.itemId);
-  }
+  const outItemIds = await _outItemIds();
   return items.map((item) => ({
     item,
     isOut: outItemIds.has(item.id)
   }));
 }
-function _fuzzyScore(query, name) {
-  if (!query) return 0;
-  const q = query.toLowerCase();
-  const n = (name || "").toLowerCase();
-  if (n === q) return 1e3;
-  if (n.startsWith(q)) return 500;
-  if (n.includes(q)) return 100;
-  let i = 0;
-  for (const c of n) if (c === q[i]) i++;
-  return i === q.length ? 50 : 0;
+/**
+ * How many items one kiosk session may add, and what it has added so far.
+ *
+ * Module-local and reset by `_kioskBackHome`, so "a session" means one borrower
+ * standing at the tablet from the moment they reach the item step until they
+ * finish or give up. The cap answers the objection the old code was removed for:
+ * that the control wrote a permanent catalog row *"with no confirmation, no cap
+ * and no rate limit"*. There is still no confirmation -- the desk owner asked for
+ * creation to be instant -- so the cap and the once-per-name rule are what stand
+ * in its place, together with the review flag that brings a human to look.
+ */
+var KIOSK_CREATE_MAX = 3;
+var _kioskCreateState = { count: 0, keys: new Set() };
+function resetKioskCreations() {
+  _kioskCreateState = { count: 0, keys: new Set() };
 }
-function _renderSuggestions(matches, query) {
+/**
+ * May the public add this name, and if not, what should they be told?
+ *
+ * Every branch returns wording a borrower can act on. "Refused" on its own is
+ * what the desk reported as a dead end: they could not tell whether the app was
+ * broken or the item was genuinely missing.
+ */
+function kioskCreateCheck(typed) {
+  const t = String(typed == null ? "" : typed).trim();
+  const alnum = t.replace(/[^a-z0-9]/gi, "");
+  if (alnum.length < 2) {
+    return { ok: false, reason: "Type a bit more of the name, or ask the front desk." };
+  }
+  if (t.length > 60) {
+    return { ok: false, reason: "That name is too long. Please ask the front desk." };
+  }
+  const key = matchKey(t);
+  if (!key) {
+    return { ok: false, reason: "That name is not something the desk can add. Please ask them." };
+  }
+  if (_kioskCreateState.keys.has(key)) {
+    return { ok: false, reason: "You have already added that one. Please ask the front desk." };
+  }
+  if (_kioskCreateState.count >= KIOSK_CREATE_MAX) {
+    return { ok: false, reason: `You have added ${KIOSK_CREATE_MAX} items \u2014 please ask the front desk for anything else.` };
+  }
+  return { ok: true, key, name: t };
+}
+/**
+ * The item step's list under the text box.
+ *
+ * `opts` carries the two decisions this step has to make beyond showing matches:
+ * whether to offer to add the typed name, and whether the catalog is empty. Both
+ * are computed by the caller, which is the only place that knows what else was
+ * found.
+ *
+ * The add control is deliberately **not** classed `kiosk-suggestion`, because
+ * that class means "a catalog item you can tap" and several behaviours key on it;
+ * an add row that answered to the same selector would make "the list offers the
+ * item" true when no item exists. It is a separate class, and it is only ever
+ * appended after the real matches are rendered.
+ */
+function _renderSuggestions(matches, query, opts = {}) {
   const container = document.getElementById("kiosk-need-suggestions");
   if (!container) return;
+  const { create = null, catalogEmpty = false } = opts;
   container.innerHTML = "";
+  // What this list is the answer to. `_onNeedInput` compares the box against it
+  // and takes the list away as soon as they disagree -- see there for why that
+  // matters more than the flicker it costs.
+  _kioskSuggestQuery = query;
   if (matches.length === 0) {
-    if (!query) return;
-    // Used to read `New item \u2014 press Enter to add "X"`, and pressing Enter
-    // really did write a permanent row into the catalog with no confirmation,
-    // no cap and no rate limit. The public surface no longer writes to the
-    // catalog at all; anything not on the list is a job for the front desk.
-    const empty = document.createElement("div");
-    empty.className = "kiosk-suggestion-empty";
-    empty.textContent = "Not on the list \u2014 please ask the front desk";
-    container.appendChild(empty);
+    if (!query) {
+      // The catalog being empty used to look exactly like a clean slate: no
+      // rows, no message. Someone had to say so, hence the reported "THERES NO
+      // ITEMS". Say it here rather than leaving a blank box.
+      if (catalogEmpty) {
+        const note = document.createElement("div");
+        note.className = "kiosk-suggestion-empty";
+        note.textContent = "Nothing has been added to the list yet. Type what you need below and it can be added for you.";
+        container.appendChild(note);
+      }
+      return;
+    }
+    const note = document.createElement("div");
+    note.className = "kiosk-suggestion-empty";
+    note.textContent = create && create.ok
+      ? "Not on the list yet \u2014 you can add it below, or ask the front desk."
+      : "Not on the list \u2014 please ask the front desk";
+    container.appendChild(note);
+    if (create && create.ok) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "kiosk-add-new";
+      btn.dataset.action = "kiosk-add-new";
+      const label = document.createElement("span");
+      label.className = "kiosk-add-new-name";
+      label.textContent = `Add "${create.name}"`;
+      const hint = document.createElement("span");
+      hint.className = "kiosk-suggestion-category";
+      hint.textContent = "the desk will check it later";
+      btn.appendChild(label);
+      btn.appendChild(hint);
+      btn.onclick = () => _kioskCreateAndCheckout(create);
+      container.appendChild(btn);
+    } else if (create && create.reason) {
+      const why = document.createElement("div");
+      why.className = "kiosk-suggestion-empty";
+      why.textContent = create.reason;
+      container.appendChild(why);
+    }
     return;
   }
   for (const entry of matches) {
@@ -5162,25 +6288,94 @@ function _renderSuggestions(matches, query) {
     btn.dataset.itemId = String(item.id);
     btn.disabled = isOut;
     btn.innerHTML = `<span>${escapeHtml2(item.name)}</span>` + (item.category ? `<span class="kiosk-suggestion-category">${escapeHtml2(item.category)}</span>` : "") + (isOut ? '<span class="kiosk-suggestion-category">already out</span>' : "");
-    if (!isOut) btn.onclick = () => _checkout(item);
+    if (!isOut) btn.onclick = () => {
+      const box = document.getElementById("kiosk-need");
+      _checkout(item, box ? box.value.trim() : "");
+    };
     container.appendChild(btn);
   }
+}
+var KIOSK_TYPEAHEAD_DEBOUNCE_MS = 120;
+var _kioskTypeaheadTimer = null;
+/**
+ * Rebuild the suggestion list, once the typing has stopped.
+ *
+ * Debounced because each pass is a catalog search, and at the catalog size this
+ * app has to hold that is far too much work to repeat on every keystroke. The
+ * delay is short enough to feel immediate and long enough that a fast typist
+ * triggers one pass rather than eight.
+ */
+function _updateTypeaheadSoon() {
+  if (_kioskTypeaheadTimer) clearTimeout(_kioskTypeaheadTimer);
+  _kioskTypeaheadTimer = setTimeout(() => {
+    _kioskTypeaheadTimer = null;
+    _updateTypeahead();
+  }, KIOSK_TYPEAHEAD_DEBOUNCE_MS);
+}
+/** The query the list currently on screen was built for. */
+var _kioskSuggestQuery = null;
+/**
+ * A keystroke in the item box.
+ *
+ * The list under the box is only ever the answer to the query it was built for,
+ * and this is what enforces that. Clearing it the moment the two disagree is not
+ * cosmetic: the rows are tappable, and every row checks out its item on tap. Left
+ * standing through the 120ms debounce, a borrower who typed "HDMI dongle" and
+ * tapped the first row they saw would be handed the "Clicker" left over from the
+ * previous borrower's search -- a wrong item, on a real loan record, with nothing
+ * on screen to say so. A brief empty list is the honest thing to show while the
+ * answer is still being worked out.
+ */
+function _onNeedInput() {
+  const input = document.getElementById("kiosk-need");
+  if (input && input.value.trim() !== _kioskSuggestQuery) {
+    const container = document.getElementById("kiosk-need-suggestions");
+    if (container) container.innerHTML = "";
+    _kioskSuggestQuery = null;
+  }
+  _updateTypeaheadSoon();
 }
 async function _updateTypeahead() {
   const input = document.getElementById("kiosk-need");
   if (!input) return;
   const query = input.value.trim();
+  const all = await getAllItems();
   if (!query) {
-    _renderSuggestions([], "");
+    _renderSuggestions([], "", { catalogEmpty: all.length === 0 });
     return;
   }
-  const pickable = await getKioskPickableItems();
-  const scored = pickable.map((entry) => ({
-    entry,
-    score: _fuzzyScore(query, entry.item.nameLower || entry.item.name)
-  })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score || (a.entry.isOut ? 1 : 0) - (b.entry.isOut ? 1 : 0)).slice(0, 5).map((x) => x.entry);
-  _renderSuggestions(scored, query);
+  // The same matcher the staff screens use, so a name cannot behave one way at
+  // the desk and another at the tablet. This replaced a private `_fuzzyScore`
+  // that only ever compared raw strings and therefore could not see that
+  // "Room 115" and "115" are the same thing.
+  const scored = await searchItems(query, { limit: 20 });
+  const outIds = await _outItemIds();
+  const withOut = scored.map((s) => ({ item: s.item, isOut: outIds.has(s.item.id) }));
+  // Available first, then by match quality: a borrower who types an exact name
+  // must not lose it below the fold because a taken item scored higher.
+  withOut.sort((a, b) => (a.isOut ? 1 : 0) - (b.isOut ? 1 : 0));
+  const matches = withOut.slice(0, 5);
+  // An item that is already out is still shown (disabled) -- but it is not an
+  // offer to add, and neither is anything the matcher *did* find. The add
+  // control therefore appears only when the list came back empty, which is also
+  // the only case where `searchItems` and `resolveItem` can disagree.
+  const create = matches.length === 0 ? kioskCreateCheck(query) : null;
+  _renderSuggestions(matches, query, { create, catalogEmpty: all.length === 0 });
 }
+/**
+ * The borrower pressed Done / Enter on the item step.
+ *
+ * This path **never creates** anything. Creating is behind the add button and
+ * only there, which is what keeps a stray Enter from writing a catalog row --
+ * the exact behaviour the old code was removed for. All this does is find the
+ * item the borrower means and take it, or say clearly why it cannot.
+ *
+ * Matching goes through `resolveItem`, against the **whole live catalog** rather
+ * than only what is on the shelf. That distinction matters: "115" is out, someone
+ * types "Room 115", and a matcher that only looks at available items finds
+ * nothing, offers to add, and gives one physical key two open loans. Resolving
+ * first and checking availability second cannot do that.
+ */
 async function _handleCommit() {
   const input = document.getElementById("kiosk-need");
   if (!input) return;
@@ -5193,31 +6388,154 @@ async function _handleCommit() {
     return;
   }
   await openDB();
-  const pickable = await getKioskPickableItems();
-  const q = query.toLowerCase();
-  const nameOf = (e) => (e.item.nameLower || e.item.name || "").toLowerCase();
-  // Exact first, then prefix -- but only among items that are actually on the
-  // shelf. A taken item must not be silently checked out, and an unknown string
-  // must not become a catalog row.
-  const match = pickable.find((e) => !e.isOut && nameOf(e) === q) || pickable.find((e) => !e.isOut && nameOf(e).startsWith(q));
-  if (match) {
-    await _checkout(match.item);
+  const res = await resolveItem(query);
+  if (res && res.item) {
+    const outIds = await _outItemIds();
+    if (outIds.has(res.item.id)) {
+      showToast(`${res.item.name} is already out. Ask the front desk.`, {
+        type: "error",
+        duration: 4e3
+      });
+      return;
+    }
+    await _checkout(res.item, query);
     return;
   }
-  const taken = pickable.find((e) => e.isOut && (nameOf(e) === q || nameOf(e).startsWith(q)));
-  if (taken) {
-    showToast(`${taken.item.name} is already out. Ask the front desk.`, {
+  if (res && res.alternatives.length) {
+    showToast("More than one item matches that — tap the one you need", {
       type: "error",
       duration: 4e3
     });
     return;
   }
-  showToast("That item is not on the list. Please ask the front desk.", {
+  const check = kioskCreateCheck(query);
+  showToast(check.ok
+    ? `That item is not on the list — tap Add "${check.name}" below, or ask the front desk.`
+    : "That item is not on the list. Please ask the front desk.", {
     type: "error",
-    duration: 4e3
+    duration: 5e3
   });
 }
-async function _checkout(item) {
+/**
+ * Create an item at the kiosk and immediately check it out, in one transaction.
+ *
+ * One transaction because the two halves are one act. `createItem` followed by
+ * `createLoan` is two, and anything in between -- a crash, or `createLoan`
+ * refusing because the item is somehow already out -- leaves a catalog row with
+ * no loan, which is a mystery entry for the desk to find later. Here either both
+ * happen or neither does.
+ *
+ * The item is stamped `createdBy: "kiosk"` and `needsReview: true`, which is the
+ * desk owner's chosen policy: the public may add, a human gets told.
+ */
+async function _kioskCreateAndCheckout(create) {
+  if (!create || !create.ok) return;
+  if (!state.borrower || state.borrower.id == null) {
+    showToast("Please enter your phone number first", {
+      type: "error"
+    });
+    goToScreen(KIOSK_SCREENS.borrowPhone);
+    return;
+  }
+  // Re-check at the moment of the press, not only when the button was drawn: the
+  // cap could have been reached, or the same name added, by another tap while
+  // this button sat on screen.
+  const check = kioskCreateCheck(create.name);
+  if (!check.ok) {
+    showToast(check.reason, {
+      type: "error",
+      duration: 5e3
+    });
+    return;
+  }
+  const btn = document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
+  if (btn) btn.disabled = true;
+  await openDB();
+  // Claim the slot before the write, so a double tap cannot create two rows.
+  _kioskCreateState.count += 1;
+  _kioskCreateState.keys.add(check.key);
+  const dueAt = await getKioskDueAt();
+  try {
+    const name = sentenceCase(create.name);
+    const loan = await runTx(["items", "loans", "borrowers"], "readwrite", async (s) => {
+      const borrower = await s.req(s.get("borrowers").get(state.borrower.id));
+      if (!borrower) throw new Error("Your details could not be found. Please ask the front desk.");
+      const now = Date.now();
+      const item = {
+        name,
+        nameLower: name.toLowerCase(),
+        category: "Other",
+        location: "",
+        condition: "good",
+        notes: "",
+        timesCheckedOut: 0,
+        lastCheckedOutAt: null,
+        isArchived: false,
+        createdAt: now,
+        createdBy: "kiosk",
+        needsReview: true
+      };
+      const itemId = await s.req(s.get("items").add(item));
+      const record = {
+        itemId,
+        itemNameSnapshot: name,
+        borrowerId: borrower.id,
+        borrowerPhoneSnapshot: borrower.phone || "",
+        borrowerNameSnapshot: borrower.name || "",
+        checkedOutAt: now,
+        dueAt,
+        returnedAt: null,
+        isOpen: "open",
+        conditionOut: "good",
+        conditionIn: null,
+        notes: "kiosk self-checkout",
+        recordedBy: "kiosk",
+        // What the borrower actually typed, when it is not the name on the
+        // record -- "room 115" for an item the desk knows as "115". Without it
+        // the desk cannot tell a typo from a real second unit.
+        matchedFrom: normalize(create.name) !== normalize(name) ? create.name : ""
+      };
+      await s.req(s.get("loans").add(record));
+      const created = Object.assign({}, item, { id: itemId });
+      created.timesCheckedOut = 1;
+      created.lastCheckedOutAt = now;
+      await s.req(s.get("items").put(created));
+      borrower.timesCheckedOut = (borrower.timesCheckedOut || 0) + 1;
+      borrower.lastSeenAt = now;
+      await s.req(s.get("borrowers").put(borrower));
+      return Object.assign({}, record, { id: itemId });
+    });
+    const doneText = document.getElementById("kiosk-done-text");
+    if (doneText) doneText.textContent = name;
+    goToScreen(KIOSK_SCREENS.borrowDone);
+    _startDoneCountdown();
+    state.phone = null;
+    state.borrower = null;
+    state.isNew = false;
+    const input = document.getElementById("kiosk-need");
+    if (input) input.value = "";
+    return loan;
+  } catch (err) {
+    // Hand the slot back: nothing was written, so the borrower has not used one.
+    _kioskCreateState.count -= 1;
+    _kioskCreateState.keys.delete(check.key);
+    if (btn) btn.disabled = false;
+    showToast(err && err.message ? err.message : "That could not be added. Please ask the front desk.", {
+      type: "error",
+      duration: 5e3
+    });
+    return null;
+  }
+}
+/**
+ * Take an item out to the borrower at the tablet.
+ *
+ * `typedFrom` is whatever the borrower actually typed, when that differs from the
+ * item's name -- "Room 115" for the item the desk calls "115". It is recorded on
+ * the loan so the desk can see what was meant rather than only what it became,
+ * which is the difference between spotting a naming habit and not.
+ */
+async function _checkout(item, typedFrom) {
   if (!state.borrower || state.borrower.id == null) {
     showToast("Please enter your phone number first", {
       type: "error"
@@ -5234,7 +6552,8 @@ async function _checkout(item) {
       checkedOutAt: Date.now(),
       dueAt,
       conditionOut: "good",
-      notes: "kiosk self-checkout"
+      notes: "kiosk self-checkout",
+      matchedFrom: typedFrom && normalize(typedFrom) !== normalize(item.name) ? typedFrom : ""
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = item.name;
@@ -5300,23 +6619,63 @@ function _cancelDoneCountdown() {
   const containerEl = document.getElementById("kiosk-done-countdown");
   if (containerEl) containerEl.classList.add("hidden");
 }
+/**
+ * Put the item step back to blank: the box, and the list under it.
+ *
+ * This has to run on *entry* to the step, not only when the borrower finishes.
+ * Two things were wrong without it, and both are visible in the same moment:
+ *
+ *  - the box still held whatever the previous borrower typed, so the next person
+ *    to walk up read somebody else's item name sitting in the field;
+ *  - the list under it still held that borrower's results, including items marked
+ *    `already out`. It is only replaced once the new borrower types and the
+ *    debounce fires, so for that window the screen was actively asserting
+ *    something false -- the same shape of failure as the reported "THERES NO
+ *    ITEMS", where the step showed a state that was not the catalog's.
+ *
+ * Registered as an `onEnter` hook for the step, so every route into it is
+ * covered rather than the four that happen to call `goToScreen` today.
+ */
+function _resetNeedStep() {
+  // A debounced pass from the previous borrower must not land after the clear and
+  // re-render a list nobody asked for.
+  if (_kioskTypeaheadTimer) {
+    clearTimeout(_kioskTypeaheadTimer);
+    _kioskTypeaheadTimer = null;
+  }
+  const input = document.getElementById("kiosk-need");
+  if (input) input.value = "";
+  const suggestEl = document.getElementById("kiosk-need-suggestions");
+  if (suggestEl) suggestEl.innerHTML = "";
+  _kioskSuggestQuery = null;
+}
 function _kioskBackHome() {
   _cancelDoneCountdown();
   state.phone = null;
   state.borrower = null;
   state.isNew = false;
+  // "kiosk-need" is not in this list on purpose: `_resetNeedStep` owns that box,
+  // because it has to be cleared on every entry to the step and not only on the
+  // way out.
   const ids = [
     "kiosk-phone",
     "kiosk-name",
-    "kiosk-need",
     "kiosk-return-phone"
   ];
   for (const id of ids) {
     const el = document.getElementById(id);
     if (el) el.value = "";
   }
-  const suggestEl = document.getElementById("kiosk-need-suggestions");
-  if (suggestEl) suggestEl.innerHTML = "";
+  _resetNeedStep();
+  // A new borrower at the tablet gets a fresh allowance. The cap is per session
+  // -- "how much may one person add before a human looks" -- not per shift, so
+  // leaving the item step and starting again is exactly the reset it should be.
+  //
+  // Deliberately *not* part of `_resetNeedStep`: that runs on every entry to the
+  // step, and re-entering it is not the same act as finishing a session. If it
+  // reset here, a borrower could walk in and out of the step to buy themselves a
+  // second three-item allowance.
+  resetKioskCreations();
   goToScreen("welcome");
 }
 async function handleReturnPhoneSubmit() {
@@ -5879,7 +7238,12 @@ async function showAdmin() {
   touchAdminSession();
   await renderAdminStats();
   await renderRecentKiosk();
-  await _renderActiveTab();
+  // The active tab is *not* rendered here. `goToScreen` above already ran the
+  // admin screen's own enter hook, which is `_renderActiveTab` -- and calling it
+  // again meant every login read the whole catalog twice, both passes racing on
+  // the same innerHTML. At 10,000 items that is two full reads of the store to
+  // draw one screen. The hook is the single path, and it also covers coming back
+  // from a detail screen, which this line never did.
 }
 async function showItemDetail(itemId) {
   goToScreen("admin-detail", {
@@ -5910,6 +7274,21 @@ async function showItemDetail(itemId) {
     const avgMs = durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
     const damageCount = closed.filter((l) => l.conditionIn === "damaged").length;
     const lostCount = closed.filter((l) => l.conditionIn === "lost").length;
+    // A merged entry and the item it was merged into are two screens, and the
+    // archived one is only reachable from the archived list -- so it has to say
+    // where its loans went, or someone will unarchive it and wonder why the
+    // history is missing.
+    let mergedInto = null;
+    if (item.mergedIntoId) {
+      const keeper = await get("items", item.mergedIntoId);
+      mergedInto = {
+        id: item.mergedIntoId,
+        name: (keeper && keeper.name) || (item.mergeMeta && item.mergeMeta.keepName) || `item ${item.mergedIntoId}`,
+        moved: item.mergeMeta && item.mergeMeta.loansMoved,
+        at: item.mergeMeta && item.mergeMeta.mergedAt
+      };
+    }
+    const alsoKnownAs = itemAliasLabels(item);
     content.innerHTML = `
       <div class="return-card">
         <div class="return-item">
@@ -5919,10 +7298,13 @@ async function showItemDetail(itemId) {
           <div class="loan-meta">Checked out <strong>${item.timesCheckedOut || 0}</strong> times total</div>
           ${item.lastCheckedOutAt ? `<div class="loan-meta">Last: ${formatAbsoluteTime(item.lastCheckedOutAt)}</div>` : ""}
           ${item.notes ? `<div class="loan-meta" style="margin-top:8px; font-style:italic;">${escapeHtml3(item.notes)}</div>` : ""}
+          ${item.needsReview ? `<div class="loan-meta item-review-chip">Added at the kiosk — not reviewed yet</div>` : ""}
+          ${alsoKnownAs.length ? `<div class="loan-meta" style="margin-top:8px;">Also known as: ${escapeHtml3(alsoKnownAs.join(", "))}</div>` : ""}
+          ${mergedInto ? `<div class="loan-meta" style="margin-top:8px;">Merged into <button class="link-btn" data-action="open-merged-into" data-id="${mergedInto.id}">${escapeHtml3(mergedInto.name)}</button>${mergedInto.moved != null ? ` — ${mergedInto.moved} loan${mergedInto.moved === 1 ? "" : "s"} moved` : ""}${mergedInto.at ? ` ${formatAbsoluteTime(mergedInto.at)}` : ""}</div>` : ""}
         </div>
         <div style="display:flex; gap:12px; margin-top:16px; flex-wrap:wrap;">
           <button class="btn btn-secondary" data-action="edit-item">Edit</button>
-          <button class="btn btn-ghost" data-action="archive-item">${item.isArchived ? "Unarchive" : "Archive"}</button>
+          <button class="btn btn-ghost" data-action="${mergedInto ? "unmerge-item" : "archive-item"}">${mergedInto ? "Undo merge" : item.isArchived ? "Unarchive" : "Archive"}</button>
         </div>
       </div>
 
@@ -5954,7 +7336,18 @@ async function showItemDetail(itemId) {
     const list = content.querySelector("#item-loans-list");
     for (const loan of closed) list.appendChild(_makeClosedLoanRow(loan));
     content.querySelector('[data-action="edit-item"]')?.addEventListener("click", () => _editItem(item));
-    content.querySelector('[data-action="archive-item"]')?.addEventListener("click", () => _archiveItem(item));
+    // A merged item has one control, not two. Leaving the plain Archive button on
+    // it as well would offer an "Unarchive" that puts the item back in the catalog
+    // while the keeper still claims its name as an alias -- reachable only by
+    // typing that name when it is not an exact hit, so the desk would see an item
+    // come back and still not be able to find it. `_unmergeItem` is the only way
+    // out of a merged state, and it puts all three things back.
+    const unmergeBtn = content.querySelector('[data-action="unmerge-item"]');
+    if (unmergeBtn) unmergeBtn.addEventListener("click", () => _unmergeItem(item));
+    else content.querySelector('[data-action="archive-item"]')?.addEventListener("click", () => _archiveItem(item));
+    content.querySelector('[data-action="open-merged-into"]')?.addEventListener("click", (e) => {
+      showItemDetail(Number(e.currentTarget.dataset.id));
+    });
   } catch (err) {
     if (content) content.innerHTML = `<p style="color:var(--error);">Error: ${escapeHtml3(err.message)}</p>`;
   }
@@ -6546,11 +7939,313 @@ function _loansToCsv(loans) {
   ].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   return bom + csv;
 }
+/**
+ * Catalog entries the kiosk created that nobody has looked at yet.
+ *
+ * The desk owner's decision was that the public tablet may create an item on the
+ * spot, flagged for review. This is the other half of that decision, and it is
+ * the half that makes it safe: a flag with no surface is the same as no flag, and
+ * the failure mode is a catalog quietly filling with whatever a borrower typed.
+ *
+ * Archived entries are excluded -- archiving one is itself a decision about it --
+ * and a merged one has had its flag cleared by the merge. `needsReview` has no
+ * index (adding one would mean a schema version bump for a field that is read
+ * once per Items tab), so this is a filter over the cached catalog, which is the
+ * same array `listItems` already hands out.
+ */
+async function findKioskReviewItems() {
+  const items = await listItems({
+    includeArchived: false
+  });
+  return items.filter((it) => it.needsReview === true);
+}
+/**
+ * The "added at the kiosk" strip above the item list.
+ *
+ * Sits beside the duplicates banner rather than inside it: the two answer
+ * different questions, and the duplicates banner's own checks are built on its
+ * markup. A kiosk-created item is not necessarily a duplicate -- it is an item
+ * whose name nobody at the desk has seen yet -- so it gets its own line.
+ */
+async function _renderKioskReviewBanner(container) {
+  if (!container) return;
+  let pending;
+  try {
+    pending = await findKioskReviewItems();
+  } catch (err) {
+    console.error("[kiosk] could not scan for unreviewed items:", err);
+    container.innerHTML = "";
+    return;
+  }
+  if (pending.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = `
+    <div class="dedup-banner">
+      <div class="dedup-banner-text">
+        <div class="dedup-banner-title">${pending.length} item${pending.length === 1 ? "" : "s"} added at the kiosk ${pending.length === 1 ? "needs" : "need"} a look</div>
+        <div class="loan-meta">
+          A borrower typed ${pending.length === 1 ? "this name" : "these names"} at the tablet. The loan went
+          through either way — check ${pending.length === 1 ? "it is" : "they are"} the item you would have
+          catalogued, and rename, merge or archive ${pending.length === 1 ? "it" : "them"} here.
+        </div>
+      </div>
+      <button class="btn btn-secondary" data-action="review-kiosk">Review</button>
+    </div>
+  `;
+  container.querySelector('[data-action="review-kiosk"]').onclick = () => _showKioskReview();
+}
+/**
+ * Admin → Items → Review kiosk additions.
+ *
+ * One row per item the tablet created, newest first, each saying what was typed,
+ * when, and who took it out -- the three things a person needs to decide whether
+ * the entry is right. Every row offers the same three answers, and each of them
+ * *is* the review, so none of them leaves the flag set:
+ *
+ *   Keep          -- the entry is fine; clear the flag and move on.
+ *   Merge into…   -- it is a duplicate of something already catalogued. Uses the
+ *                    same `mergeItems` the duplicate screen uses, so the merged
+ *                    name keeps resolving and the merge is undoable.
+ *   Archive       -- it does not belong in the catalog. Archiving hides it and
+ *                    keeps it, which is the same treatment a merge gives a victim.
+ *
+ * Rename is deliberately not a fourth button: the item's own screen already has
+ * Edit, and a second rename path here would be a second place to get the alias
+ * bookkeeping wrong.
+ */
+async function _showKioskReview() {
+  goToScreen("admin-detail", {
+    data: {
+      kind: "kiosk-review"
+    }
+  });
+  const root = document.getElementById("screen-admin-detail");
+  if (!root) return;
+  const titleEl = root.querySelector(".detail-title");
+  const content = root.querySelector(".detail-content");
+  if (titleEl) titleEl.textContent = "Kiosk additions";
+  if (content) content.innerHTML = '<p style="text-align:center; padding:32px;">Loading…</p>';
+  const render = async () => {
+    if (!content) return;
+    let pending;
+    try {
+      pending = await findKioskReviewItems();
+    } catch (err) {
+      content.innerHTML = `<p style="color:var(--error);">Error: ${escapeHtml3(err.message)}</p>`;
+      return;
+    }
+    if (pending.length === 0) {
+      content.innerHTML = `
+        <div class="return-card">
+          <div class="item-name" style="font-size:20px; margin-bottom:8px;">Nothing to review</div>
+          <div class="loan-meta">Every item the kiosk added has been dealt with. Anything the tablet adds from now on shows up here.</div>
+        </div>
+      `;
+      return;
+    }
+    // Who took it out, and when. One loan lookup per item rather than a full
+    // scan: this list is short by construction -- it is only what the tablet has
+    // added and nobody has confirmed.
+    const rows = [];
+    for (const item of pending.slice().reverse()) {
+      let who = "";
+      let when = item.createdAt ? formatRelativeTime(Date.now() - item.createdAt) : "";
+      try {
+        const loans = await getLoansForItem(item.id);
+        const latest = loans.slice().sort((a, b) => (b.checkedOutAt || 0) - (a.checkedOutAt || 0))[0];
+        if (latest) {
+          who = latest.borrowerNameSnapshot || (latest.borrowerPhoneSnapshot ? formatPhone(latest.borrowerPhoneSnapshot) : "(walk-in)");
+        }
+      } catch {
+        who = "";
+      }
+      rows.push(`
+        <div class="loan-section" data-item-id="${Number(item.id)}">
+          <div class="dedup-member" style="align-items:flex-start;">
+            <div style="flex:1;">
+              <div class="borrower-name">${escapeHtml3(item.name)}</div>
+              <div class="loan-meta">
+                ${when ? `typed ${escapeHtml3(when)}` : "typed at the kiosk"}
+                ${who ? ` \xB7 taken by ${escapeHtml3(who)}` : ""}
+                \xB7 ${Number(item.timesCheckedOut) || 0}\xD7 out
+              </div>
+            </div>
+          </div>
+          <div class="dedup-actions">
+            <button class="btn btn-primary" data-action="keep" data-item-id="${Number(item.id)}">Keep</button>
+            <button class="btn btn-secondary" data-action="merge-into" data-item-id="${Number(item.id)}">Merge into…</button>
+            <button class="btn btn-ghost" data-action="archive" data-item-id="${Number(item.id)}">Archive</button>
+            <button class="btn btn-ghost" data-action="open" data-item-id="${Number(item.id)}">Open</button>
+          </div>
+        </div>
+      `);
+    }
+    content.innerHTML = `
+      <div class="return-card" style="margin-bottom:16px;">
+        <div class="loan-meta">
+          These were created on the public tablet, so the loan is already recorded — this screen is about
+          whether the <strong>catalog entry</strong> is right. Keeping one clears its flag; merging removes the
+          duplicate for good; archiving hides it without deleting it.
+        </div>
+      </div>
+      ${rows.join("")}
+    `;
+    _wireKioskReview(content, render);
+  };
+  await render();
+}
+function _wireKioskReview(content, render) {
+  const idOf = (el) => Number(el.dataset.itemId);
+  content.querySelectorAll('[data-action="keep"]').forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const item = await get("items", idOf(btn));
+      if (!item) return;
+      item.needsReview = false;
+      await put("items", item);
+      showToast(`"${item.name}" kept`, {
+        type: "success"
+      });
+      await render();
+    });
+  });
+  content.querySelectorAll('[data-action="archive"]').forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const item = await get("items", idOf(btn));
+      if (!item) return;
+      // Archiving is the answer to "this should not be in the catalog", so it
+      // also answers the review question. Leaving the flag on an archived item
+      // would be invisible (the list hides archived entries) and would come back
+      // the moment anyone unarchived it.
+      item.isArchived = true;
+      item.needsReview = false;
+      await put("items", item);
+      showToast(`"${item.name}" archived`, {
+        type: "success"
+      });
+      await render();
+    });
+  });
+  content.querySelectorAll('[data-action="open"]').forEach((btn) => {
+    btn.addEventListener("click", () => showItemDetail(idOf(btn)));
+  });
+  content.querySelectorAll('[data-action="merge-into"]').forEach((btn) => {
+    btn.addEventListener("click", () => _mergeKioskItem(idOf(btn), render));
+  });
+}
+/**
+ * Pick the catalog entry a kiosk addition is a duplicate of, then merge into it.
+ *
+ * Reuses `mergeItems`, so the typed name becomes an alias of the survivor and the
+ * next person who types it gets an exact hit -- and so an undo is available on
+ * the survivor's screen. The picker is a search over the catalog rather than the
+ * nearest-ten list `_mergeBorrower` uses, because at this catalog size the entry
+ * the desk wants is often not in the top ten by any ordering this code could
+ * guess, and a search box is the one control that scales.
+ */
+async function _mergeKioskItem(victimId, render) {
+  const victim = await get("items", victimId);
+  if (!victim) return;
+  const form = document.createElement("div");
+  form.innerHTML = `
+    <input class="input" placeholder="Search the catalog…" data-f="q" />
+    <div id="merge-picker-results" style="max-height:280px; overflow:auto; margin-top:12px;"></div>
+  `;
+  const results = form.querySelector("#merge-picker-results");
+  const qInput = form.querySelector('[data-f="q"]');
+  let chosen = null;
+  const search = async () => {
+    const q = qInput.value.trim();
+    const found = q ? (await searchItems(q, {
+      limit: 20
+    })).map((r) => r.item) : (await listItems({})).slice(0, 20);
+    const candidates = found.filter((it) => it.id !== victimId);
+    results.innerHTML = "";
+    if (candidates.length === 0) {
+      const p = document.createElement("div");
+      p.className = "loan-meta";
+      p.textContent = q ? "Nothing matches that." : "The catalog has nothing else in it.";
+      results.appendChild(p);
+      return;
+    }
+    for (const it of candidates) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "dedup-member";
+      row.style.width = "100%";
+      row.style.textAlign = "left";
+      row.innerHTML = `
+        <div style="flex:1;">
+          <div class="borrower-name">${escapeHtml3(it.name)}</div>
+          <div class="loan-meta">${escapeHtml3(it.category || "Other")} \xB7 ${Number(it.timesCheckedOut) || 0}\xD7 out</div>
+        </div>
+      `;
+      row.onclick = () => {
+        chosen = it;
+        for (const other of results.querySelectorAll(".dedup-member")) {
+          other.classList.remove("is-selected");
+        }
+        row.classList.add("is-selected");
+      };
+      results.appendChild(row);
+    }
+  };
+  let debounce;
+  qInput.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => search().catch((err) => console.error("merge search failed:", err)), 120);
+  });
+  await search();
+  const keepId = await showDialog({
+    title: `Merge "${victim.name}" into…`,
+    body: form,
+    buttons: [
+      {
+        label: "Cancel",
+        value: null,
+        variant: "ghost"
+      },
+      {
+        label: "Merge",
+        // The dialog closes on the click, so the choice has to be read here
+        // rather than returned -- `chosen` is the picker's own state.
+        value: "merge",
+        variant: "primary"
+      }
+    ]
+  });
+  if (keepId !== "merge") return;
+  if (!chosen) {
+    // The dialog cannot disable its own button while the choice is made inside
+    // the body, so the empty case is answered out loud rather than closing in
+    // silence -- a Merge button that does nothing on an empty selection reads as
+    // a broken button.
+    showToast("Pick the entry to merge into first", {
+      type: "error"
+    });
+    return;
+  }
+  try {
+    const res = await mergeItems(chosen.id, victimId);
+    showToast(`"${res.mergedName}" merged into "${res.keepName}" \xB7 ${res.loansMoved} loan${res.loansMoved === 1 ? "" : "s"} moved`, {
+      type: "success",
+      duration: 6e3
+    });
+  } catch (err) {
+    showToast(`Merge failed: ${err && err.message ? err.message : "see the log"}`, {
+      type: "error",
+      duration: 6e3
+    });
+  }
+  await render();
+}
 async function renderItems() {
   const panel = document.querySelector("#tab-items .admin-list");
   if (!panel) return;
   panel.innerHTML = `
     <div id="duplicates-panel"></div>
+    <div id="kiosk-review-panel"></div>
     <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
       <input type="text" class="setting-input" placeholder="Search items..." data-filter="q" style="flex:2; min-width:200px;" />
       <select class="setting-input" data-filter="sort" style="flex:1; min-width:160px;">
@@ -6568,14 +8263,26 @@ async function renderItems() {
   const qInput = panel.querySelector('input[data-filter="q"]');
   const sortSelect = panel.querySelector('select[data-filter="sort"]');
   const refresh = () => _renderItemsList(content, qInput.value, sortSelect.value);
-  qInput.addEventListener("input", refresh);
+  // Typing waits a moment; choosing a sort and adding an item do not. Every
+  // keystroke otherwise re-reads the catalog and re-sorts it, which at 10,000
+  // items is the difference between a search box that keeps up and one that drops
+  // characters while the desk is still typing.
+  let qDebounce = null;
+  qInput.addEventListener("input", () => {
+    clearTimeout(qDebounce);
+    qDebounce = setTimeout(refresh, ADMIN_SEARCH_DEBOUNCE_MS);
+  });
   sortSelect.addEventListener("change", refresh);
   panel.querySelector('[data-action="add-item"]').onclick = () => _promptAddItem(refresh);
   // A permanent way in. The banner disappears once every group has been resolved
   // or dismissed -- which would otherwise strand the review screen, and with it
   // the only undo for a group dismissed by mistake.
   panel.querySelector('[data-action="review-dups-all"]').onclick = () => _showDuplicatesReview();
-  await Promise.all([refresh(), _renderDuplicatesBanner(panel.querySelector("#duplicates-panel"))]);
+  await Promise.all([
+    refresh(),
+    _renderDuplicatesBanner(panel.querySelector("#duplicates-panel")),
+    _renderKioskReviewBanner(panel.querySelector("#kiosk-review-panel"))
+  ]);
 }
 
 /**
@@ -6597,18 +8304,27 @@ async function _renderDuplicatesBanner(container) {
     container.innerHTML = "";
     return;
   }
-  if (pending.groups.length === 0) {
+  const exact = pending.groups.length;
+  const near = pending.nearGroups.length;
+  if (exact + near === 0) {
     container.innerHTML = "";
     return;
   }
-  const n = pending.groups.length;
-  const reviewed = pending.totalGroups - n;
+  const reviewed = pending.totalGroups - exact - near;
+  // Two sentences, because the two kinds of duplicate deserve different
+  // confidence: an identical name is almost certainly one thing entered twice,
+  // while entries that merely share a word are a question. Saying so is what
+  // keeps the second kind from being merged by reflex.
+  const title = exact > 0
+    ? `${exact + near} possible duplicate${exact + near === 1 ? "" : "s"} in the catalog`
+    : `${near} similar name${near === 1 ? "" : "s"} worth a look`;
   container.innerHTML = `
     <div class="dedup-banner">
       <div class="dedup-banner-text">
-        <div class="dedup-banner-title">${n} name${n === 1 ? "" : "s"} shared by more than one entry</div>
+        <div class="dedup-banner-title">${title}</div>
         <div class="loan-meta">
-          ${pending.itemCount} entries share ${n} name${n === 1 ? "" : "s"}.
+          ${exact > 0 ? `${exact} name${exact === 1 ? "" : "s"} shared by more than one entry. ` : ""}
+          ${near > 0 ? `${near} group${near === 1 ? "" : "s"} of entries with similar names — "Room 115", "115" and "115 Key" are one thing; "Cable HDMI" and "Cable VGA" are two. ` : ""}
           Two physical units with the same name is normal — merge only when it is the same item entered twice.
           ${reviewed > 0 ? ` ${reviewed} other group${reviewed === 1 ? "" : "s"} already reviewed.` : ""}
         </div>
@@ -6654,7 +8370,7 @@ async function _showDuplicatesReview() {
     const resetBtn = reviewedCount > 0
       ? `<button class="btn btn-ghost" data-action="reset-dups" style="margin-top:16px;">Show the ${reviewedCount} reviewed group${reviewedCount === 1 ? "" : "s"} again</button>`
       : "";
-    if (pending.groups.length === 0) {
+    if (pending.groups.length + pending.nearGroups.length === 0) {
       content.innerHTML = `
         <div class="return-card">
           <div class="item-name" style="font-size:20px; margin-bottom:8px;">Nothing to review</div>
@@ -6666,7 +8382,15 @@ async function _showDuplicatesReview() {
       return;
     }
     const openCounts = await _openCountsByItem();
-    const sections = pending.groups.map((group, gi) => {
+    // Exact groups first, then similar-name groups. The order is the argument:
+    // an identical name is near-certainly one thing, a shared word is a
+    // question, and showing them in that order keeps the second from being
+    // treated with the first's confidence.
+    const allGroups = [
+      ...pending.groups.map((group) => ({ group, near: false })),
+      ...pending.nearGroups.map((group) => ({ group, near: true }))
+    ];
+    const sections = allGroups.map(({ group, near }, gi) => {
       const groupOut = group.filter((it) => openCounts.get(it.id)).length;
       // mergeItems refuses when two entries are both out, because the survivor
       // would end up carrying two open loans. Say so up front and disable the
@@ -6692,8 +8416,8 @@ async function _showDuplicatesReview() {
         `;
       }).join("");
       return `
-        <div class="loan-section" data-group="${gi}">
-          <h2 class="section-title">${escapeHtml3(group[0].name)} — ${group.length} entries</h2>
+        <div class="loan-section" data-group="${gi}" data-near="${near ? "1" : "0"}">
+          <h2 class="section-title">${escapeHtml3(group[0].name)} — ${group.length} entries${near ? " (similar names)" : ""}</h2>
           <div class="dedup-group">${members}</div>
           <div class="dedup-actions">
             <button class="btn btn-primary" data-action="merge" data-group="${gi}" ${bothOut ? "disabled" : ""}>
@@ -6709,7 +8433,14 @@ async function _showDuplicatesReview() {
       <div class="return-card" style="margin-bottom:16px;">
         <div class="loan-meta">
           Pick which entry should survive, then merge. Loans move to the survivor, it keeps the combined
-          checkout count, and the others are archived — nothing is deleted. Merging cannot be undone from here.
+          checkout count, and the <strong>other names keep working</strong> — once "Room 115" is merged
+          into "115", typing either one finds "115".
+        </div>
+        <div class="loan-meta" style="margin-top:8px;">
+          Nothing is deleted, and a merge can be undone: the merged entry is archived, and
+          <strong>Undo merge</strong> on its own screen puts it back — its name stops meaning the survivor,
+          and any loan that is still out goes back with it. Loans that have already been returned stay on
+          the survivor, because that is where the history happened.
         </div>
       </div>
       ${sections}
@@ -6741,6 +8472,10 @@ function _wireDuplicatesReview(content, render) {
       const gi = btn.dataset.group;
       const section = content.querySelector(`.loan-section[data-group="${gi}"]`);
       if (!section) return;
+      // Near groups are acknowledged under a prefixed key, so dismissing this
+      // one cannot also dismiss a later exact group that happens to start with
+      // the same entry. Mirrors `findUnreviewedDuplicates`.
+      const near = section.dataset.near === "1";
       const radios = [...section.querySelectorAll('input[type="radio"]')];
       const keeperRadio = radios.find((r) => r.checked) || radios[0];
       if (!keeperRadio) return;
@@ -6754,17 +8489,36 @@ function _wireDuplicatesReview(content, render) {
       const byId = new Map(items.map((it) => [it.id, it]));
       const keeper = byId.get(keepId);
       const keeperName = keeper ? keeper.name : `item ${keepId}`;
-      const ok = await confirmDialog(
-        `Merge ${victims.length} other entr${victims.length === 1 ? "y" : "ies"} into "${keeperName}"? Their loans move across and they are archived.`,
-        {
-          title: "Merge duplicates",
-          danger: true,
-          confirmLabel: "Merge",
-          cancelLabel: "Cancel"
-        }
-      );
+      // Dry run first. The desk is about to move real loan records, so it gets
+      // told exactly how many before it commits rather than reading it in a
+      // toast afterwards -- and told which names will keep resolving to the
+      // survivor, because that is the part that is invisible once it is done.
+      const previews = [];
+      for (const victimId of victims) {
+        const p = await previewMerge(keepId, victimId);
+        if (p) previews.push(p);
+      }
+      const totalLoans = previews.reduce((n, p) => n + p.loansMoved, 0);
+      const totalOpen = previews.reduce((n, p) => n + p.openLoansMoved, 0);
+      const addedCheckOuts = previews.reduce((n, p) => n + p.checkOutsMoved, 0);
+      const losingNames = previews.map((p) => p.mergeName).filter((n) => normalize(n) !== normalize(keeperName));
+      const sentence = [
+        `Merge ${victims.length} other entr${victims.length === 1 ? "y" : "ies"} into "${keeperName}"?`,
+        `${totalLoans} loan${totalLoans === 1 ? "" : "s"} move${totalLoans === 1 ? "s" : ""} across${totalOpen ? `, ${totalOpen} of them still out` : ""}, and the checkout count becomes ${(keeper && keeper.timesCheckedOut || 0) + addedCheckOuts}.`,
+        losingNames.length ? `"${losingNames.join('", "')}" will keep finding this item.` : "",
+        "Nothing is deleted: the merged entries stay in the catalog, archived, and Undo merge on one of their own screens puts it back.",
+        previews.some((p) => p.bothOpen)
+          ? "One of these is checked out while the survivor is too — that merge will be refused until one is returned."
+          : ""
+      ].filter(Boolean).join(" ");
+      const ok = await confirmDialog(sentence, {
+        title: "Merge duplicates",
+        danger: true,
+        confirmLabel: "Merge",
+        cancelLabel: "Cancel"
+      });
       if (!ok) return;
-      const nameKey = keeper ? (keeper.nameLower || keeper.name || "").trim().toLowerCase() : "";
+      const nameKey = keeper ? _dedupKeyFor(keeper, near) : "";
       const failures = [];
       let moved = 0;
       for (const victimId of victims) {
@@ -6775,7 +8529,6 @@ function _wireDuplicatesReview(content, render) {
           failures.push(err.message);
         }
       }
-      invalidateItemsCache();
       if (failures.length) {
         showToast(`Merged ${victims.length - failures.length} of ${victims.length}. ${failures[0]}`, {
           type: "error",
@@ -6798,6 +8551,7 @@ function _wireDuplicatesReview(content, render) {
       const gi = btn.dataset.group;
       const section = content.querySelector(`.loan-section[data-group="${gi}"]`);
       if (!section) return;
+      const near = section.dataset.near === "1";
       const ids = [...section.querySelectorAll('input[type="radio"]')].map((r) => Number(r.value));
       const items = await listItems({
         includeArchived: true
@@ -6805,7 +8559,7 @@ function _wireDuplicatesReview(content, render) {
       const byId = new Map(items.map((it) => [it.id, it]));
       const members = ids.map((id) => byId.get(id)).filter(Boolean);
       if (members.length === 0) return;
-      const nameKey = (members[0].nameLower || members[0].name || "").trim().toLowerCase();
+      const nameKey = _dedupKeyFor(members[0], near);
       await setDedupAcknowledged(nameKey, _dedupSignature(members));
       showToast("Marked as separate units — won't ask again unless the list changes", {
         type: "info"
@@ -6814,14 +8568,36 @@ function _wireDuplicatesReview(content, render) {
     });
   });
 }
-async function _renderItemsList(content, query, sortBy) {
+/**
+ * How many item rows the admin list draws before it offers "Show more".
+ *
+ * Deliberately above the 36 items the layout suite seeds, so no existing check
+ * changes meaning, and far below the 10,000 this catalog has to hold: the point
+ * is that the screen opens instantly and search is the way in, not that every
+ * row is on screen.
+ */
+var ITEMS_RENDER_CAP = 200;
+/** Typing settles before the list redraws. See `_renderItemsList`. */
+var ADMIN_SEARCH_DEBOUNCE_MS = 120;
+async function _renderItemsList(content, query, sortBy, limit = ITEMS_RENDER_CAP) {
   if (!content) return;
   const includeArchived = true;
   const all = await listItems({
     includeArchived
   });
   const q = (query || "").toLowerCase().trim();
-  let filtered = q ? all.filter((it) => it.name.toLowerCase().includes(q) || (it.category || "").toLowerCase().includes(q)) : all;
+  // Aliases and location are searched, not just name and category. An alias is
+  // a name people actually type -- it is how a merged-away entry keeps working --
+  // so a search that ignored it would fail to find the item by the very word the
+  // desk remembers it by, and location is how someone finds "the one in the
+  // cabinet". Both are the exact strings the desk uses out loud.
+  let filtered = q
+    ? all.filter((it) =>
+        (it.name || "").toLowerCase().includes(q) ||
+        (it.category || "").toLowerCase().includes(q) ||
+        (it.location || "").toLowerCase().includes(q) ||
+        (it.aliases || []).some((a) => a && String(a.label || "").toLowerCase().includes(q)))
+    : all;
   filtered.sort((a, b) => {
     if (sortBy === "timesCheckedOut") return (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0);
     if (sortBy === "lastCheckedOutAt") return (b.lastCheckedOutAt || 0) - (a.lastCheckedOutAt || 0);
@@ -6832,22 +8608,50 @@ async function _renderItemsList(content, query, sortBy) {
   });
   content.innerHTML = "";
   if (filtered.length === 0) {
-    content.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:32px;">No items yet</p>';
+    // The two empty states are different facts and used to share one sentence.
+    // "No items yet" on a search that matched nothing tells the desk the catalog
+    // is empty, which is the same false assertion as the reported "THERES NO
+    // ITEMS" -- the screen claiming a state the database is not in.
+    content.innerHTML = q
+      ? `<p style="text-align:center; color:var(--text-muted); padding:32px;">Nothing matches "${escapeHtml3(query.trim())}".</p>`
+      : '<p style="text-align:center; color:var(--text-muted); padding:32px;">No items yet</p>';
     return;
   }
-  for (const item of filtered) {
+  const shown = filtered.slice(0, limit);
+  for (const item of shown) {
     const row = document.createElement("div");
     row.className = "admin-list-item";
     if (item.isArchived) row.style.opacity = "0.5";
     row.innerHTML = `
       <div style="flex:1;">
-        <div class="borrower-name">${escapeHtml3(item.name)} ${item.isArchived ? '<span class="loan-meta" style="color:var(--warning);">(archived)</span>' : ""}</div>
+        <div class="borrower-name">${escapeHtml3(item.name)} ${item.isArchived ? '<span class="loan-meta" style="color:var(--warning);">(archived)</span>' : ""}${item.needsReview ? ' <span class="loan-meta item-review-chip">kiosk</span>' : ""}</div>
         <div class="loan-meta">${escapeHtml3(item.category || "Other")} \xB7 ${item.timesCheckedOut || 0}\xD7 out${item.lastCheckedOutAt ? " \xB7 last " + agoLabel(Date.now() - item.lastCheckedOutAt) : ""}</div>
       </div>
-      <div class="item-count">${item.condition || "good"}</div>
+      <div class="item-count">${escapeHtml3(item.condition || "good")}</div>
     `;
     row.onclick = () => showItemDetail(item.id);
     content.appendChild(row);
+  }
+  // The count line is always shown, not only when the list is capped: "200 of
+  // 1,204" is the desk's only evidence that the list is a window rather than the
+  // whole catalog, and a window that looks complete is how something goes
+  // missing from a search.
+  const count = document.createElement("div");
+  count.className = "loan-meta";
+  count.style.padding = "12px";
+  count.textContent = shown.length < filtered.length
+    ? `Showing ${shown.length} of ${filtered.length} — type to narrow`
+    : `${filtered.length} item${filtered.length === 1 ? "" : "s"}${q ? " matching" : ""}`;
+  content.appendChild(count);
+  if (shown.length < filtered.length) {
+    const more = document.createElement("button");
+    more.className = "btn btn-ghost";
+    more.style.margin = "0 12px 12px";
+    more.textContent = `Show ${Math.min(ITEMS_RENDER_CAP, filtered.length - shown.length)} more`;
+    // Safe as a stale closure: this button lives inside `content`, which every
+    // refresh clears, so a changed query destroys it before it can be clicked.
+    more.onclick = () => _renderItemsList(content, query, sortBy, limit + ITEMS_RENDER_CAP);
+    content.appendChild(more);
   }
 }
 async function renderPeople() {
@@ -7062,7 +8866,19 @@ async function renderSettings() {
       });
     }
   };
-  panel.querySelector('[data-action="wipe"]').onclick = () => _wipeData();
+  // `.catch` because a wipe that fails must not look like a wipe that worked.
+  // This used to reject invisibly -- the three clears had committed while the
+  // settings write threw, so the toast and the re-render never ran and the only
+  // trace was a line in the host log.
+  panel.querySelector('[data-action="wipe"]').onclick = () => {
+    _wipeData().catch((err) => {
+      console.error("wipe failed:", err);
+      showToast(`Wipe failed: ${err && err.message ? err.message : "see the log"}`, {
+        type: "error",
+        duration: 6e3
+      });
+    });
+  };
   await _renderHostSettings(panel.querySelector("#host-settings"));
 }
 
@@ -7142,7 +8958,9 @@ async function _renderHostSettings(container) {
         <input type="checkbox" data-action="autostart"${info?.autostart ? " checked" : ""} />
         <span>Start Front Desk when Windows starts</span>
       </label>
-      <div class="loan-meta">Starts minimised to the notification area, so the desk is ready before anyone arrives.</div>
+      <div class="loan-meta">Starts minimised to the notification area, so the desk is ready before anyone arrives.${
+        info?.autostart ? ` Windows will run it as: <span class="path-value" style="display:inline;">${escape(info?.autostartArgs || "no options")}</span>` : ""
+      }</div>
     </div>
 
     <div class="setting-group" style="margin-top:24px;">
@@ -7786,33 +9604,44 @@ async function _makeOverdueRow(loan) {
         &middot; out ${formatRelativeTime(Date.now() - loan.checkedOutAt)}
         &middot; <span style="color:var(--warning);">overdue by ${formatRelativeTime(Date.now() - (loan.dueAt || Date.now()))}</span>
       </div>
-      <div class="loan-meta">${escapeHtml3(formatPhone(phone))}</div>
+      <div class="loan-meta">${escapeHtml3(displayPhone(phone))}</div>
     </div>
   `;
   row.appendChild(top);
   const actions = document.createElement("div");
   actions.style.cssText = "display:flex; gap:8px; flex-wrap:wrap;";
-  if (phone) {
+  // A phone field is free text, so it may hold something that is not a ten-digit
+  // number -- an extension, a note, half a number. telUri and smsUri return ""
+  // for those, and an anchor with href="" is not inert: the browser resolves it
+  // to the current page and a tap reloads the whole app, losing whatever the
+  // staff member had open. So the two buttons exist only when they have a URI,
+  // and Copy covers everything else.
+  const callHref = telUri(phone);
+  const textHref = smsUri(phone, `Hi, you have an overdue item at the Rotman front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
+  if (callHref) {
     const callBtn = document.createElement("a");
     callBtn.className = "btn btn-secondary";
     callBtn.style.cssText = "min-height:48px; padding:8px 16px; text-decoration:none;";
-    callBtn.href = telUri(phone);
+    callBtn.href = callHref;
     callBtn.textContent = "\u{1F4DE} Call";
     actions.appendChild(callBtn);
+  }
+  if (textHref) {
     const textBtn = document.createElement("a");
     textBtn.className = "btn btn-secondary";
     textBtn.style.cssText = "min-height:48px; padding:8px 16px; text-decoration:none;";
-    const body = `Hi, you have an overdue item at the Rotman front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`;
-    textBtn.href = smsUri(phone, body);
+    textBtn.href = textHref;
     textBtn.textContent = "\u{1F4AC} Text";
     actions.appendChild(textBtn);
+  }
+  if (phone) {
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn btn-secondary";
     copyBtn.style.cssText = "min-height:48px; padding:8px 16px;";
     copyBtn.textContent = "\u{1F4CB} Copy";
     copyBtn.onclick = async () => {
       const overdue = formatRelativeTime(Date.now() - (loan.dueAt || Date.now()));
-      const text = `${borrower?.name || loan.borrowerNameSnapshot} \xB7 ${formatPhone(phone)} \xB7 ${item?.name || loan.itemNameSnapshot} \xB7 overdue ${overdue}`;
+      const text = `${borrower?.name || loan.borrowerNameSnapshot} \xB7 ${displayPhone(phone)} \xB7 ${item?.name || loan.itemNameSnapshot} \xB7 overdue ${overdue}`;
       try {
         await navigator.clipboard.writeText(text);
         showToast("Copied to clipboard", {
@@ -7920,11 +9749,16 @@ async function _editItem(item) {
     item.location = form.querySelector('[data-f="location"]').value.trim();
     item.condition = form.querySelector('[data-f="condition"]').value;
     item.notes = form.querySelector('[data-f="notes"]').value;
+    // Editing an item *is* the review. The flag exists to say "a member of the
+    // public typed this name and nobody has confirmed it belongs in the catalog",
+    // and a staff member who has just opened it, fixed its name and its location
+    // has answered that question. Leaving the flag set would put the item back on
+    // the review list it was just dealt with on.
+    item.needsReview = false;
     await put("items", item);
     showToast("Item updated", {
       type: "success"
     });
-    invalidateItemsCache();
     showItemDetail(item.id);
   }
 }
@@ -7934,8 +9768,64 @@ async function _archiveItem(item) {
   showToast(item.isArchived ? "Item archived" : "Item unarchived", {
     type: "success"
   });
-  invalidateItemsCache();
   showItemDetail(item.id);
+}
+/**
+ * Confirm, then undo a merge from the merged item's own detail screen.
+ *
+ * The confirmation says what will *not* come back as well as what will: a desk
+ * that expects every loan to reappear and gets most of them has been told a
+ * half-truth, so the closed loans that stay with the keeper are stated up front
+ * rather than mentioned in a toast afterwards.
+ */
+async function _unmergeItem(item) {
+  const meta = item.mergeMeta || {};
+  const keepName = meta.keepName || `item ${item.mergedIntoId}`;
+  const moved = Number(meta.loansMoved) || 0;
+  const confirmed = await showDialog({
+    title: "Undo this merge?",
+    body: `
+      <p><strong>${escapeHtml3(item.name)}</strong> goes back in the catalog as its own item,
+      and typing that name will find it again.</p>
+      ${moved > 0 ? `<p>Its ${moved} loan${moved === 1 ? "" : "s"} stay${moved === 1 ? "s" : ""} with
+      <strong>${escapeHtml3(keepName)}</strong>, except any that are still out — those come back with it.</p>` : ""}
+      <p style="color:var(--text-muted);">Nothing is deleted either way.</p>
+    `,
+    buttons: [
+      {
+        label: "Cancel",
+        value: false,
+        variant: "ghost"
+      },
+      {
+        label: "Undo merge",
+        value: true,
+        variant: "primary"
+      }
+    ]
+  });
+  if (!confirmed) return;
+  try {
+    const res = await unmergeItem(item.id);
+    const parts = [];
+    if (res.loansMovedBack > 0) {
+      parts.push(`${res.loansMovedBack} open loan${res.loansMovedBack === 1 ? "" : "s"} came back with it`);
+    }
+    if (res.loansStayed > 0) {
+      parts.push(`${res.loansStayed} returned loan${res.loansStayed === 1 ? "" : "s"} stayed with "${res.keepName}"`);
+    }
+    showToast(`"${res.name}" is back${parts.length ? " — " + parts.join(", ") : ""}`, {
+      type: "success",
+      duration: 6e3
+    });
+    await showItemDetail(item.id);
+  } catch (err) {
+    console.error("unmerge failed:", err);
+    showToast(`Could not undo the merge: ${err && err.message ? err.message : "see the log"}`, {
+      type: "error",
+      duration: 6e3
+    });
+  }
 }
 async function _editBorrower(borrower) {
   const form = document.createElement("div");
@@ -7967,13 +9857,18 @@ async function _editBorrower(borrower) {
     borrower.name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
     borrower.nameLower = borrower.name.toLowerCase();
     const newPhone = normalizePhone(form.querySelector('[data-f="phone"]').value);
-    if (newPhone && newPhone.length === 10) {
+    let phoneChanged = false;
+    if (newPhone && newPhone.length === 10 && newPhone !== borrower.phone) {
       borrower.phone = newPhone;
       borrower.phoneFormatted = formatPhone(newPhone);
+      phoneChanged = true;
     }
     borrower.contact2 = form.querySelector('[data-f="contact2"]').value.trim();
     borrower.notes = form.querySelector('[data-f="notes"]').value;
     await put("borrowers", borrower);
+    // The same follow-up the other path does. Editing a number here used to
+    // leave every open loan quoting the old one.
+    if (phoneChanged) await _syncOpenLoanPhones(borrower.id, newPhone);
     showToast("Borrower updated", {
       type: "success"
     });
@@ -8071,17 +9966,26 @@ async function _promptAddItem(refresh) {
   if (choice !== "add") return;
   const name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
   const category = sentenceCase(form.querySelector('[data-f="category"]').value.trim()) || "Other";
-  if (!name) {
-    showToast("Please enter a name", {
+  // The dialog is already gone by now, so a name it cannot use has to be said
+  // out loud -- and checked here, before createItem would throw at its tail.
+  const problem = itemNameProblem(name);
+  if (problem) {
+    showToast(problem, {
       type: "error"
     });
     return;
   }
-  const existing = await findItemByName(name);
-  if (existing) {
+  const res = await resolveItem(name);
+  if (res && res.item) {
+    // Same rule as the checkout step: only a verbatim repeat asks a question.
+    if (normalize(name) !== normalize(res.item.name)) {
+      await attachToItem(res.item, name);
+      await refresh();
+      return;
+    }
     const confirm3 = await showDialog({
       title: "Item already exists",
-      body: `<p>An item named <strong>${escapeHtml3(existing.name)}</strong> already exists.</p>`,
+      body: `<p>An item named <strong>${escapeHtml3(res.item.name)}</strong> already exists.</p>`,
       buttons: [
         {
           label: "Cancel",
@@ -8096,12 +10000,26 @@ async function _promptAddItem(refresh) {
       ]
     });
     if (confirm3 !== "add") return;
+  } else if (res && res.alternatives.length) {
+    showToast("Several items match that name — pick one from the list", {
+      type: "error",
+      duration: 5e3
+    });
+    await refresh();
+    return;
   }
-  await createItem({
-    name,
-    category
-  });
-  invalidateItemsCache();
+  try {
+    await createItem({
+      name,
+      category
+    });
+  } catch (err) {
+    showToast(err?.message || "Could not add that item", {
+      type: "error",
+      duration: 5e3
+    });
+    return;
+  }
   showToast("Item added", {
     type: "success"
   });
@@ -8138,6 +10056,19 @@ async function _promptAddBorrower(refresh) {
     showToast("Name and 10-digit phone required", {
       type: "error"
     });
+    return;
+  }
+  // The number is the identity, so adding "Bob Jones" on a number already on
+  // record for Jane Smith keeps Jane and drops the typed name. "Borrower added"
+  // would then be false in the way that matters -- the desk would go looking for
+  // a person who was never created.
+  const known = await findBorrowerByPhone(phone);
+  if (known.length > 0 && normalize(known[0].name) !== normalize(name)) {
+    showToast(`That number is already on record for ${known[0].name} — no new person was added.`, {
+      type: "error",
+      duration: 8e3
+    });
+    await refresh();
     return;
   }
   await upsertBorrower({
@@ -8180,16 +10111,19 @@ async function _wipeData() {
     });
     return;
   }
-  const d = await openDB();
-  const tx2 = d.transaction([
-    "items",
-    "borrowers",
-    "loans",
-    "settings"
-  ], "readwrite");
-  tx2.objectStore("items").clear();
-  tx2.objectStore("borrowers").clear();
-  tx2.objectStore("loans").clear();
+  // Read the settings *before* opening the wipe transaction below.
+  //
+  // `getSettings` is not a plain read: a database can hold its settings under a
+  // key other than 1, and it migrates such a record to id 1 (see there). Doing
+  // that inside the wipe would mean awaiting a second transaction while the first
+  // was still open, which is what this function used to do and why it silently
+  // half-worked -- two overlapping transactions run in creation order, so the
+  // read could not be issued until the wipe had committed, and by the time it
+  // returned the wipe's transaction was finished and its `put` threw
+  // `InvalidStateError`. The three clears had already committed, so items,
+  // borrowers and loans were destroyed while the PIN, theme and lockout state
+  // survived, no toast appeared and the admin screens went on listing rows that
+  // no longer existed.
   const settings = await getSettings();
   settings.pin = "1234";
   settings.defaultLoanHours = 8;
@@ -8197,13 +10131,24 @@ async function _wipeData() {
   settings.lastBackupAt = null;
   settings.pinFailures = 0;
   settings.pinLockedUntil = 0;
+  // One transaction, and nothing awaited inside it but its own requests. Going
+  // through `runTx` rather than building the transaction by hand is what drops
+  // the item and loan caches on commit -- without that, the kiosk went on
+  // offering deleted items for up to `ITEMS_CACHE_TTL_MS`, and tapping one
+  // produced "Item N not found".
+  await runTx([
+    "items",
+    "borrowers",
+    "loans",
+    "settings"
+  ], "readwrite", async (s) => {
+    await s.req(s.get("items").clear());
+    await s.req(s.get("borrowers").clear());
+    await s.req(s.get("loans").clear());
+    await s.req(s.get("settings").put(settings));
+  });
   _pinFailures = 0;
   _pinLockedUntil = 0;
-  tx2.objectStore("settings").put(settings);
-  await new Promise((resolve, reject) => {
-    tx2.oncomplete = () => resolve();
-    tx2.onerror = () => reject(tx2.error);
-  });
   showToast("All data wiped", {
     type: "success"
   });
@@ -8397,9 +10342,17 @@ async function bootstrap() {
     const recovery = takeRecoveryReport();
     if (recovery) {
       const when = new Date(recovery.at).toLocaleString("en-CA");
-      showToast(`Database was rebuilt on ${when} — ${recovery.salvaged} records carried over. Check your data, then take a backup.`, {
-        type: recovery.skipped > 0 ? "error" : "info",
-        duration: 12e3
+      // Three different truths, three different sentences. A rollback is not a
+      // partial restore and must not be dressed as one: it means nothing was
+      // written, and the backup beside the app is now the only copy.
+      const said = recovery.failed
+        ? `Database was rebuilt on ${when}, but the records could not be written back — nothing was carried over. Do not enter anything new: the backup file beside the app is the copy to restore from.`
+        : recovery.skipped > 0
+          ? `Database was rebuilt on ${when} — ${recovery.salvaged} records carried over, ${recovery.skipped} could not be. Check your data, then take a backup.`
+          : `Database was rebuilt on ${when} — ${recovery.salvaged} records carried over. Check your data, then take a backup.`;
+      showToast(said, {
+        type: recovery.failed || recovery.skipped > 0 ? "error" : "info",
+        duration: recovery.failed ? 2e4 : 12e3
       });
     }
     initScreens();
@@ -8420,6 +10373,11 @@ async function bootstrap() {
     // document is three zeros sitting above a desk with items out. Doing it
     // here means the counts are right by construction rather than by memory.
     onEnterHooks.set("home", () => refreshHome());
+    // The kiosk item step opens blank for whoever is standing there. Four
+    // separate routes reach it (a known phone, several phones, a new name, the
+    // borrower picker), and the step's own contents are the previous borrower's
+    // until something clears them -- see `_resetNeedStep`.
+    onEnterHooks.set(KIOSK_SCREENS.borrowNeed, () => _resetNeedStep());
     try {
       const keyboardContainer = document.getElementById("keyboard");
       if (keyboardContainer) {

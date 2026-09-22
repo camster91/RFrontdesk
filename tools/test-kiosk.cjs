@@ -242,8 +242,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 15000 });
     check("the PIN opens the admin panel", true);
 
-    // The catalog can only be filled from the staff side, which is the point of
-    // D5: the public cannot invent items.
+    // The catalog is filled from the staff side here. The kiosk *can* add to it
+    // now, but only behind an explicit tap on its own Add control -- see
+    // `tools/test-catalog.cjs` for that policy. D5's point still stands for this
+    // suite: typing a name and pressing Done never invents anything.
     await page.evaluate(() => window.dispatchEvent(new Event("frontdesk:checkout-start")));
     await page.waitForSelector("#screen-checkout:not(.hidden)", { timeout: 10000 });
     await page.waitForFunction(() => !!window.__checkoutFlow && window.__checkoutFlow._wireOnce, { timeout: 10000 });
@@ -306,7 +308,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await clickIn("screen-kiosk-borrow-done", '[data-action="kiosk-back-home"]');
     await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
 
-    // ── 5. free text cannot invent a catalog item ─────────────────────────
+    // ── 5. typing a name and pressing Done invents nothing ────────────────
+    // The policy changed here: the kiosk may add an item, but only through its
+    // own Add control, and never as a side effect of confirming. So the assertion
+    // is not "nothing was created" but "the borrower is refused, told why, and
+    // left where they were" -- with the add offer made below the box instead.
     await clickIn("screen-welcome", ".btn-kiosk-borrow");
     await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 8000 });
     await fill("#kiosk-phone", KIOSK_PHONE);
@@ -317,9 +323,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     await fill("#kiosk-need", "Squeaky Rubber Duck");
     await clearToasts();
+    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 8000 });
+    // Read straight from the store rather than through the app, so a cached
+    // catalog cannot make this pass by agreeing with itself.
+    const catalogCount2 = () =>
+      page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            const req = indexedDB.open("frontdesk");
+            req.onsuccess = () => {
+              const all = req.result.transaction("items", "readonly").objectStore("items").getAll();
+              all.onsuccess = () => resolve(all.result.length);
+              all.onerror = () => resolve(-1);
+            };
+            req.onerror = () => resolve(-1);
+          })
+      );
+    const offered = await catalogCount2();
+    check("a novel name is offered as an add rather than silently created", offered === 2, `${offered} items`);
     await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
     await waitToast(/not on the list/i);
-    check("an item that is not in the catalog is refused", /not on the list/i.test(await toastText()), await toastText());
+    check("confirming free text does not create a catalog item", /not on the list/i.test(await toastText()), await toastText());
+    const afterConfirm = await catalogCount2();
+    check("and the catalog is untouched by it", afterConfirm === 2, `${afterConfirm} items`);
     check("and the borrower stays on the item step", (await screen()) === "screen-kiosk-borrow-need", await screen());
 
     // ── 6. an item that is already out cannot be taken twice ──────────────

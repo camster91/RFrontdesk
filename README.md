@@ -98,15 +98,61 @@ tab, or it will be offered for checkout again.
 | **Currently Out** | Everything out right now. |
 | **Overdue** | Loans past their due time. |
 | **All Loans** | The complete history, searchable. |
-| **Items** | The catalog: add, edit, and review duplicate names. |
+| **Items** | The catalog: add, edit, review duplicate names, and review anything the kiosk added. |
 | **People** | Borrowers, their contact details and history. |
 | **Reports** | Totals and trends (below). |
 | **Settings** | PIN, loan length, backups, theme, host details. |
 
-**Duplicates** are surfaced, never merged silently. If two catalog entries share a
-name, the Items tab shows a banner offering to review them. For each group you pick
-which entry survives and confirm. If they are genuinely two different units, you
-say so and nothing merges.
+**Duplicates** are surfaced, never merged silently. The Items tab shows a banner
+listing groups of entries that describe the same thing — `Room 115` and `115 Key`
+as well as identical names — and for each group you pick which entry survives and
+confirm. If they are genuinely two different units, you say so and nothing merges.
+
+A merge **sticks**, and it can be undone:
+
+- The losing name is kept as an alias of the survivor, so the next person who types
+  it lands on the survivor instead of creating the duplicate again.
+- Its loans move to the survivor, its counts are added to the survivor's, and the
+  losing entry is archived rather than deleted.
+- **Undo merge** on the merged entry's own screen puts everything back — the loans,
+  the counts, the name.
+- **A merge is refused while both entries are checked out**, by name: merging then
+  would leave one item carrying two open loans.
+
+### One catalog, many names
+
+`Room 115`, `115` and `115 Key` are the same thing written three ways, and the
+catalog treats them that way. Names are compared by their words rather than their
+punctuation or capitalisation, so `USB-C`, `USB C` and `USB_C` are one entry too,
+and the words *room*, *rm*, *the*, *a* and *an* are ignored — *key* is not, which
+is why `115 Key` and `115` match but are told apart from a hypothetical `115
+Door`.
+
+Three things follow from that, and they are worth knowing before they surprise
+you:
+
+- A typed name that **exactly** matches an entry attaches to it. A name that
+  matches nothing, but is *contained by* exactly one entry — `115` when the
+  catalog has `115 Key` — attaches to that entry too, and the loan records what
+  was actually typed.
+- Ambiguity never resolves silently. Type `Cable` when the catalog has both
+  `Cable HDMI` and `Cable VGA` and nothing attaches; you are shown both and asked
+  which one is meant.
+- Typing an existing entry's name exactly always beats any looser match, so
+  `Projector` gives you `Projector` even though `Projector Screen` also exists.
+
+### A catalog of ten thousand
+
+The items list, the search and the kiosk are all built to stay quick at that size,
+because the desk's real catalog is large and grows:
+
+- The Items tab renders **200 rows at a time** with a line saying how many there
+  are — *Showing 200 of 1,204 — type to narrow* — and a **Show more** control. The
+  count is the true one, not the number on screen.
+- A checkout's list shows the frequent items and the first **60** by name, and says
+  so. Search is the way in, at any size.
+- The kiosk shows at most five suggestions and answers a keystroke in well under a
+  second, measured at ten thousand items by `tools/test-catalog.cjs`.
 
 ### Reports
 
@@ -123,10 +169,23 @@ cannot draw the future. The all-time chart is capped at 24 months of history
 Walk-in loans are counted separately rather than being folded into one imaginary
 person who would top the busiest-borrower list.
 
+One thing the CSV does that is easy to miss: a cell that begins with `=`, `+`, `-`
+or `@` is written with a leading apostrophe. Excel, Numbers and Sheets treat such
+a cell as a *formula* and run it on open, and not every cell here is the desk's own
+— a borrower can name an item at the kiosk, and a name is all it takes. The
+apostrophe is the standard way to say "this is text", and it is visible, so an
+export with `'=1+1` in it reads as exactly what it is.
+
 ### Settings
 
 Loan length defaults to **8 hours**. Self-service kiosk checkouts are due back by
 **5pm** by default — change the hour and the kiosk follows it.
+
+*Start Front Desk when Windows starts* adds a per-user startup entry — no admin
+rights, and it is the current user's own setting. It always starts the app
+minimised to the notification area, and it keeps whatever the app was launched
+with, so the entry on a `--no-devtools` kiosk stays locked down. The exact command
+is printed underneath the toggle.
 
 **Theme** switches between Dark and Light, and it sticks — the choice is saved with
 the other settings and applies from the next launch. Light is a real theme, not a
@@ -144,23 +203,52 @@ recolours it with a `filter` (`--logo-filter`) rather than with `color`, which a
 
 Put the app on a tablet and the borrower sees only the welcome screen. They can:
 
-- **Borrow.** Enter a phone number, then a name, then pick items **from the
-  catalog list** — free text is refused, so a borrower cannot invent an item. An
-  item already out shows as "already out" and cannot be taken twice. They are told
-  when it is due back.
+- **Borrow.** Enter a phone number, then a name, then pick items from the catalog
+  list. Typing something the catalog does not have is not a dead end: the kiosk
+  offers to **add it on the spot**, and the loan goes through. That entry is
+  marked for staff review — see *Anything a borrower adds* below. An item already
+  out shows as "already out" and cannot be taken twice. They are told when it is
+  due back.
 - **Return.** Enter their phone number, see **only their own loans**, and say what
   they are handing back, plus how it is — "All good" or "Something's wrong" with a
   note.
 
 A borrower's return is a request. Staff confirm it in the Queue tab.
 
+**Anything a borrower adds** is created `needsReview`, and the Items tab shows a
+banner: *N items added at the kiosk need a look*. Each one is listed with the name
+as typed, when, and who took it out, and staff answer it one of three ways —
+**Keep**, **Merge into…**, or **Archive** — plus a link to rename it. Any of those
+is the review, so nothing stays flagged once someone has looked.
+
+A public tablet can do this, so it is fenced in. Three additions per kiosk session,
+one per distinct name, at least two letters or digits, at most 60 characters — and
+the offer only appears when nothing in the catalog matches what was typed. A name
+that is merely close to an existing one is never a new item; it attaches to that
+item instead (see *One catalog, many names* below).
+
 There is **no route from the kiosk to the staff screens** — no link, and the staff
 routes refuse a kiosk visitor. Staff entry from the kiosk is the logo hold.
 
 ### If the tablet is public
 
-Launch the app with `--no-devtools`. That closes the developer tools, which would
-otherwise be a way around the kiosk's PIN.
+Launch the app with `--no-devtools`. That does three things on that machine:
+
+- **Developer tools are off**, and the tray's Developer tools item and the F12
+  shortcut are hidden rather than merely unused. DevTools would otherwise be a way
+  around the kiosk's PIN.
+- **The window cannot be navigated anywhere else.** Anything that is not the app's
+  own page is refused and written to `data/frontdesk.log` as `blocked navigation`,
+  including links pasted in, lookalike host names and `javascript:` URLs. A phone
+  number or an email address is handed to Windows instead of being blocked, so the
+  overdue list's Call and Text buttons work — except on a `--no-devtools` install,
+  where they are refused too, because a public tablet reaching the shell at all is
+  a way off the page it is meant to be showing.
+- **The flag survives a reboot.** Windows starts the app from a startup entry if
+  *Start Front Desk when Windows starts* is on, and that entry is written from how
+  the app was actually started — so a kiosk comes back up locked down rather than
+  coming back with DevTools enabled. Settings → *This computer* names the exact
+  command the entry runs, and the tray's *Start with Windows* tooltip shows it too.
 
 ---
 
@@ -235,7 +323,14 @@ release/  the zip that goes out  (built from dist, not edited by hand)
 ```
 
 The `web` folder is the whole application. The host is a window, a tray icon, the
-data folder and native file dialogs — it deliberately holds no app logic.
+data folder and native file dialogs — it deliberately holds no app logic. What it
+does hold is the two things the page cannot do for itself: how it was launched,
+and which URLs are allowed to load in it.
+
+`web/js/app.js` is **one bundle and the only source** — there is no `modules/`
+directory on disk, so an edit goes into the bundle itself. Its `// ../frontdesk/
+modules/*.js` comments mark where the original modules ended, so a section can
+still be found and, in the sandbox suites, lifted out by name.
 
 ### Building
 
@@ -299,14 +394,30 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Nine suites, 504 checks (10 host bridge, 11 toast stack, 8 screen router, 17
-report aggregation, 34 keyboard touch, 172 browser UI, 54 kiosk, 153 layout at
-real widths, 45 backup round trip). Four lift their section out of the real
-`app.js` and run it in a sandbox (host bridge, toast stack, screen router,
-report aggregation); five drive the real page in headless Edge (keyboard touch
-through real touch input, the browser UI end to end, the kiosk surface, the
-layout suite, and the backup round trip).
+Eleven suites, 662 checks (10 host bridge, 38 host flags and navigation, 11 toast
+stack, 8 screen router, 17 report aggregation, 34 keyboard touch, 172 browser UI,
+56 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at scale).
+Four lift their section out of the real `app.js` and run it in a sandbox (host
+bridge, toast stack, screen router, report aggregation); five drive the real page
+in headless Edge (keyboard touch through real touch input, the browser UI end to
+end, the kiosk surface, the layout suite, and the backup round trip).
 
+The last two are the different ones. **catalog at scale** seeds ten thousand items
+in its own browser profile — so the seed cannot leak into the other suites — and
+checks the matching rules (`Room 115` / `115` / `115 Key` resolving to one entry,
+an exact name beating a longer one, an ambiguous one attaching to nothing), the
+kiosk's add-and-flag path with its limits, merge and un-merge, the cap and the
+count line on the staff and admin lists, a measured budget for a keystroke at that
+size, and the regression the desk actually reported: an item added by staff is
+found by the kiosk **without a page reload**. It ends on the two refusals that used
+to be silent: a name with no letters or digits in it is rejected out loud, on both
+of the surfaces that create items, with nothing written to the catalog; and an
+overdue loan whose phone is not a dialable number offers Copy but not Call, rather
+than a Call link with an empty `href`, which reloads the app. **host flags and navigation**
+compiles `tools/HostTests.cs` together with `host/FrontDesk.cs` — the shipping
+source, not a copy — and runs it three times, once as a kiosk install, to check how
+the command line is parsed, what the startup entry would say, and which URLs the
+window will load. It starts no window and writes no registry key.
 The layout suite is the odd one out in how it reports: it checks every screen
 at every width and passes or fails each one by name — 153 checks across 375,
 412, 768, 1024, 1280 and 1440 — so a failure names the screen and the width
@@ -320,6 +431,14 @@ that the seeded rows actually reached the DOM before it believes the result.
 768 and 1024 are measured as touch devices and 1280 and 1440 as a mouse, which
 is what they are, and which changes the layout: the stylesheet grows every
 `.btn`, `.input` and `.tab` to 64–80px under `pointer: coarse`.
+
+The **backup round trip** goes further than export-and-import: it replaces the
+database behind the running app's back with one of the wrong shape — same version,
+one store of the five — and reloads onto it, so the recovery path that used to
+delete everything and warn in the console is checked end to end: what the desk is
+told, that the count it is told follows the records actually written, that the
+records are in the rebuilt database and usable from the screens, and that the name
+an item absorbed when a duplicate was merged away still finds it afterwards.
 
 `node tools/serve.cjs` serves `web/` on `127.0.0.1:8791` for looking at it in a
 normal browser. Nothing about the app needs it; it exists because IndexedDB needs a
@@ -368,4 +487,6 @@ ratio, the computed ink, and the surface it measured against.
   `--no-devtools` exists for kiosk installs.
 
 The full review — what was wrong, what was fixed, and how each fix was verified —
-is in `docs/CODE_REVIEW.md`.
+is in `docs/CODE_REVIEW.md`. The same file ends with the findings from the most
+recent pass that are **still open**, so what is known-broken is written down rather
+than remembered.

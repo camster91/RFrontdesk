@@ -50,7 +50,8 @@ function startServer() {
     const rel = decodeURIComponent(req.url.split("?")[0]);
     if (rel === "/favicon.ico") return void res.writeHead(204).end();
     const file = path.join(ROOT, rel === "/" ? "/index.html" : rel);
-    if (!file.startsWith(ROOT)) return void res.writeHead(403).end("forbidden");
+    // The separator, not a bare prefix: "...\web-backup" also startsWith("...\web").
+    if (!file.startsWith(ROOT + path.sep)) return void res.writeHead(403).end("forbidden");
     fs.readFile(file, (err, body) => {
       if (err) return void res.writeHead(404).end("not found");
       res.writeHead(200, {
@@ -114,7 +115,12 @@ function fixture(pin) {
         timesCheckedOut: 3,
         lastCheckedOutAt: 1700000000000,
         isArchived: false,
-        createdAt: 1690000000000
+        createdAt: 1690000000000,
+        // A name this item absorbed when the desk merged a duplicate away. It is
+        // load-bearing rather than decorative: it is what stops the losing name
+        // being retyped and recreating the duplicate, so a round trip that dropped
+        // it would silently undo a merge.
+        aliases: [{ k: "115", label: "Room 115", addedAt: 1700000000000 }]
       },
       {
         id: 2,
@@ -458,6 +464,11 @@ function fixture(pin) {
     check("the kiosk's return request travels with its loan", exported.loans.find((l) => l.id === 3)?.returnRequestedNote === "one key is bent");
     check("the non-default loan duration is in the file", exported.settings[0]?.defaultLoanHours === 5, exported.settings[0]?.defaultLoanHours);
     check("and the file names its schema version", typeof exported.schemaVersion === "number", exported.schemaVersion);
+    check(
+      "the merged-away name travels in the file",
+      exported.items.find((i) => i.id === 1)?.aliases?.[0]?.label === "Room 115",
+      JSON.stringify(exported.items.find((i) => i.id === 1)?.aliases)
+    );
 
     // The whole point of `includeSecrets: false`.
     check("the export does NOT contain the PIN", exported.settings[0] && !("pin" in exported.settings[0]), JSON.stringify(exported.settings[0]));
@@ -492,6 +503,37 @@ function fixture(pin) {
     check("a fresh desk restored from a PIN-less backup falls back to the factory PIN", after.settings[0]?.pin === "1234", after.settings[0]?.pin);
     check("and that PIN really works", await login("1234"));
     await gotoSettings();
+
+    check(
+      "the merged-away name came back with the item",
+      after.items.find((i) => i.id === 1)?.aliases?.[0]?.label === "Room 115",
+      JSON.stringify(after.items.find((i) => i.id === 1)?.aliases)
+    );
+    // The field alone is not the claim. The claim is that the desk can still reach
+    // the item by the name it remembers, on a restored desk -- so this types it
+    // into the Items search and counts what comes back. Two items are in the
+    // catalog, so a filter that did not match the alias would draw both or neither.
+    await page.evaluate(() => {
+      const tab = document.querySelector('#screen-admin .tab[data-tab="items"]');
+      if (tab) tab.click();
+    });
+    await page.waitForFunction(() => !!document.getElementById("items-content"), { timeout: 20000 }).catch(() => {});
+    await page.evaluate(() => {
+      const el = document.querySelector('#tab-items input[data-filter="q"]');
+      if (!el) return;
+      el.value = "Room 115";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await sleep(400);
+    const aliasSearch = await page.evaluate(() => ({
+      rows: document.querySelectorAll("#items-content > .admin-list-item").length,
+      text: (document.getElementById("items-content") || {}).textContent.replace(/\s+/g, " ").trim()
+    }));
+    check(
+      "and searching the restored desk by the name it absorbed finds it",
+      aliasSearch.rows === 1 && /Clicker/.test(aliasSearch.text),
+      JSON.stringify(aliasSearch).slice(0, 240)
+    );
 
     // ── 4. a backup is not a credential ───────────────────────────────────
     // The device's own PIN has to win, or restoring an old file would quietly
@@ -586,6 +628,143 @@ function fixture(pin) {
 
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole round trip", realErrors.length === 0, realErrors.join(" | "));
+
+    // ── 8. a database of the wrong shape is salvaged, not deleted ─────────
+    // openDB() recreates the database when the stores it finds are not the ones
+    // this build needs, and the old code deleted everything with nothing but a
+    // console warning. Reaching that path needs a real mismatch, so the database
+    // is replaced behind the app's back -- at the same version, holding one store
+    // of the five -- and the app is reloaded onto it. Everything after this point
+    // runs against a rebuilt database, which is why it is last.
+    const swapped = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const fail = (why) => resolve({ stores: -1, why });
+          // The app's own connection closes on `versionchange`, so this succeeds
+          // only if that handler is doing its job.
+          const del = indexedDB.deleteDatabase("frontdesk");
+          del.onerror = () => fail("delete failed");
+          del.onblocked = () => fail("delete blocked by the app's own connection");
+          del.onsuccess = () => {
+            const open = indexedDB.open("frontdesk", 3);
+            open.onerror = () => fail(String(open.error));
+            open.onupgradeneeded = () => {
+              const db = open.result;
+              const items = db.createObjectStore("items", { keyPath: "id", autoIncrement: true });
+              items.createIndex("name", "name", { unique: false });
+              for (const [id, name] of [
+                [9001, "Salvaged Projector"],
+                [9002, "Salvaged Clicker"]
+              ]) {
+                items.put({
+                  id,
+                  name,
+                  nameLower: name.toLowerCase(),
+                  category: "Other",
+                  location: "",
+                  condition: "good",
+                  notes: "",
+                  timesCheckedOut: 4,
+                  lastCheckedOutAt: null,
+                  isArchived: false,
+                  createdAt: 17e11
+                });
+              }
+            };
+            open.onsuccess = () => {
+              const db = open.result;
+              const n = db.objectStoreNames.length;
+              // Held open across the reload on purpose: a rebuild has to work
+              // even when the tab that owns the old file is still there.
+              window.__mismatched = db;
+              resolve({ stores: n, why: "" });
+            };
+          };
+        })
+    );
+    check(
+      "a database with the wrong shape can be put in the app's place",
+      swapped.stores === 1,
+      JSON.stringify(swapped)
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 30000 });
+    const recoveryToast = await page
+      .waitForFunction(
+        () => {
+          const t = Array.from(document.querySelectorAll("#toast .toast")).find((x) =>
+            /rebuilt/i.test(x.textContent)
+          );
+          return t ? t.textContent.replace(/\s+/g, " ").trim() : false;
+        },
+        { timeout: 15000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+    check("the desk is told the database was rebuilt", !!recoveryToast, String(recoveryToast));
+    check(
+      "and the count it is told is the number of records actually carried over",
+      // Two records were there to carry; a count that followed the calls rather
+      // than the writes could not tell 0 from 2 here.
+      /2 records carried over/.test(String(recoveryToast)),
+      String(recoveryToast)
+    );
+    check(
+      "and nothing claims the records were lost, because they were not",
+      !/could not be written back|could not be/i.test(String(recoveryToast)),
+      String(recoveryToast)
+    );
+
+    const afterSalvage = await dump();
+    const salvagedNames = afterSalvage.items.map((i) => i.name).sort();
+    check(
+      "the records really are back in the rebuilt database",
+      salvagedNames.join(", ") === "Salvaged Clicker, Salvaged Projector",
+      salvagedNames.join(", ")
+    );
+    check(
+      "with their own fields, not blanked",
+      afterSalvage.items.every((i) => i.timesCheckedOut === 4 && i.category === "Other"),
+      JSON.stringify(afterSalvage.items)
+    );
+    check(
+      "and the rebuilt database has every store this build needs",
+      ["items", "borrowers", "loans", "settings", "requests"].every((s) => Array.isArray(afterSalvage[s])),
+      Object.keys(afterSalvage).join(",")
+    );
+
+    // A rebuild is only worth anything if the app then works. Settings went with
+    // the old database, so this one holds no PIN and falls back to the factory.
+    check("the rebuilt desk accepts the factory PIN", await login("1234"));
+    // Clicked in-page: puppeteer's `page.click` aims at the element's centre, and
+    // the recovery toast is still on screen over the tab bar -- so the click would
+    // land on the toast and this would read an empty panel.
+    const switchedToItems = await page.evaluate(() => {
+      const tab = document.querySelector('#screen-admin .tab[data-tab="items"]');
+      if (!tab) return false;
+      tab.click();
+      return true;
+    });
+    check("the Items tab is there on the rebuilt desk", switchedToItems === true);
+    await page
+      .waitForFunction(() => !!document.getElementById("items-content"), { timeout: 20000 })
+      .catch(() => {});
+    const salvagedText = await page.evaluate(
+      () => (document.getElementById("items-content") || {}).textContent || ""
+    );
+    check(
+      "and the salvaged records are usable from the screens, not just in the store",
+      /Salvaged Projector/.test(salvagedText) && /Salvaged Clicker/.test(salvagedText),
+      salvagedText.slice(0, 200).replace(/\s+/g, " ")
+    );
+
+    const rebuildErrors = errors.filter((e) => !/favicon/.test(e)).slice(realErrors.length);
+    check(
+      "the rebuild adds nothing to the console beyond what it is told to log",
+      rebuildErrors.filter((e) => !/schema mismatch/i.test(e)).length === 0,
+      rebuildErrors.join(" | ")
+    );
   } finally {
     await browser.close();
     server.close();

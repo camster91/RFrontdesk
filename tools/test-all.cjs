@@ -10,6 +10,7 @@ const path = require("path");
 
 const SUITES = [
   ["host bridge", "test-bridge.cjs"],
+  ["host flags and navigation", "test-host.cjs"],
   ["toast stack", "test-toast.cjs"],
   ["screen router", "test-router.cjs"],
   ["report aggregation", "test-report.cjs"],
@@ -17,7 +18,8 @@ const SUITES = [
   ["browser UI", "test-ui.cjs"],
   ["kiosk", "test-kiosk.cjs"],
   ["layout at real widths", "test-responsive.cjs"],
-  ["backup round trip", "test-restore.cjs"]
+  ["backup round trip", "test-restore.cjs"],
+  ["catalog at scale", "test-catalog.cjs"]
 ];
 
 const results = [];

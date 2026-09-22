@@ -50,7 +50,54 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 
 function Say($msg)  { Write-Host "  $msg" }
-function Fail($msg) { Write-Host "  ERROR: $msg" -ForegroundColor Red; exit 1 }
+
+# --- The desk's data, and how it survives a build that stops early ----------
+# dist\data is the live desk: the IndexedDB folder, the backups and the log. The
+# output directory is cleaned wholesale, so the data is moved aside for the build
+# and put back after.
+#
+# "Put back after" has to mean *every* way out of this script, not only the happy
+# one. The restore used to sit at the bottom of the file, past the compile, while
+# `Fail` below is `exit 1` -- so a build that stopped on a compile error left the
+# front desk's records in a GUID-named folder under %TEMP% and a fresh, empty
+# data\ beside the new exe. Nothing printed said where they had gone, and to
+# anyone at the desk it reads as "everything is gone".
+#
+# Hence: the restore is a function, `Fail` calls it, and a `trap` catches the
+# paths that are not `Fail` (an unhandled terminating error under
+# `$ErrorActionPreference = 'Stop'`).
+$dataDir = Join-Path $OutputDir 'data'
+$script:stashedData = $null
+
+function Restore-Data {
+    if (-not $script:stashedData) { return }
+    # Cleared before the move, not after: if the move itself throws, the trap
+    # fires, calls this again, and must not try the same thing twice.
+    $stash = $script:stashedData
+    $script:stashedData = $null
+    try {
+        Move-Item -LiteralPath $stash -Destination $dataDir -Force
+        Say "put $dataDir back"
+    } catch {
+        # Never lose it silently. Worst case the operator is told exactly where
+        # the desk's records are and what to do with them.
+        Write-Host "  ERROR: could not put the desk's data back at $dataDir" -ForegroundColor Red
+        Write-Host "         Nothing is lost -- it is in: $stash" -ForegroundColor Red
+        Write-Host "         Move that folder to $dataDir by hand before running the app." -ForegroundColor Red
+    }
+}
+
+function Fail($msg) {
+    Write-Host "  ERROR: $msg" -ForegroundColor Red
+    Restore-Data
+    exit 1
+}
+
+trap {
+    Restore-Data
+    Write-Host "  ERROR: $_" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Rotman Front Desk - build" -ForegroundColor Magenta
@@ -153,12 +200,23 @@ if ($cert) {
 # cleaned wholesale -- a rebuild after an update would have taken the front
 # desk's records with it. It is moved aside for the build and put back after,
 # so a rebuild is always safe to run over a working install.
-$dataDir = Join-Path $OutputDir 'data'
-$stashedData = $null
+# (`$dataDir` and the restore live near the top, with `Fail` -- see there.)
+
+# Refuse to build over a running copy, and do it before anything is touched.
+# `Remove-Item $OutputDir` cannot delete the exe or the WebView2 DLLs while the
+# app holds them, so it throws; and with the data already moved aside, the desk
+# would be left with its records in %TEMP% and the old app still running on the
+# old files. Asking first costs nothing and turns a half-finished build into one
+# sentence the operator can act on.
+$runningApp = @(Get-Process -Name 'RotmanFrontDesk' -ErrorAction SilentlyContinue)
+if ($runningApp.Length -gt 0) {
+    Fail "Rotman Front Desk is running (PID $($runningApp.Id -join ', ')). Exit it from the tray icon, then build again."
+}
+
 if (Test-Path $dataDir) {
-    $stashedData = Join-Path ([System.IO.Path]::GetTempPath()) ("frontdesk-data-" + [System.Guid]::NewGuid().ToString('N'))
+    $script:stashedData = Join-Path ([System.IO.Path]::GetTempPath()) ("frontdesk-data-" + [System.Guid]::NewGuid().ToString('N'))
     Say "keeping $dataDir (moving it aside for the build)"
-    Move-Item -LiteralPath $dataDir -Destination $stashedData -Force
+    Move-Item -LiteralPath $dataDir -Destination $script:stashedData -Force
 }
 
 if (Test-Path $OutputDir) {
@@ -225,9 +283,11 @@ if (-not $NoWeb) {
 # data\ is where the database, backups and log live. Created here when there is
 # none, so the folder belongs to whoever unpacked the app -- which is what keeps
 # it writable without elevation. An install that already has one keeps it.
-if ($stashedData) {
-    Move-Item -LiteralPath $stashedData -Destination $dataDir -Force
-    Say "restored $(Join-Path $dataDir 'README.txt' | Split-Path -Parent)\* from before the build"
+#
+# The build is in one piece by this point, so the stash can go back and be
+# forgotten; if anything stopped us earlier, `Fail` or the trap already did it.
+if ($script:stashedData) {
+    Restore-Data
 } else {
     New-Item -ItemType Directory -Force $dataDir | Out-Null
     Set-Content -Path (Join-Path $dataDir 'README.txt') -Encoding ASCII -Value @'
