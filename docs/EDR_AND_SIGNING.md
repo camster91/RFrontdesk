@@ -260,3 +260,12 @@ afterwards, so a rebuild is safe to run over a working install.
 Verified: a rebuild leaves `dist\data\browser`, `dist\data\backups` and
 `frontdesk.log` intact, and the app launches clean afterwards
 (`... start: version=1.0.0 runtime=153.0.4234.48 ... portable=True`, no errors).
+
+## Status
+
+**Open, and tracked as [issue #9](https://github.com/camster91/frontdesk/issues/9).**
+The v1.0.0 release is unsigned (`signed: NotSigned`), so everything above is a
+proposal rather than a report: what the agent does with a *signed* build has not
+been measured, because no certificate exists on this machine yet. Getting one is
+a hand-off to IT — and when it arrives, the measurement to record here is the same
+one the unsigned build already has, so the two can be compared.

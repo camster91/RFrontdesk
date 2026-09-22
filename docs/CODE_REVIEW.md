@@ -1979,24 +1979,20 @@ the desk reads is asserted against records that are really there. A unit test on
 
 ### Open
 
-*(each of these is filed as an issue on this repository)*
+Each of these is an issue on this repository, so it can be assigned, discussed
+and closed where the work happens rather than in this file.
 
-1. **H1's registry round trip is verified by reading, not by observation.** The
-   startup entry is now built from the same parse the process used, and
-   `tools/test-host.cjs` pins that decision — but nothing has written the Run key
-   and read it back. Doing so changes a real logon setting on a real machine, and
-   the attempt was refused by the sandbox classifier as `[Unauthorized
-   Persistence]`, correctly: a test suite is not the place to create a logon entry,
-   and an interrupted run could leave one behind. The remaining step is to write it
-   once by hand on a machine where that is acceptable.
-2. **Two surfaces have no check of their own**: `_wipeData` (the typed-`DELETE`
-   confirmation that empties every store) and the kiosk's control that leaves the
-   DONE screen. Both are reachable from the UI and both destroy or end something,
-   which is exactly the shape that should be pinned rather than watched.
-3. **Five items under "Known, not fixed"** below are deliberate decisions rather
-   than oversights. Two of them are desk-owner calls, not engineering ones: whether
-   already-saved names should be normalised retroactively, and what the README's
-   "Known quirks" should say about the kiosk's catalogue.
+| Issue | What is open | Kind |
+|---|---|---|
+| [#1](https://github.com/camster91/frontdesk/issues/1) | **H1's registry round trip is verified by reading, not by observation.** The startup entry is now built from the same parse the process used, and `tools/test-host.cjs` pins that decision — but nothing has written the `Run` key and read it back. Doing so changes a real logon setting on a real machine, and the attempt was refused by the sandbox classifier as `[Unauthorized Persistence]`, correctly: a test suite is not the place to create a logon entry, and an interrupted run could leave one behind. | testing |
+| [#2](https://github.com/camster91/frontdesk/issues/2) | **`_wipeData` has no check.** It is the one control that empties every store, behind a typed `DELETE`, and nothing drives it. | testing |
+| [#3](https://github.com/camster91/frontdesk/issues/3) | **The kiosk's DONE screen has no check that leaves it** — the control that resets the session, and so the only thing that makes the three-per-session limit mean anything. | testing |
+| [#4](https://github.com/camster91/frontdesk/issues/4) | **`sentenceCase` keeps touching typed names** (`McDonald` → `Mcdonald`). Matching no longer depends on it, so the remaining cost is how a name reads — a desk call, with a middle path worth considering. | decision |
+| [#5](https://github.com/camster91/frontdesk/issues/5) | **The README's "Known quirks" needs a read**: some of it now describes policy rather than the software, and the kiosk bullet changed meaning in Phase 12. | decision |
+| [#6](https://github.com/camster91/frontdesk/issues/6) | **`requests` is a store with a schema and no readers** — kept deliberately, because dropping it is a schema change on desks that already hold data. | known, not fixed |
+| [#7](https://github.com/camster91/frontdesk/issues/7) | **`_onDocClick` looks for `[data-kbd-toggle]` and no element carries it** — a dead clause, kept for now rather than deleted unmeasured. | known, not fixed |
+| [#8](https://github.com/camster91/frontdesk/issues/8) | **The staff home header links are 34px tall at mouse sizes**, under the 44px the rest of the app holds to for anything meant to be tapped. On a counter machine that may be a touchscreen. | known, not fixed |
+| [#9](https://github.com/camster91/frontdesk/issues/9) | **The build is unsigned**, so an endpoint agent has only its own judgement to go on. The build already takes a certificate; getting one is a hand-off. See `docs/EDR_AND_SIGNING.md`. | known, not fixed |
 
 ---
 

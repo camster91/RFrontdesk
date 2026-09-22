@@ -478,15 +478,23 @@ ratio, the computed ink, and the surface it measured against.
   "HDMI dongle" becomes "Hdmi Dongle", and "McDonald" becomes "Mcdonald". This is
   pre-existing behaviour, it applies to what is stored rather than to how it is
   displayed, and every screen and report shows the stored form. It is pinned by a
-  test so a change is visible. Fixing it means deciding whether to rewrite names
-  that are already saved, which is a call for whoever owns the desk.
+  test so a change is visible. Matching no longer depends on it — two spellings
+  find each other — so what is left is how a name reads, and whether names
+  already saved should be rewritten. That is a call for whoever owns the desk:
+  [issue #4](https://github.com/camster91/frontdesk/issues/4).
 - **The `requests` object store is unused.** It has a schema and accessors, but
   nothing ever writes to it — the kiosk's return request lives on the loan itself.
-  Left in place rather than migrated away, for no user-visible benefit either way.
+  Left in place rather than migrated away, for no user-visible benefit either way:
+  [issue #6](https://github.com/camster91/frontdesk/issues/6).
 - **Developer tools are on by default.** Fine for staff machines, which is why
   `--no-devtools` exists for kiosk installs.
 
+The build is **unsigned**, so an endpoint agent has only its own judgement to go
+on — it flags the app rather than trusting it. See `docs/EDR_AND_SIGNING.md`, and
+[issue #9](https://github.com/camster91/frontdesk/issues/9) for what is still
+needed from IT.
+
 The full review — what was wrong, what was fixed, and how each fix was verified —
 is in `docs/CODE_REVIEW.md`. The same file ends with the findings from the most
-recent pass that are **still open**, so what is known-broken is written down rather
-than remembered.
+recent pass that are **still open**, each of them an issue on this repository, so
+what is known-broken is written down rather than remembered.
