@@ -9,6 +9,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Front Desk">
+  <!-- The magenta FD tile the exe and tray use, inline so the web build needs
+       no separate icon file. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23E6007E'/%3E%3Ctext x='32' y='43' font-family='Segoe UI,Arial,sans-serif' font-size='28' font-weight='700' fill='%23fff' text-anchor='middle'%3EFD%3C/text%3E%3C/svg%3E">
 
     <script>
     // Inlined logo (single copy; all <img data-logo> elements share this).
@@ -108,7 +111,7 @@
       <h1 class="kiosk-step-title">Enter your phone number</h1>
       <p class="kiosk-step-sub">So we can find your account</p>
       <div class="kiosk-phone-input-wrap">
-        <input type="tel" class="input input-xl kiosk-input" id="kiosk-phone" maxlength="14" autofocus aria-label="Your phone number" />
+        <input type="tel" class="input input-xl kiosk-input" id="kiosk-phone" maxlength="16" autofocus aria-label="Your phone number" />
       </div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-phone-continue">CONTINUE →</button>
     </div>
@@ -173,7 +176,7 @@
       <h1 class="kiosk-step-title">Return items</h1>
       <p class="kiosk-step-sub">Enter your phone number so we can find your items</p>
       <div class="kiosk-phone-input-wrap">
-        <input type="tel" class="input input-xl kiosk-input" id="kiosk-return-phone" maxlength="14" inputmode="tel" autofocus aria-label="Your phone number" />
+        <input type="tel" class="input input-xl kiosk-input" id="kiosk-return-phone" maxlength="16" inputmode="tel" autofocus aria-label="Your phone number" />
       </div>
       <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-return-phone-continue">CONTINUE →</button>
     </div>
@@ -399,6 +402,7 @@
           <div class="item-name"></div>
           <div class="loan-time"></div>
         </div>
+        <div class="return-report hidden" role="note"></div>
       </div>
       
       <div class="return-actions">

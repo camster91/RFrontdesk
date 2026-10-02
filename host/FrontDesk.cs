@@ -214,6 +214,7 @@ namespace FrontDeskHost
         /// </summary>
         public string SaveBackup(string json, string suggestedName)
         {
+            string tmp = null;
             try
             {
                 if (json == null || json.Length == 0)
@@ -224,16 +225,41 @@ namespace FrontDeskHost
                     name = "frontdesk-backup-" + DateTime.Now.ToString("yyyy-MM-dd-HHmmss", CultureInfo.InvariantCulture) + ".json";
                 if (!name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) name += ".json";
 
+                // Written beside the real name and moved into place only once it
+                // has read back intact. The name is per-day, so writing straight
+                // to it meant a second backup that failed half-way -- a full disk,
+                // say -- truncated the day's good one, and the broken file then
+                // headed the Restore list as the newest. The temporary name does
+                // not end in .json, so List() and Rotate() never see it.
                 string path = Path.Combine(Paths.Backups, name);
-                File.WriteAllText(path, json, new UTF8Encoding(false));
+                tmp = path + ".partial";
+                File.WriteAllText(tmp, json, new UTF8Encoding(false));
 
                 // Read it back and confirm it is the same length and still looks
                 // like the export it claims to be.
-                string verify = File.ReadAllText(path);
+                string verify = File.ReadAllText(tmp);
                 long bytes = verify.Length;
                 bool sizeOk = bytes == json.Length;
                 bool shapeOk = verify.TrimStart().StartsWith("{", StringComparison.Ordinal) &&
                                verify.IndexOf("\"items\"", StringComparison.Ordinal) >= 0;
+
+                if (!(sizeOk && shapeOk))
+                {
+                    // Nothing on disk changes: the earlier backups stay, and so
+                    // does any that already carries today's name. Rotating here
+                    // used to delete the oldest good backup to make room for one
+                    // that had just failed its own check.
+                    TryDelete(tmp);
+                    tmp = null;
+                    Paths.Log("backup failed verification, not kept: " + path);
+                    return Fail("The backup did not read back intact, so it was not kept. The earlier backups are untouched.");
+                }
+
+                if (File.Exists(path))
+                    File.Replace(tmp, path, null);
+                else
+                    File.Move(tmp, path);
+                tmp = null;
 
                 List<string> removed = Rotate();
 
@@ -248,15 +274,25 @@ namespace FrontDeskHost
                 b.Append("\"looksLikeExport\":").Append(Json.Bool(shapeOk)).Append(",");
                 b.Append("\"rotatedOut\":").Append(removed.Count.ToString(CultureInfo.InvariantCulture)).Append(",");
                 b.Append("\"kept\":").Append(List().Count.ToString(CultureInfo.InvariantCulture));
-                if (!(sizeOk && shapeOk))
-                    b.Append(",\"error\":").Append(Json.Str("The file on disk does not match what was written."));
                 b.Append("}");
-                Paths.Log("backup written: " + path + " (" + bytes + " bytes, verified=" + (sizeOk && shapeOk) + ")");
+                Paths.Log("backup written: " + path + " (" + bytes + " bytes, verified=true)");
                 return b.ToString();
             }
             catch (Exception ex)
             {
+                if (tmp != null) TryDelete(tmp);
                 return Error(ex);
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch
+            {
             }
         }
 

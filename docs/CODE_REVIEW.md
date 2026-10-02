@@ -12,11 +12,11 @@ this document and have since drifted** — Phases 1–5, 10 and 11 all edited th
 file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
-**Status at 2026-09-22: Phases 1–12 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**eleven** suites, 662 checks, all green) —
+**Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**fourteen** suites, 735 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
-recent passes that remain unfixed, and which are tracked as issues on this
-repository. The
+recent passes that remain unfixed. Phase 13's are listed in its own section;
+the earlier ones are tracked as issues on this repository. The
 sections that follow are kept as the record of what was wrong and why — they are
 no longer a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for
 shipping the app (icon, packaging, and what the package could have carried out
@@ -25,7 +25,8 @@ used, "Phase 10" for the headings that were not headings and the light-theme
 contrast nobody had measured, "Phase 11" for the rest of that contrast work —
 the accents used as ink, and a brand mark that was invisible on four screens —
 "Phase 12" for the catalog at scale, the host's own two holes, and three
-refusals that used to be silent, and "Known, not
+refusals that used to be silent, "Phase 13" for a fresh three-way read that found
+the boundaries holding at the front door and leaking at the edges, and "Known, not
 fixed" for what was found and deliberately left alone. The endpoint-agent
 question is in `docs/EDR_AND_SIGNING.md`.
 
@@ -1940,6 +1941,110 @@ Found re-reading the source in this phase, each one a case of the same shape.
 - The kiosk suite's three policy checks that asserted the *old* rule ("the public
   cannot invent items") were rewritten to the new one rather than left to pass, as
   the plan required.
+
+---
+
+## Phase 13 — boundaries that held at the door and leaked at the edges
+
+Date: 2026-10-02. A fresh read in three parts — the data layer, the screens and
+kiosk, and the host, packaging and keyboard — each reproducing what it found in
+headless Chromium where it could. It turned up 28 findings that none of the
+earlier phases record. The ten that could hurt someone at the desk are fixed
+here, each with a check that fails on the code before the fix; the rest are
+listed at the end of this section.
+
+The common shape: every boundary Phases 1–12 built was enforced where you enter
+it and nowhere else. The kiosk refuses to navigate to a staff screen — but a
+splash tap was already on one. The admin panel locks after five minutes — but
+the dialog on top of it did not, and Cancel on the lock screen walked round it.
+A borrower's session ended when they pressed DONE — and at no other time.
+
+### Fixed
+
+| | Finding | What it was | Now |
+|---|---|---|---|
+| P1 | Kiosk phone typed on the keys | The return-phone field reformats on every `input` event (`4` → `(4`) and parks the caret at the end; `_insertAtCursor` then moved the caret back to an offset worked out against the unformatted text. Every later digit landed in the wrong place: tapping 4165551234 produced `(165) 123-4554`, and CONTINUE signed in whoever owns 1651234554 and listed their loans. The existing suites set `.value` directly and never saw it. | `_placeCaret` only moves the caret if the value is still what the keyboard wrote; a handler that rewrote it owns the caret. |
+| P2 | A half-finished kiosk return carried over | `_askCondition`'s panel holds the loan, and only its own buttons settled it. DONE, Back and the countdown left it on the return screen, so the next borrower saw "Projector Remote — Is it coming back in good shape?" under their own list, and their "All good" flagged the previous borrower's loan as handed in. | Pending panels register a cancel; `_clearKioskOverlays` settles every one, removes every sign-in panel and picker, and closes the dialog, from `_kioskBackHome` and every kiosk Back. |
+| P3 | Kiosk sessions never ended | The only kiosk timer was the DONE countdown. A borrower who walked away on the item step left the next person checking out on their account; on the return list, their name, phone and loans stayed up. | Any kiosk screen past the welcome returns to it after 90 seconds without a touch or key (`KIOSK_IDLE_MS`), armed by the router. |
+| P4 | The idle lock left its dialog live | The lock navigated to the PIN screen and left `#dialog` open on top — an "Edit borrower" form with the person's name, phone and notes — and Save still wrote the record and opened the detail screen without a PIN. The activity listeners were on `#screen-admin` only, so typing in that dialog never counted and the lock fired mid-edit. | The lock closes the dialog through its own `close()`, so the caller's promise settles as a cancel. Activity listeners are on the document (capture). `showItemDetail`/`showBorrowerDetail` refuse outside an admin session. `closeDialog()` now settles the open dialog rather than only emptying its container. |
+| P5 | Cancel on the lock screen led past it | `adminLoginReturn` was set when the panel was first opened, usually from the staff home, and the lock reused it. Cancel went to the staff home, which has no lock of its own. | The lock sets the way back to the kiosk. |
+| P6 | A tap on the splash opened the staff home | The splash click handler went to `home` with no PIN, and the splash is what every F5, Ctrl+R and crash-reload at the public tablet shows for 400ms. | It goes to the welcome screen, where its own timer goes. The kiosk suite's section 10 used this tap as its way in; it now checks the tap lands on the kiosk and reaches the staff home by navigating in-page. |
+| P7 | The keyboard typed into radios and dates | `_onFocusIn` checked the tag name only. On Review duplicates, tapping a row and then a digit turned the radio's item id 712 into 7123, and Merge folded the duplicate into an unrelated item; on All Loans, any key cleared the date filter. | Only `KBD_TEXT_TYPES` (text, search, tel, password, email, url, number), and never a read-only or disabled field. |
+| P8 | All Loans CSV skipped `csvEscape` | Phase 12's formula guard reached the overdue and report exports; `_loansToCsv` did its own quoting, so a kiosk-typed name beginning `=` went out live, and a quote in the notes was doubled twice. | Every cell goes through `csvEscape`. |
+| P9 | Desk returns discarded the kiosk report | `returnLoan` deleted `returnRequestedCondition`/`Note`; Check In → RETURNED OK and the ✓ buttons on Currently Out and Overdue passed `"good"` without the desk ever seeing the report. "damaged: battery cover missing" became `good` with no note — the same thing Phase 1 fixed for the Queue tab. | `returnLoan` defaults to the reported condition and always writes the borrower's note to the record. The ✓ buttons pass no condition. The check-in screen shows the report (`.return-report`). |
+| P10 | A failed backup could cost a good one | The host wrote straight to the per-day name, so a backup that failed half-way truncated the day's good file and headed the Restore list as newest; rotation ran even when the read-back failed, deleting the oldest good backup; and the page recorded `lastBackupAt` either way, so nothing retried for 24 hours. "Back up now" zeroed the record first, so a failed one left it saying no backup had ever been made. | Written to `<name>.partial`, verified, then `File.Replace`/`Move`d into place; a failed check deletes the partial file, rotates nothing and says the earlier backups are untouched. The page records only a verified backup, and a forced run is a flag rather than a reset. |
+
+The host change (P10) is checked by reading: there is no C# compiler on the
+machine this pass ran on, so `tools/test-host.cjs` could not run, and no check was
+added to `tools/HostTests.cs` that had not been compiled. The page's side of it is
+covered in `tools/test-bridge.cjs`.
+
+### The checks
+
+`tools/test-sessions.cjs` is new: P1–P7 and P9 driven through the page, with the
+two idle timers shortened by wrapping the page's `setTimeout` rather than by a
+hook in the app. P8 is in `tools/test-report.cjs` (lifted by marker, as
+`csvEscape` already was), and P10's page side in `tools/test-bridge.cjs`. Run
+against the code before this pass, the new suite stops at its second check with
+the field reading `(165) 123-4554` and the greeting "Signed in as Other Person",
+the CSV checks show `"=1+2 Cable"` and `said """"thanks"""""`, and the backup
+checks show `lastBackupAt` zeroed and then written after a failure.
+
+### Fixed in a second round
+
+Eight more from the list below, each covered by `tools/test-records.cjs` (which
+serves the real bundle with one appended line naming a few of its functions on
+`window.__t`, so the data layer can be called directly) and each failing on the
+code before it.
+
+| | Finding | Now |
+|---|---|---|
+| R1 | `runTx` rejected with `null` when a request inside it failed — the error event reaches the transaction before `transaction.error` is set — so callers' `err.message` threw inside the catch and no toast appeared (undo, import, restore, the duplicates merge). A callback that threw after writing also committed what it had written. | The request's own error is used; a callback that rejects aborts the transaction, so its earlier writes roll back and its own message is what the caller sees. |
+| R2 | Un-merging after a chained merge (A→B, then B→D) brought A back as available while its unit was still out, free to go out twice. | Refused, naming the later merge to undo first. Undone in order, the loan comes back to A. |
+| R3 | `createLoan` accepted an archived or merged-away item, so a resumed checkout draft could lend the same unit twice. | It follows a merge to the item that lives on (whose "already out" check then applies), and refuses an archived item. |
+| R4 | Import accepted ids at or above 2^53, exhausting the store's key generator for good, and items or people with no `name`, which took down the Items list, search and the kiosk. | Ids must be safe, positive and under 2^40; items and people need a name. The two name sorts are null-safe as a backstop. |
+| R5 | Cancel on "Not handed in" cleared the return request: `prompt()` returned `null` for Cancel and for an empty OK alike. | `prompt()` returns `""` for an empty OK; Cancel changes nothing. |
+| R6 | In checkout, Enter took the top fuzzy match ("Key 12" picked "Key 112"), and Add was withheld whenever the fuzzy search found anything. | Enter and Add follow `resolveItem`, as the list and the kiosk do: a resolved item is attached, an ambiguous name asks the desk to pick, anything else is added. |
+| R7 | The on-screen keys ignored `maxlength` (12 digits into the 8-digit PIN field). | Enforced. The two kiosk phone fields allow 16, so a leading 1 still fits. |
+| R8 | The kiosk kept the last ten digits of whatever was typed, so a double-tapped digit became someone else's valid number. | Exactly ten digits (after a leading 1) or it is refused; the return field's formatter keeps the first ten, not the last. |
+
+### Found, not fixed
+
+Each was reproduced or traced in the source by the read that found it.
+
+Data layer:
+
+- A dismissed near-duplicate group comes back after one checkout: its key is
+  `group[0]`, the busiest member, which changes with use.
+- `addItemAlias` and `updateSettings` read and write in separate transactions,
+  so a concurrent write is lost (in the worst case a PIN change undone by a
+  background `lastDedupAt` write).
+
+Screens:
+
+- The All Loans date filter runs after a 1,000-loan cap, so older ranges show
+  nothing on a busy desk while the export (capped at 100,000) has them.
+- "Merge with…" on a person offers the first ten people, archived ones included.
+- `_editItem`/`_editBorrower` save an empty name; People says "No people yet"
+  when a search matches nothing; Settings → Import replaces everything without
+  the confirmation the host's Restore asks for.
+
+Host, keyboard, packaging:
+
+- `--no-devtools` still leaves the tray's Open folder (Explorer, then a shell),
+  Exit and Start with Windows, a normal window frame, and silently ignores a
+  misspelt flag.
+- A startup entry written by an older build is never corrected, while Settings
+  shows the command a new one would use.
+- One failed write probe sends the host to `%LOCALAPPDATA%` and an empty database
+  for that launch.
+- Rotation deletes any `.json` in the backups folder, including copies saved
+  there with Export a copy.
+- The zip does not carry WebView2's `LICENSE.txt`/`NOTICE.txt`, and `For IT.txt`
+  says "unsigned" even for a signed build.
+- Every `ProcessFailed` kind asks "Reload?", and for `BrowserProcessExited` the
+  reload throws and leaves the window dead; the log is never rotated, holds
+  phone numbers from `tel:`/`sms:` links, and takes newlines from the page.
 
 ---
 

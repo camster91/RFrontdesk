@@ -3086,6 +3086,15 @@ html.kbd-open .pin-input-container .pin-submit {
   margin-bottom: var(--space-4);
 }
 
+.return-report {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md, 8px);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
 .return-actions {
   display: flex;
   gap: var(--space-3);
