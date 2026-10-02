@@ -12,6 +12,10 @@ nothing to install: the zip is the delivery, and unpacking it is the install.
 It carries `START HERE.txt` for whoever sets up the desk and `For IT.txt` for
 whoever has to let it through the endpoint agent.
 
+It is also on the web at **https://rotmanav.ca/desk/** — the same app, opened in
+a browser, with nothing to install. See "On the web" below for what that means
+for where the records live.
+
 It has **two surfaces**. Staff sign in with a PIN and get loans, items, people and
 reports. The public surface (`the kiosk`) is what a borrower sees on an unattended
 tablet: they can borrow and ask to return, and nothing else.
@@ -304,6 +308,42 @@ whole migration.
 
 ---
 
+## On the web
+
+**https://rotmanav.ca/desk/** serves the same `web` folder the exe loads. Open it
+on the desk tablet and add it to the home screen; it works the same way.
+
+- **Records stay on the device that opened it.** Nothing is sent to rotmanav.ca:
+  the page keeps everything in that browser's own storage, exactly as the exe
+  does. Two devices are two separate desks. Anyone who opens the address
+  elsewhere gets an empty app on their own device, not this desk's records.
+- **Clearing the browser's site data deletes the records.** The app asks the
+  browser to keep its storage, but a person can still clear it. The daily backup
+  is a download in the browser build (there is no backup folder), so keep those
+  files somewhere safe, and restore from one in Settings.
+- **The PIN is per device**, and so is the lockout. Change the factory PIN on the
+  first visit, as with the exe.
+- **Use one browser on the desk.** Chrome, Edge and Safari each keep their own
+  storage, so switching browsers looks like starting over.
+- Updates arrive on the next reload: the page is always revalidated, never served
+  from a stale cache.
+
+It is served by a Cloudflare Worker (`deploy/desk-worker.js`) on the route
+`rotmanav.ca/desk*`. The Worker hands out the three files under `/desk/`, and
+adds the headers: a Content-Security-Policy that allows only the page's own
+scripts (its inline ones by hash, worked out from the page itself), no framing,
+no referrer, `noindex`. To publish a change to `web/`:
+
+```
+cd deploy && npx wrangler deploy
+```
+
+with `CLOUDFLARE_API_TOKEN` set to a token with Workers edit rights on the
+account that holds the rotmanav.ca zone. `node tools/test-web.cjs` checks the
+Worker's routes and headers and drives the page through it under its policy.
+
+---
+
 ## If something goes wrong
 
 - **The app does not start.** It needs the Microsoft Edge WebView2 Runtime, which
@@ -328,6 +368,7 @@ whole migration.
 web/      the app itself  (index.html, js/app.js, styles.css)
 host/     the Windows wrapper (C#), the build script, and the exe's icon
 tools/    test suites, a local dev server, the icon, and the packaging script
+deploy/   the Cloudflare Worker that serves web/ at rotmanav.ca/desk/
 docs/     the code review, and the endpoint-agent / signing write-up
 dist/     the built app  (this is what you copy to a desk)
 release/  the zip that goes out  (built from dist, not edited by hand)
@@ -405,16 +446,17 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Twelve suites, 688 checks (11 host bridge, 38 host flags and navigation, 11 toast
-stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser UI,
-57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at scale,
-23 sessions, lock and keyboard). Four lift their section out of the real `app.js`
-and run it in a sandbox (host bridge, toast stack, screen router, report
-aggregation); six drive the real page in headless Edge (keyboard touch through
-real touch input, the browser UI end to end, the kiosk surface, the layout suite,
-the backup round trip, and the sessions suite — a kiosk session nobody finished,
-the idle lock with a dialog open, desk returns that carry a kiosk report, and a
-phone number typed on the on-screen keys).
+Thirteen suites, 710 checks (11 host bridge, 38 host flags and navigation, 11
+toast stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser
+UI, 57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at
+scale, 23 sessions, lock and keyboard, 22 web build). Four lift their section out
+of the real `app.js` and run it in a sandbox (host bridge, toast stack, screen
+router, report aggregation); seven drive the real page in headless Edge (keyboard
+touch through real touch input, the browser UI end to end, the kiosk surface, the
+layout suite, the backup round trip, the sessions suite — a kiosk session nobody
+finished, the idle lock with a dialog open, desk returns that carry a kiosk
+report, and a phone number typed on the on-screen keys — and the web build, served
+through the shipping Worker under its Content-Security-Policy).
 
 The last two are the different ones. **catalog at scale** seeds ten thousand items
 in its own browser profile — so the seed cannot leak into the other suites — and

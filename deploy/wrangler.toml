@@ -1,0 +1,21 @@
+# The web build at https://rotmanav.ca/desk/.
+#
+#   cd deploy && npx wrangler deploy
+#
+# Needs a Cloudflare API token with Workers edit rights on the account that
+# holds the rotmanav.ca zone (CLOUDFLARE_API_TOKEN). See README "On the web".
+name = "rotman-desk"
+main = "desk-worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+routes = [
+  { pattern = "rotmanav.ca/desk*", zone_name = "rotmanav.ca" }
+]
+
+[assets]
+directory = "../web"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "auto-trailing-slash"
+not_found_handling = "none"

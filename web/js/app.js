@@ -10438,6 +10438,14 @@ window.__appReady = true;
 async function bootstrap() {
   try {
     await openDB();
+    // On the web build every record lives in this browser's storage, which a
+    // browser may clear on its own when the disk runs low unless the site has
+    // asked to keep it. Asking is silent where it is granted outright (an
+    // installed or frequently used site), and a no-op inside the Windows host.
+    if (navigator.storage && typeof navigator.storage.persist === "function") {
+      navigator.storage.persist().catch(() => {
+      });
+    }
     const settings = await getSettings();
     if (!settings.lastDedupAt || Date.now() - settings.lastDedupAt > 24 * 60 * 60 * 1e3) {
       runDailyDedup().then((result) => {

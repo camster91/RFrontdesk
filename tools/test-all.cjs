@@ -20,7 +20,8 @@ const SUITES = [
   ["layout at real widths", "test-responsive.cjs"],
   ["backup round trip", "test-restore.cjs"],
   ["catalog at scale", "test-catalog.cjs"],
-  ["sessions, lock and keyboard", "test-sessions.cjs"]
+  ["sessions, lock and keyboard", "test-sessions.cjs"],
+  ["web build", "test-web.cjs"]
 ];
 
 const results = [];
