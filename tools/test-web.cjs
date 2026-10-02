@@ -61,10 +61,13 @@ const ASSETS = {
 (async () => {
   console.log("\nThe web build at /desk/\n");
   const worker = (await import(pathToFileURL(path.join(__dirname, "..", "deploy", "desk-worker.js")).href)).default;
-  const call = (p, init) => worker.fetch(new Request(`http://127.0.0.1:${PORT}${p}`, init), { ASSETS });
+  // As Cloudflare hands requests to the Worker: HTTPS, on the real host.
+  const call = (p, init) => worker.fetch(new Request(`https://rotmanav.ca${p}`, init), { ASSETS });
 
   // ── 1. routes ────────────────────────────────────────────────────────────
   {
+    const plain = await worker.fetch(new Request("http://rotmanav.ca/desk/js/app.js?x=1"), { ASSETS });
+    check("plain HTTP goes to HTTPS, path and query kept", plain.status === 301 && plain.headers.get("location") === "https://rotmanav.ca/desk/js/app.js?x=1", `${plain.status} ${plain.headers.get("location")}`);
     const bare = await call("/desk");
     check("/desk redirects to /desk/, where relative URLs resolve", bare.status === 301 && new URL(bare.headers.get("location")).pathname === "/desk/", `${bare.status} ${bare.headers.get("location")}`);
     const index = await call("/desk/index.html");
@@ -92,6 +95,7 @@ const ASSETS = {
     check("with a CSP that allows no inline script but its own", /script-src 'self' 'unsafe-hashes' 'sha256-/.test(csp) && !/script-src[^;]*'unsafe-inline'/.test(csp), csp);
     check("and is never framed", /frame-ancestors 'none'/.test(csp) && page.headers.get("x-frame-options") === "DENY");
     check("and always revalidated, so a deploy reaches the tablet", page.headers.get("cache-control") === "no-cache");
+    check("and pinned to HTTPS", /max-age=\d{8}/.test(page.headers.get("strict-transport-security") || ""), page.headers.get("strict-transport-security"));
     check("and kept out of search results", /noindex/.test(page.headers.get("x-robots-tag") || ""));
     const js = await call("/desk/js/app.js");
     check("the script is served with the same headers", js.status === 200 && js.headers.get("x-content-type-options") === "nosniff", js.status);
@@ -102,14 +106,20 @@ const ASSETS = {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const r = await worker.fetch(
-      new Request(`http://127.0.0.1:${PORT}${req.url}`, {
+      // TLS ends at Cloudflare's edge, so the Worker always sees https. This
+      // local server is plain http; say https to the Worker, and turn any
+      // absolute redirect it gives back into one this server can answer.
+      new Request(`https://127.0.0.1:${PORT}${req.url}`, {
         method: req.method,
         headers: req.headers,
         body: ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks)
       }),
       { ASSETS }
     );
-    res.writeHead(r.status, Object.fromEntries(r.headers));
+    const headers = Object.fromEntries(r.headers);
+    if (headers.location) headers.location = headers.location.replace(/^https:\/\/127\.0\.0\.1:/, "http://127.0.0.1:");
+    delete headers["strict-transport-security"];
+    res.writeHead(r.status, headers);
     res.end(Buffer.from(await r.arrayBuffer()));
   });
   await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
@@ -145,7 +155,10 @@ const ASSETS = {
     // only works if its hash is in the policy.
     await page.evaluate(() => window.app.showAdminLogin());
     await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
-    await page.click("#screen-admin-login .btn-ghost");
+    // Dispatched on the element rather than at its coordinates: what is under
+    // test is whether the inline handler may run, and the keypad sliding up
+    // under a coordinate click made that depend on timing.
+    await page.$eval("#screen-admin-login .btn-ghost", (el) => el.click());
     await sleep(400);
     const back = await page.evaluate(() => document.querySelector(".screen:not(.hidden)").id);
     check("an inline onclick still works (PIN screen Cancel)", back === "screen-welcome", back);

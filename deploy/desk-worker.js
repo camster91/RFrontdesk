@@ -26,7 +26,10 @@ const BASE_HEADERS = {
   "x-robots-tag": "noindex, nofollow",
   // No versioned filenames, so always revalidate: a fix that is deployed has to
   // reach the tablet on its next load, not whenever a cache expires.
-  "cache-control": "no-cache"
+  "cache-control": "no-cache",
+  // Once a browser has seen the page over HTTPS it will not try plain HTTP again.
+  // Not includeSubDomains: the other hosts on rotmanav.ca are not this file's call.
+  "strict-transport-security": "max-age=31536000"
 };
 
 async function sha256(text) {
@@ -80,6 +83,13 @@ function withHeaders(res, extra = {}) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Plain HTTP used to be served as is: a page with a PIN screen, open to
+    // anyone on the same Wi-Fi to rewrite in flight, and a separate origin with
+    // its own empty storage, so the desk looked wiped. Always HTTPS.
+    if (url.protocol === "http:") {
+      url.protocol = "https:";
+      return withHeaders(Response.redirect(url.toString(), 301));
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
       return withHeaders(new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } }));
     }
