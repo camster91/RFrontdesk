@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 716 checks, all green) —
+covered by `node tools/test-all.cjs` (**fourteen** suites, 735 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -1990,26 +1990,30 @@ the field reading `(165) 123-4554` and the greeting "Signed in as Other Person",
 the CSV checks show `"=1+2 Cable"` and `said """"thanks"""""`, and the backup
 checks show `lastBackupAt` zeroed and then written after a failure.
 
-### Found, not fixed in this pass
+### Fixed in a second round
 
-Each was reproduced or traced in the source by the read that found it. They are
-listed rather than fixed so that the ten above could ship on their own.
+Eight more from the list below, each covered by `tools/test-records.cjs` (which
+serves the real bundle with one appended line naming a few of its functions on
+`window.__t`, so the data layer can be called directly) and each failing on the
+code before it.
+
+| | Finding | Now |
+|---|---|---|
+| R1 | `runTx` rejected with `null` when a request inside it failed — the error event reaches the transaction before `transaction.error` is set — so callers' `err.message` threw inside the catch and no toast appeared (undo, import, restore, the duplicates merge). A callback that threw after writing also committed what it had written. | The request's own error is used; a callback that rejects aborts the transaction, so its earlier writes roll back and its own message is what the caller sees. |
+| R2 | Un-merging after a chained merge (A→B, then B→D) brought A back as available while its unit was still out, free to go out twice. | Refused, naming the later merge to undo first. Undone in order, the loan comes back to A. |
+| R3 | `createLoan` accepted an archived or merged-away item, so a resumed checkout draft could lend the same unit twice. | It follows a merge to the item that lives on (whose "already out" check then applies), and refuses an archived item. |
+| R4 | Import accepted ids at or above 2^53, exhausting the store's key generator for good, and items or people with no `name`, which took down the Items list, search and the kiosk. | Ids must be safe, positive and under 2^40; items and people need a name. The two name sorts are null-safe as a backstop. |
+| R5 | Cancel on "Not handed in" cleared the return request: `prompt()` returned `null` for Cancel and for an empty OK alike. | `prompt()` returns `""` for an empty OK; Cancel changes nothing. |
+| R6 | In checkout, Enter took the top fuzzy match ("Key 12" picked "Key 112"), and Add was withheld whenever the fuzzy search found anything. | Enter and Add follow `resolveItem`, as the list and the kiosk do: a resolved item is attached, an ambiguous name asks the desk to pick, anything else is added. |
+| R7 | The on-screen keys ignored `maxlength` (12 digits into the 8-digit PIN field). | Enforced. The two kiosk phone fields allow 16, so a leading 1 still fits. |
+| R8 | The kiosk kept the last ten digits of whatever was typed, so a double-tapped digit became someone else's valid number. | Exactly ten digits (after a leading 1) or it is refused; the return field's formatter keeps the first ten, not the last. |
+
+### Found, not fixed
+
+Each was reproduced or traced in the source by the read that found it.
 
 Data layer:
 
-- `runTx` rejects with `null` when a request inside it fails — the error event
-  reaches the transaction before `transaction.error` is set — so callers'
-  `err.message` throws inside the catch and no toast appears (undo, import,
-  restore, the duplicates merge).
-- Un-merging an item after a chained merge (A→B, then B→D) brings A back as
-  available while its unit is still out; it can then be checked out twice, and
-  the counters count the loans on both.
-- `createLoan` accepts an archived or merged-away item; a checkout draft resumed
-  after a merge writes the loan against the victim.
-- Import accepts ids at or above 2^53, which exhausts the store's key generator
-  for good (`clear()` does not reset it); and accepts items and borrowers with no
-  `name`, which then throws in `listItems`/`listBorrowers` and takes down the
-  Items list, search and the kiosk.
 - A dismissed near-duplicate group comes back after one checkout: its key is
   `group[0]`, the busiest member, which changes with use.
 - `addItemAlias` and `updateSettings` read and write in separate transactions,
@@ -2018,10 +2022,6 @@ Data layer:
 
 Screens:
 
-- Cancel on "Not handed in" still clears the return request: `prompt()` returns
-  `null` for both Cancel and an empty OK.
-- In checkout, Enter takes the top fuzzy match ("Key 12" picks "Key 112") and the
-  Add button is suppressed because `searchItems` found something.
 - The All Loans date filter runs after a 1,000-loan cap, so older ranges show
   nothing on a busy desk while the export (capped at 100,000) has them.
 - "Merge with…" on a person offers the first ten people, archived ones included.
@@ -2031,9 +2031,6 @@ Screens:
 
 Host, keyboard, packaging:
 
-- The keyboard ignores `maxlength` (12 digits into the 8-digit PIN field), and the
-  kiosk borrow screen keeps the last ten digits of a longer number, so a
-  double-tapped digit books the loan to whoever owns the shifted number.
 - `--no-devtools` still leaves the tray's Open folder (Explorer, then a shell),
   Exit and Start with Windows, a normal window frame, and silently ignores a
   misspelt flag.

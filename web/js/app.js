@@ -340,7 +340,20 @@ function runTx(storeNames, mode, fn) {
     // "Unhandled rejection" alongside every other rule this app enforces. Claiming
     // it here does not change what the caller sees: the handlers below still run,
     // and the transaction's own outcome still decides the result.
-    if (fnResult && typeof fnResult.then === "function") fnResult.then(undefined, () => {});
+    //
+    // And a throw after the callback has written something must undo it. The
+    // transaction used to commit whatever had been put before the throw, so a
+    // refusal half-way through a multi-write operation left half of it behind.
+    let asyncError = null;
+    if (fnResult && typeof fnResult.then === "function") {
+      fnResult.then(undefined, (err) => {
+        asyncError = err;
+        try {
+          transaction.abort();
+        } catch {
+        }
+      });
+    }
     if (fnError) {
       try {
         transaction.abort();
@@ -363,8 +376,12 @@ function runTx(storeNames, mode, fn) {
       }
       Promise.resolve(fnResult).then(resolve, reject);
     };
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error || new Error("transaction aborted"));
+    // A failed request reaches the transaction's onerror *before* the abort sets
+    // transaction.error, so that was always null here: every caller got
+    // `reject(null)`, and the `err.message` in its catch threw instead of showing
+    // the toast. The request's own error is on the event.
+    transaction.onerror = (e) => reject(transaction.error || (e && e.target && e.target.error) || new Error("The database refused the change."));
+    transaction.onabort = () => reject(asyncError || transaction.error || new Error("transaction aborted"));
   });
 }
 async function getAll(store) {
@@ -436,7 +453,7 @@ async function listItems({ includeArchived = false, sortBy = "name" } = {}) {
     if (sortBy === "timesCheckedOut") {
       return b.timesCheckedOut - a.timesCheckedOut;
     }
-    return a.name.localeCompare(b.name, void 0, {
+    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
       numeric: true
     });
   });
@@ -577,7 +594,7 @@ async function listBorrowers({ includeArchived = false, sortBy = "name" } = {}) 
     if (sortBy === "lastSeenAt") {
       return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
     }
-    return a.name.localeCompare(b.name, void 0, {
+    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
       numeric: true
     });
   });
@@ -681,6 +698,20 @@ async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOu
     if (itemId != null) {
       item = await s.req(s.get("items").get(itemId));
       if (!item) throw new Error(`Item ${itemId} not found`);
+      // A cart can outlive its items: a checkout draft resumed after one of its
+      // items was merged away used to write the loan against the archived copy,
+      // where the keeper's "already out" check could not see it -- so the same
+      // unit could go out twice. Follow the merge to the item that lives on.
+      for (let hops = 0; item.mergedIntoId != null && hops < 16; hops++) {
+        const next = await s.req(s.get("items").get(item.mergedIntoId));
+        if (!next) break;
+        item = next;
+      }
+      if (item.isArchived) {
+        const err = new Error(`${item.name} is archived. Unarchive it under Items to lend it.`);
+        err.code = "ARCHIVED";
+        throw err;
+      }
       itemName = item.name;
     } else if (customName) {
       itemName = String(customName).trim().slice(0, 200);
@@ -1216,6 +1247,16 @@ async function unmergeItem(victimId) {
     const meta = victim.mergeMeta || {};
     const counters = meta.counters || {};
     const keep = await s.req(itemsStore.get(keepId));
+    // A then B: A was merged into B, and B later into D. A's open loan now sits
+    // on D, so the loop below skipped it, and A came back "available" while its
+    // unit was still out -- free to be checked out a second time -- with the
+    // loan counted on both. Undo in the order it was done.
+    if (keep && keep.mergedIntoId != null) {
+      const later = await s.req(itemsStore.get(keep.mergedIntoId));
+      const err = new Error(`"${keep.name}" has since been merged into "${later ? later.name : "another item"}". Undo that merge first, then this one.`);
+      err.code = "MERGE_CHAINED";
+      throw err;
+    }
     if (keep) {
       const added = Array.isArray(meta.aliasesAdded) ? meta.aliasesAdded : [];
       if (added.length > 0) {
@@ -1585,11 +1626,21 @@ function validateImportRecord(storeName, record) {
   if (storeName === "settings") {
     return record.id === 1 ? null : `a "settings" entry has id ${JSON.stringify(record.id)}, expected 1`;
   }
-  if (!Number.isInteger(record.id)) {
-    return `a "${storeName}" entry is missing a numeric id`;
+  // A safe, positive id well under 2^53. An id at or above that exhausts the
+  // store's key generator for good -- clear() does not reset it -- so after one
+  // such import no new item or loan could ever be added, and restoring a good
+  // backup did not bring it back.
+  if (!Number.isSafeInteger(record.id) || record.id < 1 || record.id > MAX_IMPORT_ID) {
+    return `a "${storeName}" entry is missing a usable numeric id (${JSON.stringify(record.id)})`;
+  }
+  // The catalog and the people list sort by name, and an entry with none used to
+  // throw there and take down the Items list, search and the kiosk.
+  if ((storeName === "items" || storeName === "borrowers") && (typeof record.name !== "string" || !record.name.trim())) {
+    return `a "${storeName}" entry (id ${record.id}) has no name`;
   }
   return null;
 }
+var MAX_IMPORT_ID = 2 ** 40;
 async function importAll(data, { mode = "replace", restoreSettings = true } = {}) {
   await openDB();
   if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -2090,7 +2141,10 @@ function prompt(message, { title = "Enter", defaultValue = "", placeholder = "",
         variant: "primary"
       }
     ]
-  }).then((ok) => ok ? input.value || null : null);
+  // OK with an empty field is "" and Cancel is null -- two different answers. Both
+  // used to come back null, so "Not handed in" could not tell Cancel from "no
+  // reason given" and cleared the borrower's return request either way.
+  }).then((ok) => ok ? input.value : null);
 }
 function pulse(element, duration = 2e3) {
   if (!element) return;
@@ -3522,6 +3576,10 @@ var init_keyboard = __esm({
         const end = input.selectionEnd ?? input.value.length;
         const current = input.value || "";
         const next = current.slice(0, start) + text + current.slice(end);
+        // A real keyboard cannot type past maxlength, and neither may this one.
+        // It used to: the 8-digit PIN field took 12, and a double-tapped digit
+        // made an 11-digit phone number.
+        if (input.maxLength > 0 && next.length > input.maxLength) return;
         this._setValue(input, next);
         this._placeCaret(input, next, start + text.length);
       }
@@ -4512,25 +4570,25 @@ var CheckoutFlow = class {
           this._renderItemsList("");
           return;
         }
-        const results = await searchItems(query, {
-          limit: 1
-        });
-        if (results.length > 0) {
-          this.handleItemSelect(results[0].item, true);
-          showToast(`Selected "${results[0].item.name}"`, {
-            type: "success",
-            duration: 1500
+        // The same rules as the list and the kiosk: resolveItem, not the fuzzy
+        // search's top hit. Enter used to take searchItems(..)[0], a subsequence
+        // match, so "Key 12" picked "Key 112" -- the wrong key went out, and
+        // "Key 12" could not be added from here at all.
+        const res = await resolveItem(query);
+        if (res && !res.item && res.alternatives.length) {
+          showToast(`Several items match "${query}" \u2014 pick one from the list.`, {
+            type: "info"
           });
-          itemsSearch.value = "";
-          this._renderItemsList("");
           return;
         }
-        const newItem = await this.handleNewItem(query, "Other", {
+        // handleNewItem attaches to a resolved item (and remembers the name it
+        // was typed as), or adds a new one when nothing is meant.
+        const picked = await this.handleNewItem(query, "Other", {
           skipDialog: true
         });
-        if (newItem) {
-          this.handleItemSelect(newItem, true);
-          showToast(`Added "${newItem.name}"`, {
+        if (picked) {
+          this.handleItemSelect(picked, true);
+          showToast(res && res.item ? `Selected "${picked.name}"` : `Added "${picked.name}"`, {
             type: "success",
             duration: 1500
           });
@@ -4786,15 +4844,10 @@ var CheckoutFlow = class {
       note.appendChild(typedEl);
       allWrap.appendChild(note);
     }
-    let showAddNew = false;
-    if (typed && !resolved && !ambiguous) {
-      const results = await searchItems(typed, {
-        limit: 1
-      });
-      if (results.length === 0) {
-        showAddNew = true;
-      }
-    }
+    // Offered whenever nothing is meant. It used to be withheld whenever the
+    // fuzzy search found anything at all, so with "Key 112" in the catalog,
+    // "Key 12" could never be added from checkout.
+    const showAddNew = !!(typed && !resolved && !ambiguous);
     if (ambiguous) {
       // Two or more entries could be meant. Offer nothing to create, because
       // creating here is exactly how "Cable" becomes three catalog rows.
@@ -6039,8 +6092,11 @@ function initKiosk() {
       valueBefore = e.target.value;
     });
     returnPhoneInput.addEventListener("input", (e) => {
-      const before = normalizePhone(valueBefore).slice(-10);
-      let digits = normalizePhone(e.target.value).slice(-10);
+      // The first ten, not the last ten: a digit tapped once too often used to
+      // push the first one off the front, and the field then showed -- and
+      // looked up -- a different number.
+      const before = normalizePhone(valueBefore).slice(0, 10);
+      let digits = normalizePhone(e.target.value).slice(0, 10);
       if (e.inputType === "deleteContentBackward" && digits === before && before.length > 0) {
         digits = before.slice(0, -1);
       }
@@ -6065,7 +6121,10 @@ function initKiosk() {
 async function handlePhoneSubmit() {
   const input = document.getElementById("kiosk-phone");
   if (!input) return;
-  const raw = input.value.replace(/\D/g, "").slice(-10);
+  // Exactly ten digits (after a leading 1), never "the last ten of however many
+  // were typed": a double-tapped digit used to pass as a different, valid number
+  // and book the loan to whoever owned it.
+  const raw = normalizePhone(input.value);
   if (raw.length !== 10) {
     showToast("Please enter a 10-digit phone number", {
       type: "error"
@@ -6766,7 +6825,7 @@ function _kioskBackHome() {
 async function handleReturnPhoneSubmit() {
   const input = document.getElementById("kiosk-return-phone");
   if (!input) return;
-  const raw = input.value.replace(/\D/g, "").slice(-10);
+  const raw = normalizePhone(input.value);
   if (raw.length !== 10) {
     showToast("Please enter a 10-digit phone number", {
       type: "error"
@@ -7734,6 +7793,8 @@ async function _denyPendingReturn(loanId) {
     title: "Not handed in",
     placeholder: "e.g. borrower kept it, will return tomorrow"
   });
+  // Cancel, Escape or a tap outside: change nothing.
+  if (reason === null) return;
   try {
     await denyRequestedReturn(loanId, {
       reason: reason ? String(reason).trim() : ""

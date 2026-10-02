@@ -458,17 +458,19 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Thirteen suites, 716 checks (11 host bridge, 38 host flags and navigation, 11
+Fourteen suites, 735 checks (11 host bridge, 38 host flags and navigation, 11
 toast stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser
 UI, 57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at
-scale, 23 sessions, lock and keyboard, 28 web build). Four lift their section out
-of the real `app.js` and run it in a sandbox (host bridge, toast stack, screen
-router, report aggregation); seven drive the real page in headless Edge (keyboard
-touch through real touch input, the browser UI end to end, the kiosk surface, the
-layout suite, the backup round trip, the sessions suite — a kiosk session nobody
-finished, the idle lock with a dialog open, desk returns that carry a kiosk
-report, and a phone number typed on the on-screen keys — and the web build, served
-through the shipping Worker under its Content-Security-Policy).
+scale, 23 sessions, lock and keyboard, 19 records, 28 web build). Four lift their
+section out of the real `app.js` and run it in a sandbox (host bridge, toast
+stack, screen router, report aggregation); eight drive the real page in headless
+Edge (keyboard touch through real touch input, the browser UI end to end, the
+kiosk surface, the layout suite, the backup round trip, the sessions suite — a
+kiosk session nobody finished, the idle lock with a dialog open, desk returns
+that carry a kiosk report, and a phone number typed on the on-screen keys — the
+records suite — chained merges, archived items, imports that would break the
+store, "Not handed in" then Cancel, and the checkout's Enter key — and the web
+build, served through the shipping Worker under its Content-Security-Policy).
 
 The last two are the different ones. **catalog at scale** seeds ten thousand items
 in its own browser profile — so the seed cannot leak into the other suites — and
