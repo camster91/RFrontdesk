@@ -766,16 +766,20 @@ async function returnLoan(loanId, { returnedAt, conditionIn, notes } = {}) {
     if (loan.returnedAt) throw new Error(`Loan ${loanId} already returned`);
     loan.returnedAt = returnedAt || Date.now();
     loan.isOpen = "closed";
-    loan.conditionIn = conditionIn || "good";
+    // With no condition given, the borrower's own report stands -- the quick
+    // "returned" buttons pass none. They used to pass "good", and the delete
+    // below then threw away "damaged: battery cover missing" for good.
+    loan.conditionIn = conditionIn || loan.returnRequestedCondition || "good";
+    // Whatever the desk decides, what the borrower said goes on the record.
+    const reported = loan.returnRequestedNote ? `borrower reported: ${loan.returnRequestedNote}` : "";
+    let addition = String(notes || "").trim();
+    if (reported && !addition.includes(reported)) addition = addition ? `${reported} | ${addition}` : reported;
     // The return is now real, so any kiosk request that asked for it is spent.
     delete loan.returnRequestedAt;
     delete loan.returnRequestedCondition;
     delete loan.returnRequestedNote;
-    if (notes) {
-      const addition = String(notes).trim();
-      if (addition) {
-        loan.notes = loan.notes ? `${loan.notes} | Check-in: ${addition}` : `Check-in: ${addition}`;
-      }
+    if (addition) {
+      loan.notes = loan.notes ? `${loan.notes} | Check-in: ${addition}` : `Check-in: ${addition}`;
     }
     await s.req(store.put(loan));
     return loan;
@@ -1932,6 +1936,7 @@ function showDialogImpl(opts) {
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      if (container._closeActive === close) container._closeActive = null;
       if (Number(container.dataset.dialogGeneration) === generation) {
         container.innerHTML = "";
         // Belt to the guard above's braces: whatever else happens, a container
@@ -1987,6 +1992,7 @@ function showDialogImpl(opts) {
     }
   };
   document.addEventListener("keydown", onKey);
+  container._closeActive = close;
   return {
     close,
     onClose(cb) {
@@ -1998,6 +2004,14 @@ function closeDialog() {
   const container = document.getElementById("dialog");
   if (!container) return;
   if (container.classList.contains("hidden")) return;
+  // Close through the dialog's own close() when it has one, so the caller's
+  // promise settles as a cancel. Emptying the container alone left the caller
+  // awaiting forever -- and, before anything called this on a lock, left the
+  // dialog itself live on top of the screen that replaced it.
+  if (typeof container._closeActive === "function") {
+    container._closeActive();
+    return;
+  }
   container.classList.remove("show");
   setTimeout(() => {
     container.innerHTML = "";
@@ -2813,6 +2827,9 @@ __export(keyboard_exports, {
   OnScreenKeyboard: () => OnScreenKeyboard,
   initKeyboard: () => initKeyboard
 });
+// Input types the on-screen keyboard types into. Anything else (radio, checkbox,
+// date, range, file, ...) is left to its own control.
+var KBD_TEXT_TYPES = /* @__PURE__ */ new Set(["text", "search", "tel", "password", "email", "url", "number"]);
 function initKeyboard(container) {
   const kbd = new OnScreenKeyboard(container);
   kbd.init();
@@ -3219,6 +3236,13 @@ var init_keyboard = __esm({
           if (!(t instanceof HTMLElement)) return;
           if (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA") return;
           if (t.dataset.kbd === "off") return;
+          // Only fields that take typed text. A radio, checkbox or date input is
+          // an <input> too, and the keyboard used to come up on all of them and
+          // overwrite `.value`: on Review duplicates, tapping a row and then a
+          // digit turned the radio's item id 712 into 7123, and Merge folded the
+          // duplicate into an unrelated item.
+          if (t.tagName === "INPUT" && !KBD_TEXT_TYPES.has((t.type || "text").toLowerCase())) return;
+          if (t.readOnly || t.disabled) return;
           const layout = this._inferLayout(t);
           this.show(layout, {
             target: t
@@ -3499,7 +3523,17 @@ var init_keyboard = __esm({
         const current = input.value || "";
         const next = current.slice(0, start) + text + current.slice(end);
         this._setValue(input, next);
-        const caret = start + text.length;
+        this._placeCaret(input, next, start + text.length);
+      }
+      // Put the caret where the edit left it -- unless an `input` handler rewrote
+      // the value while _setValue was dispatching. The kiosk phone fields do that:
+      // they reformat "4" into "(4" and park the caret at the end. Moving it back
+      // to an offset worked out against the *unformatted* text then put every
+      // later digit in the wrong place, so 4165551234 came out as (165) 123-4554
+      // and could sign the borrower in as whoever owns that number. A handler that
+      // rewrites the value owns the caret.
+      _placeCaret(input, expected, caret) {
+        if (input.value !== expected) return;
         try {
           input.setSelectionRange(caret, caret);
         } catch (_) {
@@ -3512,17 +3546,11 @@ var init_keyboard = __esm({
         if (start === end && start > 0) {
           const next = current.slice(0, start - 1) + current.slice(end);
           this._setValue(input, next);
-          try {
-            input.setSelectionRange(start - 1, start - 1);
-          } catch (_) {
-          }
+          this._placeCaret(input, next, start - 1);
         } else if (start !== end) {
           const next = current.slice(0, start) + current.slice(end);
           this._setValue(input, next);
-          try {
-            input.setSelectionRange(start, start);
-          } catch (_) {
-          }
+          this._placeCaret(input, next, start);
         }
       }
       _endLongPress() {
@@ -3610,6 +3638,9 @@ function goToScreen(name, opts = {}) {
   // stayed armed after the user was already out, and could fire later and drag
   // them from an unrelated screen back to the login prompt.
   if (name !== "admin" && name !== "admin-detail") endAdminSession();
+  // Same for the kiosk's own idle timer: armed on any kiosk screen past the
+  // welcome, cleared everywhere else.
+  _armKioskIdle();
   const hook = onEnterHooks.get(name);
   if (hook) {
     try {
@@ -5365,6 +5396,20 @@ var CheckinFlow = class {
       loanTimeEl.textContent = `Out ${out} \xB7 ${due}`;
     }
     if (notesEl) notesEl.value = "";
+    // A kiosk return request carries what the borrower said about the item. The
+    // desk never saw it here, pressed RETURNED OK, and it was gone.
+    const reportEl = root.querySelector(".return-report");
+    if (reportEl) {
+      if (loan.returnRequestedAt) {
+        const cond = loan.returnRequestedCondition === "damaged" ? "something is wrong" : "all good";
+        const note = loan.returnRequestedNote ? `: \u201C${loan.returnRequestedNote}\u201D` : "";
+        reportEl.textContent = `The borrower reported at the kiosk \u2014 ${cond}${note}`;
+        reportEl.classList.remove("hidden");
+      } else {
+        reportEl.textContent = "";
+        reportEl.classList.add("hidden");
+      }
+    }
   }
 };
 function stepName(n) {
@@ -5544,12 +5589,12 @@ async function hostRestoreBackup(fileName) {
   });
 }
 
-async function autoBackup() {
+async function autoBackup({ force = false } = {}) {
   try {
     const settings = await getSettings();
     const last = settings.lastBackupAt || 0;
     const now = Date.now();
-    if (now - last < BACKUP_INTERVAL_MS && last > 0) {
+    if (!force && now - last < BACKUP_INTERVAL_MS && last > 0) {
       return {
         ok: true,
         triggered: false,
@@ -5560,10 +5605,13 @@ async function autoBackup() {
     if (isHosted()) {
       try {
         const result = await hostSaveBackup(data);
-        await updateSettings({
-          lastBackupAt: now
-        });
+        // Only a backup that read back intact counts. This used to be recorded
+        // either way, so a failed backup was not retried for 24 hours -- and on a
+        // desk that starts minimised, nobody saw the toast saying it failed.
         if (result.verified) {
+          await updateSettings({
+            lastBackupAt: now
+          });
           showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
             type: "info",
             duration: 5e3
@@ -5578,7 +5626,7 @@ async function autoBackup() {
           });
         }
         return {
-          ok: result.verified,
+          ok: !!result.verified,
           triggered: true,
           reason: "host",
           path: result.path
@@ -5653,12 +5701,9 @@ async function downloadExport() {
 }
 /** Bound to the tray's "Back up now", and usable from the console. */
 async function runBackupNow({ force = true } = {}) {
-  if (force) {
-    await updateSettings({
-      lastBackupAt: 0
-    });
-  }
-  return autoBackup();
+  // Forced by argument rather than by zeroing lastBackupAt first: a forced run
+  // that then failed left the record saying no backup had ever been made.
+  return autoBackup({ force });
 }
 
 // A crash inside the page would otherwise vanish into a devtools console that
@@ -5839,6 +5884,9 @@ var KIOSK_SCREENS = {
 function initKiosk() {
   const welcome = document.getElementById("screen-welcome");
   if (!welcome) return;
+  document.addEventListener("pointerdown", _bumpKioskIdle, { passive: true, capture: true });
+  document.addEventListener("keydown", _bumpKioskIdle, { capture: true });
+  document.addEventListener("input", _bumpKioskIdle, { capture: true });
   const borrowBtn = welcome.querySelector(".btn-kiosk-borrow");
   if (borrowBtn) {
     borrowBtn.onclick = () => {
@@ -5904,12 +5952,10 @@ function initKiosk() {
   }
   document.querySelectorAll(".btn-back-kiosk").forEach((btn) => {
     btn.onclick = () => {
-      const picker = document.querySelector(".kiosk-borrower-picker");
-      if (picker) picker.remove();
-      const signin = document.querySelector(".kiosk-signin-panel");
-      if (signin) signin.remove();
-      const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
-      if (continueBtn) continueBtn.style.display = "";
+      // All of them, settled: this used to remove the first sign-in panel in the
+      // document and leave any others -- including a pending condition question
+      // still holding the last borrower's loan.
+      _clearKioskOverlays();
       if (btn.dataset.back === "kiosk-return-phone" || btn.dataset.back === "welcome") {
         const returnInput = document.getElementById("kiosk-return-phone");
         if (returnInput) returnInput.value = "";
@@ -6649,8 +6695,47 @@ function _resetNeedStep() {
   if (suggestEl) suggestEl.innerHTML = "";
   _kioskSuggestQuery = null;
 }
+// Inline kiosk panels that are waiting on the borrower (the condition question).
+// Each entry settles its panel as a cancel. They have to be settled, not only
+// removed: a panel left behind on the return screen kept its borrower's loan, so
+// when Alice walked away from "Is it coming back in good shape?", Carl signed in
+// next, saw her question under his own list, and his "All good" flagged her loan
+// as handed in.
+var _kioskPendingPanels = /* @__PURE__ */ new Set();
+function _clearKioskOverlays() {
+  for (const cancel of [..._kioskPendingPanels]) cancel();
+  _kioskPendingPanels.clear();
+  document.querySelectorAll(".kiosk-signin-panel, .kiosk-borrower-picker").forEach((el) => el.remove());
+  const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
+  if (continueBtn) continueBtn.style.display = "";
+  closeDialog();
+}
+// A borrower who walks away mid-session leaves it open for the next person:
+// signed in as them on the item step (so the next checkout lands on their
+// account), or with their name, phone and loans on the return screen. The only
+// timer the kiosk had was the DONE countdown. Any kiosk screen past the welcome
+// now goes back to it after this long without a touch or a key.
+var KIOSK_IDLE_MS = 9e4;
+var _kioskIdleTimer = null;
+function _armKioskIdle() {
+  if (_kioskIdleTimer) {
+    clearTimeout(_kioskIdleTimer);
+    _kioskIdleTimer = null;
+  }
+  const cur = getCurrentScreen();
+  if (!isKioskScreen(cur) || cur === KIOSK_SCREENS.welcome) return;
+  _kioskIdleTimer = setTimeout(() => {
+    _kioskIdleTimer = null;
+    const now = getCurrentScreen();
+    if (isKioskScreen(now) && now !== KIOSK_SCREENS.welcome) _kioskBackHome();
+  }, KIOSK_IDLE_MS);
+}
+function _bumpKioskIdle() {
+  if (_kioskIdleTimer) _armKioskIdle();
+}
 function _kioskBackHome() {
   _cancelDoneCountdown();
+  _clearKioskOverlays();
   state.phone = null;
   state.borrower = null;
   state.isNew = false;
@@ -7014,9 +7099,12 @@ function _askCondition(loan) {
     `;
     body.appendChild(panel);
     const done = (value) => {
+      _kioskPendingPanels.delete(cancel);
       panel.remove();
       resolve(value);
     };
+    const cancel = () => done(null);
+    _kioskPendingPanels.add(cancel);
     const noteWrap = panel.querySelector('[data-role="note-wrap"]');
     const noteInput = panel.querySelector('[data-role="note"]');
     panel.querySelector('[data-cond="good"]').onclick = () => done({
@@ -7106,11 +7194,24 @@ function touchAdminSession() {
   if (_adminIdleTimer) clearTimeout(_adminIdleTimer);
   _adminIdleTimer = setTimeout(() => {
     if (getCurrentScreen() === "admin" || getCurrentScreen() === "admin-detail") {
+      // An open dialog is part of the session being locked. It used to stay on
+      // top of the PIN screen -- an "Edit borrower" form showing a name, phone
+      // and notes -- and its Save still wrote to the record and opened the
+      // detail screen, with no PIN. Closing it settles it as a cancel.
+      closeDialog();
+      // Cancel on the lock screen goes back to the kiosk, not to wherever the
+      // login was first opened from. That was usually the staff home, which has
+      // no lock of its own, so Cancel was a way past this one.
+      adminLoginReturn = "welcome";
       goToScreen("admin-login");
       Promise.resolve().then(() => (init_ui(), ui_exports)).then((m) => m.showInfo("Admin panel locked after 5 minutes of inactivity.")).catch(() => {
       });
     }
   }, ADMIN_IDLE_MS);
+}
+function _inAdminSession() {
+  const cur = getCurrentScreen();
+  return cur === "admin" || cur === "admin-detail";
 }
 function endAdminSession() {
   if (_adminIdleTimer) {
@@ -7246,6 +7347,9 @@ async function showAdmin() {
   // from a detail screen, which this line never did.
 }
 async function showItemDetail(itemId) {
+  // Only from inside the panel. A dialog that outlived the idle lock used to
+  // finish with one of these and land on the detail screen without a PIN.
+  if (!_inAdminSession()) return;
   goToScreen("admin-detail", {
     data: {
       kind: "item",
@@ -7353,6 +7457,9 @@ async function showItemDetail(itemId) {
   }
 }
 async function showBorrowerDetail(borrowerId) {
+  // Only from inside the panel. A dialog that outlived the idle lock used to
+  // finish with one of these and land on the detail screen without a PIN.
+  if (!_inAdminSession()) return;
   goToScreen("admin-detail", {
     data: {
       kind: "borrower",
@@ -7930,13 +8037,16 @@ function _loansToCsv(loans) {
     l.returnedAt ? new Date(l.returnedAt).toISOString() : "",
     l.conditionOut || "",
     l.conditionIn || "",
-    (l.notes || "").replace(/"/g, '""')
+    l.notes || ""
   ]);
   const bom = "\uFEFF";
+  // Through csvEscape like the other exports. This one did its own quoting, so a
+  // kiosk-typed name or item beginning "=" went out as a live formula, and a
+  // quote in the notes was doubled twice.
   const csv = [
     headers,
     ...rows
-  ].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  ].map((r) => r.map(csvEscape).join(",")).join("\n");
   return bom + csv;
 }
 /**
@@ -9551,12 +9661,11 @@ async function _makeOpenLoanRow(loan) {
   quickCheckin.onclick = async (e) => {
     e.stopPropagation();
     try {
-      await returnLoan(loan.id, {
-        returnedAt: Date.now(),
-        conditionIn: "good"
+      const closed = await returnLoan(loan.id, {
+        returnedAt: Date.now()
       });
-      showToast("Returned OK", {
-        type: "success"
+      showToast(closed.conditionIn === "damaged" ? "Returned \u2014 damaged, as the borrower reported" : "Returned OK", {
+        type: closed.conditionIn === "damaged" ? "error" : "success"
       });
       if (document.getElementById("screen-admin-detail").classList.contains("hidden") === false) {
         const activeTab = document.querySelector(".tab.active")?.dataset.tab;
@@ -9678,12 +9787,11 @@ async function _makeOverdueRow(loan) {
   checkinBtn.textContent = "\u2713 Returned";
   checkinBtn.onclick = async () => {
     try {
-      await returnLoan(loan.id, {
-        returnedAt: Date.now(),
-        conditionIn: "good"
+      const closed = await returnLoan(loan.id, {
+        returnedAt: Date.now()
       });
-      showToast("Returned OK", {
-        type: "success"
+      showToast(closed.conditionIn === "damaged" ? "Returned \u2014 damaged, as the borrower reported" : "Returned OK", {
+        type: closed.conditionIn === "damaged" ? "error" : "success"
       });
       await renderOverdue();
       await renderAdminStats();
@@ -10163,10 +10271,15 @@ function _wireAdminChrome() {
   // timer used to be started once in showAdmin() and never extended, so a staff
   // member actively working was thrown back to the login screen mid-task after
   // five minutes. These are passive listeners, so they cost nothing.
+  //
+  // On the document, not the admin screen: the detail screen, the dialogs it
+  // opens and the on-screen keyboard are all outside #screen-admin, so typing a
+  // long note into "Edit borrower" never counted as activity and the lock fired
+  // mid-edit. touchAdminSession ignores anything not on an admin screen.
   const bump = () => touchAdminSession();
-  root.addEventListener("pointerdown", bump, { passive: true });
-  root.addEventListener("keydown", bump);
-  root.addEventListener("wheel", bump, { passive: true });
+  document.addEventListener("pointerdown", bump, { passive: true, capture: true });
+  document.addEventListener("keydown", bump, { capture: true });
+  document.addEventListener("wheel", bump, { passive: true, capture: true });
   const tabs = root.querySelectorAll(".tab");
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -10405,11 +10518,12 @@ async function bootstrap() {
     });
     const splash = document.getElementById("screen-splash");
     if (splash) {
+      // A tap on the splash skips the wait -- to the kiosk, the same place the
+      // timer below goes. It used to go to the staff home screen, which shows
+      // names and phone numbers and has no PIN in front of it, and the splash is
+      // on screen after every F5, Ctrl+R or crash-reload at the public tablet.
       splash.addEventListener("click", () => {
-        if (getCurrentScreen() === "splash") {
-          goToScreen("home");
-          refreshHome();
-        }
+        if (getCurrentScreen() === "splash") goToScreen("welcome");
       });
     }
     document.addEventListener("visibilitychange", () => {

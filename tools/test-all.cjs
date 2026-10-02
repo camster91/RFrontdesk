@@ -19,7 +19,8 @@ const SUITES = [
   ["kiosk", "test-kiosk.cjs"],
   ["layout at real widths", "test-responsive.cjs"],
   ["backup round trip", "test-restore.cjs"],
-  ["catalog at scale", "test-catalog.cjs"]
+  ["catalog at scale", "test-catalog.cjs"],
+  ["sessions, lock and keyboard", "test-sessions.cjs"]
 ];
 
 const results = [];

@@ -32,7 +32,9 @@ Admin → Settings → PIN. It takes 4 to 8 digits.
 Five wrong PINs locks the panel for 30 seconds, doubling each time after that up
 to 5 minutes. The count survives a restart, so closing the app does not clear it.
 The panel also **locks itself after 5 minutes idle**; any mouse, key or scroll
-activity on the admin screens resets that timer.
+activity on the admin screens — including typing into an edit dialog — resets
+that timer. The lock closes any dialog that was open, unsaved, and Cancel on the
+lock screen goes to the kiosk.
 
 ### Getting between the two surfaces
 
@@ -46,7 +48,7 @@ Coming back is one tap, and it should be the last thing you do at the desk:
 | From | Control | Lands on |
 | --- | --- | --- |
 | Kiosk | press and hold the Rotman logo | PIN screen |
-| PIN screen | Cancel | wherever you came from |
+| PIN screen | Cancel | wherever you came from (the kiosk, after an idle lock) |
 | PIN screen | LOGIN, or the keypad's Done key | admin panel |
 | Admin panel | Back | the kiosk |
 | Admin panel | Front desk | staff home |
@@ -58,6 +60,11 @@ at the top of a checkout, so a tablet left on it after a shift is showing the
 next person in the queue someone else's details. Escape works too on a machine
 with a keyboard, and the app is never more than a restart away from the kiosk,
 but the Kiosk button is the one that works on a tablet.
+
+The kiosk ends its own sessions: any kiosk screen past the welcome goes back to
+it after **90 seconds** without a touch, taking the borrower's number, name and
+any half-answered question with it. A tap on the start-up screen also goes to
+the kiosk, never to the staff home.
 
 ### Checkout — the main staff job
 
@@ -281,6 +288,10 @@ data/frontdesk.log
   Save dialog.
 - **Restore** either from the list of backups the app already has, or from a file.
 - A backup is **verified when it is written** — the app reads it back and checks it.
+  It is written under a temporary name and only takes its real name once it
+  passes, so a backup that fails (a full disk, say) leaves every earlier backup —
+  including one already taken today — untouched, deletes nothing, and is tried
+  again on the next launch rather than the next day.
 - Restoring **does not change the PIN.** The device's own PIN wins over the one in
   the file, so an old backup cannot unlock a panel whose PIN has since changed.
 - A backup that fails validation is **refused and nothing is written** — a bad
@@ -394,13 +405,16 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Eleven suites, 662 checks (10 host bridge, 38 host flags and navigation, 11 toast
-stack, 8 screen router, 17 report aggregation, 34 keyboard touch, 172 browser UI,
-56 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at scale).
-Four lift their section out of the real `app.js` and run it in a sandbox (host
-bridge, toast stack, screen router, report aggregation); five drive the real page
-in headless Edge (keyboard touch through real touch input, the browser UI end to
-end, the kiosk surface, the layout suite, and the backup round trip).
+Twelve suites, 688 checks (11 host bridge, 38 host flags and navigation, 11 toast
+stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser UI,
+57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at scale,
+23 sessions, lock and keyboard). Four lift their section out of the real `app.js`
+and run it in a sandbox (host bridge, toast stack, screen router, report
+aggregation); six drive the real page in headless Edge (keyboard touch through
+real touch input, the browser UI end to end, the kiosk surface, the layout suite,
+the backup round trip, and the sessions suite — a kiosk session nobody finished,
+the idle lock with a dialog open, desk returns that carry a kiosk report, and a
+phone number typed on the on-screen keys).
 
 The last two are the different ones. **catalog at scale** seeds ten thousand items
 in its own browser profile — so the seed cannot leak into the other suites — and

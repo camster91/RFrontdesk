@@ -144,6 +144,49 @@ function load(bridge) {
     ok("formatBytes covers all three magnitudes and junk input");
   }
 
+  // --- A failed backup is retried, not recorded as done --------------------
+  //
+  // autoBackup used to write lastBackupAt whether or not the host's read-back
+  // check passed, so one failed backup meant none for the next 24 hours -- and
+  // a desk that starts minimised never sees the toast saying so. A forced run
+  // ("Back up now") also zeroed the record first, so a failed one left it
+  // saying no backup had ever been made.
+  {
+    const run = async (verified, opts) => {
+      let settings = { lastBackupAt: 1000 };
+      const writes = [];
+      const toasts = [];
+      const s = load({
+        SaveBackup: async () =>
+          JSON.stringify(verified
+            ? { ok: true, verified: true, bytes: 10, kept: 3, path: "x" }
+            : { ok: false, error: "The backup did not read back intact, so it was not kept." })
+      });
+      s.BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+      s.getSettings = async () => Object.assign({}, settings);
+      s.updateSettings = async (u) => {
+        writes.push(u);
+        settings = Object.assign({}, settings, u);
+      };
+      s.exportAll = async () => ({ items: [] });
+      s.showToast = (m, o) => toasts.push({ m, type: o && o.type });
+      s.logToHost = () => {};
+      s.console = Object.assign({}, console, { error: () => {}, warn: () => {} });
+      const result = opts === "now" ? await s.runBackupNow() : await s.autoBackup({ force: true });
+      return { result, settings, writes, toasts };
+    };
+
+    const bad = await run(false, "now");
+    check("a failed backup reports ok:false", bad.result.ok === false, JSON.stringify(bad.result));
+    check("a failed backup does not record lastBackupAt", bad.settings.lastBackupAt === 1000, JSON.stringify(bad.writes));
+    check("and says so in a toast", bad.toasts.some((t) => t.type === "error" && /not kept/.test(t.m)), JSON.stringify(bad.toasts));
+
+    const good = await run(true, "now");
+    check("a verified backup records lastBackupAt", good.settings.lastBackupAt > 1000, JSON.stringify(good.writes));
+    check("Back up now no longer zeroes the record first", !good.writes.some((w) => w.lastBackupAt === 0), JSON.stringify(good.writes));
+    ok("autoBackup: only a verified backup counts, and a failed one is retried");
+  }
+
   // --- The version shown in the corner (H: three files must agree) ---------
   //
   // web/js/app.js (WEB_VERSION), host/FrontDesk.cs (Build.Version) and
