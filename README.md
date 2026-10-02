@@ -333,6 +333,14 @@ on the desk tablet and add it to the home screen; it works the same way.
   on a desktop, developer tools that read the stored records directly; the PIN
   guards the app's screens, not the browser around them. The exe closes those
   doors itself; a browser needs the device to.
+- **It sits behind a Cloudflare Access sign-in**, like the rest of rotmanav.ca:
+  staff sign in once on the tablet with an emailed one-time code, and the app
+  loads from then on. The desk has its own Access application ("Front Desk
+  (desk.rotmanav.ca)") so that sign-in lasts **30 days** rather than the 24 hours
+  the rest of the site uses — the kiosk runs unattended, and borrowers cannot sign
+  in. When it lapses, the tablet shows the sign-in page: a staff member signs in
+  again, and the records are still there (they are on the device, not behind the
+  sign-in). Who may sign in is that application's "Staff" policy.
 - **It has its own address on purpose.** A browser shares storage across a whole
   origin, and `rotmanav.ca` also serves `/cast`, `/clicker` and more: any page
   there could have read the desk's records. On `desk.rotmanav.ca` nothing else
