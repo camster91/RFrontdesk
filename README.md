@@ -12,7 +12,7 @@ nothing to install: the zip is the delivery, and unpacking it is the install.
 It carries `START HERE.txt` for whoever sets up the desk and `For IT.txt` for
 whoever has to let it through the endpoint agent.
 
-It is also on the web at **https://rotmanav.ca/desk/** — the same app, opened in
+It is also on the web at **https://desk.rotmanav.ca/** — the same app, opened in
 a browser, with nothing to install. See "On the web" below for what that means
 for where the records live.
 
@@ -310,8 +310,9 @@ whole migration.
 
 ## On the web
 
-**https://rotmanav.ca/desk/** serves the same `web` folder the exe loads. Open it
+**https://desk.rotmanav.ca/** serves the same `web` folder the exe loads. Open it
 on the desk tablet and add it to the home screen; it works the same way.
+(`rotmanav.ca/desk` redirects there.)
 
 - **Records stay on the device that opened it.** Nothing is sent to rotmanav.ca:
   the page keeps everything in that browser's own storage, exactly as the exe
@@ -327,12 +328,23 @@ on the desk tablet and add it to the home screen; it works the same way.
   storage, so switching browsers looks like starting over.
 - Updates arrive on the next reload: the page is always revalidated, never served
   from a stale cache.
+- **Lock the tablet to the page** — Guided Access on an iPad, screen pinning on
+  Android, kiosk mode in Chrome. A browser has an address bar, a back button and,
+  on a desktop, developer tools that read the stored records directly; the PIN
+  guards the app's screens, not the browser around them. The exe closes those
+  doors itself; a browser needs the device to.
+- **It has its own address on purpose.** A browser shares storage across a whole
+  origin, and `rotmanav.ca` also serves `/cast`, `/clicker` and more: any page
+  there could have read the desk's records. On `desk.rotmanav.ca` nothing else
+  shares them. Keep it that way — put nothing else on this host.
 
-It is served by a Cloudflare Worker (`deploy/desk-worker.js`) on the route
-`rotmanav.ca/desk*`. The Worker hands out the three files under `/desk/`, and
-adds the headers: a Content-Security-Policy that allows only the page's own
-scripts (its inline ones by hash, worked out from the page itself), no framing,
-no referrer, `noindex`. To publish a change to `web/`:
+It is served by a Cloudflare Worker (`deploy/desk-worker.js`, `rotman-desk`) on
+the custom domain `desk.rotmanav.ca`; its routes on `rotmanav.ca/desk*` and
+`www.rotmanav.ca/desk*` only redirect there. The Worker hands out the three
+files and adds the headers: always HTTPS (with HSTS), a Content-Security-Policy
+that allows only the page's own scripts (its inline ones by hash, worked out
+from the page itself), no framing, no referrer, `noindex`. To publish a change
+to `web/`:
 
 ```
 cd deploy && npx wrangler deploy
@@ -368,7 +380,7 @@ Worker's routes and headers and drives the page through it under its policy.
 web/      the app itself  (index.html, js/app.js, styles.css)
 host/     the Windows wrapper (C#), the build script, and the exe's icon
 tools/    test suites, a local dev server, the icon, and the packaging script
-deploy/   the Cloudflare Worker that serves web/ at rotmanav.ca/desk/
+deploy/   the Cloudflare Worker that serves web/ at desk.rotmanav.ca
 docs/     the code review, and the endpoint-agent / signing write-up
 dist/     the built app  (this is what you copy to a desk)
 release/  the zip that goes out  (built from dist, not edited by hand)
@@ -446,10 +458,10 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 node tools/test-all.cjs
 ```
 
-Thirteen suites, 710 checks (11 host bridge, 38 host flags and navigation, 11
+Thirteen suites, 716 checks (11 host bridge, 38 host flags and navigation, 11
 toast stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser
 UI, 57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at
-scale, 23 sessions, lock and keyboard, 22 web build). Four lift their section out
+scale, 23 sessions, lock and keyboard, 28 web build). Four lift their section out
 of the real `app.js` and run it in a sandbox (host bridge, toast stack, screen
 router, report aggregation); seven drive the real page in headless Edge (keyboard
 touch through real touch input, the browser UI end to end, the kiosk surface, the

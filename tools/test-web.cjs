@@ -1,5 +1,5 @@
-// The web build: deploy/desk-worker.js serving web/ at /desk/, as it does at
-// https://rotmanav.ca/desk/.
+// The web build: deploy/desk-worker.js serving web/ as it does at
+// https://desk.rotmanav.ca/, and sending the old rotmanav.ca/desk/ address there.
 //
 //   node tools/test-web.cjs
 //
@@ -59,34 +59,48 @@ const ASSETS = {
 };
 
 (async () => {
-  console.log("\nThe web build at /desk/\n");
+  console.log("\nThe web build at desk.rotmanav.ca\n");
   const worker = (await import(pathToFileURL(path.join(__dirname, "..", "deploy", "desk-worker.js")).href)).default;
   // As Cloudflare hands requests to the Worker: HTTPS, on the real host.
-  const call = (p, init) => worker.fetch(new Request(`https://rotmanav.ca${p}`, init), { ASSETS });
+  const call = (p, init) => worker.fetch(new Request(`https://desk.rotmanav.ca${p}`, init), { ASSETS });
+  const callOld = (p, init) => worker.fetch(new Request(`https://rotmanav.ca${p}`, init), { ASSETS });
 
   // ── 1. routes ────────────────────────────────────────────────────────────
   {
-    const plain = await worker.fetch(new Request("http://rotmanav.ca/desk/js/app.js?x=1"), { ASSETS });
-    check("plain HTTP goes to HTTPS, path and query kept", plain.status === 301 && plain.headers.get("location") === "https://rotmanav.ca/desk/js/app.js?x=1", `${plain.status} ${plain.headers.get("location")}`);
-    const bare = await call("/desk");
-    check("/desk redirects to /desk/, where relative URLs resolve", bare.status === 301 && new URL(bare.headers.get("location")).pathname === "/desk/", `${bare.status} ${bare.headers.get("location")}`);
-    const index = await call("/desk/index.html");
-    check("/desk/index.html stays inside the prefix", index.status === 307 && index.headers.get("location") === "/desk/", `${index.status} ${index.headers.get("location")}`);
-    const other = await call("/desktop");
-    check("the route's wildcard does not serve /desktop", other.status === 404, other.status);
-    const escape = await call("/desk/../deploy/desk-worker.js");
+    const plain = await worker.fetch(new Request("http://desk.rotmanav.ca/js/app.js?x=1"), { ASSETS });
+    check("plain HTTP goes to HTTPS, path and query kept", plain.status === 301 && plain.headers.get("location") === "https://desk.rotmanav.ca/js/app.js?x=1", `${plain.status} ${plain.headers.get("location")}`);
+
+    // The desk has its own origin; the address it first had sends people there.
+    for (const [from, to] of [
+      ["/desk", "https://desk.rotmanav.ca/"],
+      ["/desk/", "https://desk.rotmanav.ca/"],
+      ["/desk/js/app.js?x=1", "https://desk.rotmanav.ca/js/app.js?x=1"]
+    ]) {
+      const r = await callOld(from);
+      check(`rotmanav.ca${from} goes to ${to}`, r.status === 301 && r.headers.get("location") === to, `${r.status} ${r.headers.get("location")}`);
+    }
+    const oldServes = await callOld("/desk/");
+    check("and is never served on the shared origin", !(oldServes.headers.get("content-type") || "").startsWith("text/html"));
+    const other = await callOld("/desktop");
+    check("the old route's wildcard does not catch /desktop", other.status === 404, other.status);
+    const stranger = await worker.fetch(new Request("https://elsewhere.example/"), { ASSETS });
+    check("nor anything on another host", stranger.status === 404, stranger.status);
+
+    const index = await call("/index.html");
+    check("/index.html goes to /", index.status === 307 && index.headers.get("location") === "/", `${index.status} ${index.headers.get("location")}`);
+    const escape = await call("/../deploy/desk-worker.js");
     check("nothing outside web/ is reachable", escape.status === 404, escape.status);
-    const post = await call("/desk/", { method: "POST", body: "x" });
+    const post = await call("/", { method: "POST", body: "x" });
     check("only GET and HEAD", post.status === 405, post.status);
-    const missing = await call("/desk/nope.js");
+    const missing = await call("/nope.js");
     check("a missing file is a 404", missing.status === 404, missing.status);
 
     // A HEAD first, as a monitor or a curl -I would send. The policy is built
     // from the page's body and cached; built from a HEAD's empty body, it used
     // to carry no script hashes and block the page for every GET after it.
-    const head = await call("/desk/", { method: "HEAD" });
+    const head = await call("/", { method: "HEAD" });
     check("a HEAD is answered without a body", head.status === 200 && (await head.text()) === "", head.status);
-    const page = await call("/desk/");
+    const page = await call("/");
     const csp = page.headers.get("content-security-policy") || "";
     const inlineScripts = [...fs.readFileSync(path.join(ROOT, "index.html"), "utf8").matchAll(/<script(?![^>]*\bsrc=)[^>]*>/gi)].length;
     check("and does not poison the policy for the GET after it", (csp.match(/'sha256-/g) || []).length > inlineScripts, csp.slice(0, 160));
@@ -97,7 +111,7 @@ const ASSETS = {
     check("and always revalidated, so a deploy reaches the tablet", page.headers.get("cache-control") === "no-cache");
     check("and pinned to HTTPS", /max-age=\d{8}/.test(page.headers.get("strict-transport-security") || ""), page.headers.get("strict-transport-security"));
     check("and kept out of search results", /noindex/.test(page.headers.get("x-robots-tag") || ""));
-    const js = await call("/desk/js/app.js");
+    const js = await call("/js/app.js");
     check("the script is served with the same headers", js.status === 200 && js.headers.get("x-content-type-options") === "nosniff", js.status);
   }
 
@@ -109,7 +123,7 @@ const ASSETS = {
       // TLS ends at Cloudflare's edge, so the Worker always sees https. This
       // local server is plain http; say https to the Worker, and turn any
       // absolute redirect it gives back into one this server can answer.
-      new Request(`https://127.0.0.1:${PORT}${req.url}`, {
+      new Request(`https://desk.rotmanav.ca${req.url}`, {
         method: req.method,
         headers: req.headers,
         body: ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks)
@@ -117,7 +131,7 @@ const ASSETS = {
       { ASSETS }
     );
     const headers = Object.fromEntries(r.headers);
-    if (headers.location) headers.location = headers.location.replace(/^https:\/\/127\.0\.0\.1:/, "http://127.0.0.1:");
+    if (headers.location) headers.location = headers.location.replace(/^https:\/\/desk\.rotmanav\.ca/, `http://127.0.0.1:${PORT}`);
     delete headers["strict-transport-security"];
     res.writeHead(r.status, headers);
     res.end(Buffer.from(await r.arrayBuffer()));
@@ -142,9 +156,9 @@ const ASSETS = {
       });
     });
     await page.setViewport({ width: 1024, height: 1100 });
-    await page.goto(`http://127.0.0.1:${PORT}/desk`, { waitUntil: "domcontentloaded" });
+    await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 30000 });
-    check("/desk loads the app on its kiosk screen", page.url().endsWith("/desk/"), page.url());
+    check("the app loads on its kiosk screen", true);
     const logo = await page.evaluate(() => {
       const img = document.querySelector("#screen-welcome img[data-logo]");
       return !!img && /^data:image\/svg/.test(img.getAttribute("src") || "");

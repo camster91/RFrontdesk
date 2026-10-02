@@ -1,15 +1,18 @@
-// Serves the web build of Front Desk at https://rotmanav.ca/desk/.
+// Serves the web build of Front Desk at https://desk.rotmanav.ca/.
 //
 // The app is the same file the Windows host loads: every record lives in the
 // browser's own IndexedDB on the device that opened it, and nothing is sent
-// back here. This Worker only hands out the three static files in web/, under
-// a path prefix, with the headers a page that holds a PIN screen and people's
-// phone numbers should have.
+// back here. This Worker only hands out the three static files in web/, with
+// the headers a page that holds a PIN screen and people's phone numbers
+// should have.
 //
-// The assets are uploaded with paths relative to web/ ("/", "/styles.css",
-// "/js/app.js"); the route is rotmanav.ca/desk*, so the prefix is stripped here.
+// Its own host, not a path on rotmanav.ca. A browser keeps storage per origin,
+// and rotmanav.ca also serves /cast, /clicker and whatever comes next: any page
+// on that origin could read the desk's records. The desk briefly lived at
+// rotmanav.ca/desk/; that route is kept only to redirect here.
 
-const PREFIX = "/desk";
+const HOST = "desk.rotmanav.ca";
+const OLD_PREFIX = "/desk";
 
 // The CSP's script hashes are worked out from the page itself, so editing an
 // inline <script> or an onclick in index.html cannot leave the policy blocking
@@ -90,37 +93,28 @@ export default {
       url.protocol = "https:";
       return withHeaders(Response.redirect(url.toString(), 301));
     }
+    // The old address, rotmanav.ca/desk/..., goes to the same path here. Its
+    // route pattern (rotmanav.ca/desk*) also matches /desktop and the like,
+    // which are not ours.
+    if (url.hostname !== HOST) {
+      if (url.pathname === OLD_PREFIX || url.pathname.startsWith(OLD_PREFIX + "/")) {
+        const to = new URL(`https://${HOST}/`);
+        to.pathname = url.pathname.slice(OLD_PREFIX.length) || "/";
+        to.search = url.search;
+        return withHeaders(Response.redirect(to.toString(), 301));
+      }
+      return withHeaders(new Response("Not found", { status: 404 }));
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
       return withHeaders(new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } }));
     }
-    // Relative URLs in index.html ("styles.css", "js/app.js") only resolve under
-    // the prefix with its trailing slash.
-    if (url.pathname === PREFIX) {
-      url.pathname = PREFIX + "/";
-      return withHeaders(Response.redirect(url.toString(), 301));
-    }
-    // The route pattern rotmanav.ca/desk* also matches /desktop and the like.
-    if (!url.pathname.startsWith(PREFIX + "/")) {
-      return withHeaders(new Response("Not found", { status: 404 }));
-    }
 
-    const assetUrl = new URL(url);
-    assetUrl.pathname = url.pathname.slice(PREFIX.length) || "/";
     // Always a GET to the asset layer: the policy is built from the page's body,
     // and a HEAD has none. Building it from a HEAD used to cache a policy with
     // no script hashes in it, which then blocked the page's own inline scripts
     // for every GET after it.
     const isHead = request.method === "HEAD";
-    const res = await env.ASSETS.fetch(new Request(assetUrl, { method: "GET", headers: request.headers }));
-
-    // The asset layer redirects /index.html to /, and so on. Keep its redirects
-    // inside the prefix.
-    const loc = res.headers.get("location");
-    if (res.status >= 300 && res.status < 400 && loc) {
-      const to = new URL(loc, assetUrl);
-      to.pathname = PREFIX + to.pathname;
-      return withHeaders(new Response(null, { status: res.status, headers: { location: to.pathname + to.search } }));
-    }
+    const res = await env.ASSETS.fetch(new Request(url, { method: "GET", headers: request.headers }));
 
     const type = res.headers.get("content-type") || "";
     if (res.status === 200 && type.startsWith("text/html")) {

@@ -1,4 +1,4 @@
-# The web build at https://rotmanav.ca/desk/.
+# The web build at https://desk.rotmanav.ca/.
 #
 #   cd deploy && npx wrangler deploy
 #
@@ -10,7 +10,11 @@ compatibility_date = "2026-09-01"
 workers_dev = false
 
 routes = [
-  { pattern = "rotmanav.ca/desk*", zone_name = "rotmanav.ca" }
+  # Its own host, so its storage is its own origin.
+  { pattern = "desk.rotmanav.ca", custom_domain = true },
+  # The address it first had. The Worker only redirects these to the host above.
+  { pattern = "rotmanav.ca/desk*", zone_name = "rotmanav.ca" },
+  { pattern = "www.rotmanav.ca/desk*", zone_name = "rotmanav.ca" }
 ]
 
 [assets]
