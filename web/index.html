@@ -78,18 +78,22 @@
       <img data-logo  class="kiosk-logo" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-body">
-      <h1 class="kiosk-greeting">Welcome!</h1>
+      <h1 class="kiosk-greeting">Welcome</h1>
       <p class="kiosk-subtitle">What would you like to do?</p>
       <div class="kiosk-actions">
         <button class="btn-kiosk btn-kiosk-borrow" type="button">
-          <div class="kiosk-icon">📤</div>
-          <div class="kiosk-label">Borrow something</div>
-          <div class="kiosk-sub">Keys, equipment, devices</div>
+          <span class="kiosk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></span>
+          <span class="kiosk-text">
+            <span class="kiosk-label">Borrow something</span>
+            <span class="kiosk-sub">Keys, cables, mics and more</span>
+          </span>
         </button>
         <button class="btn-kiosk btn-kiosk-return" type="button">
-          <div class="kiosk-icon">📥</div>
-          <div class="kiosk-label">Return items</div>
-          <div class="kiosk-sub">Hand back what you borrowed</div>
+          <span class="kiosk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></span>
+          <span class="kiosk-text">
+            <span class="kiosk-label">Return something</span>
+            <span class="kiosk-sub">Hand back what you borrowed</span>
+          </span>
         </button>
       </div>
       <div class="kiosk-footer">
@@ -109,11 +113,11 @@
     </header>
     <div class="screen-body kiosk-flow-body">
       <h1 class="kiosk-step-title">Enter your phone number</h1>
-      <p class="kiosk-step-sub">So we can find your account</p>
+      <p class="kiosk-step-sub">We use it to find you — nothing else</p>
       <div class="kiosk-phone-input-wrap">
         <input type="tel" class="input input-xl kiosk-input" id="kiosk-phone" maxlength="16" autofocus aria-label="Your phone number" />
       </div>
-      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-phone-continue">CONTINUE →</button>
+      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-phone-continue">Continue</button>
     </div>
   </section>
 
@@ -129,7 +133,7 @@
       <div class="kiosk-name-input-wrap">
         <input type="text" class="input input-xl kiosk-input" id="kiosk-name" maxlength="100" autocomplete="off" autofocus aria-label="Your name" />
       </div>
-      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-name-continue">CONTINUE →</button>
+      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-name-continue">Continue</button>
       <p class="kiosk-hint" style="margin-top:var(--space-3);">Please give a name — it is how we get the item back to you. Ask the front desk if you would rather not.</p>
     </div>
   </section>
@@ -145,7 +149,7 @@
       <p class="kiosk-step-sub">What are you taking? Pick it from the list.</p>
       <input type="text" class="input input-xl kiosk-input" id="kiosk-need" placeholder="Search the item list" maxlength="100" autocomplete="off" autofocus aria-label="What do you need? Search the item list" />
       <div id="kiosk-need-suggestions" class="kiosk-suggestions"></div>
-      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-confirm-pick">TAKE IT</button>
+      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-confirm-pick">Borrow it</button>
     </div>
   </section>
 
@@ -155,13 +159,13 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <div class="kiosk-done-icon">✅</div>
+      <div class="kiosk-done-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9"/></svg></div>
       <h1 class="kiosk-step-title">Have it back by end of day</h1>
       <div class="kiosk-done-card">
         <div class="kiosk-done-label">Item</div>
         <div class="kiosk-done-text" id="kiosk-done-text">—</div>
       </div>
-      <button class="btn btn-primary kiosk-cta" data-action="kiosk-back-home">DONE</button>
+      <button class="btn btn-primary kiosk-cta" data-action="kiosk-back-home">Done</button>
       <div class="kiosk-done-countdown" id="kiosk-done-countdown">Returning in <span id="kiosk-done-countdown-num">30</span>s</div>
     </div>
   </section>
@@ -173,12 +177,12 @@
       <img data-logo  class="kiosk-logo-sm" alt="Rotman" />
     </header>
     <div class="screen-body kiosk-flow-body">
-      <h1 class="kiosk-step-title">Return items</h1>
-      <p class="kiosk-step-sub">Enter your phone number so we can find your items</p>
+      <h1 class="kiosk-step-title">Return something</h1>
+      <p class="kiosk-step-sub">Enter your phone number to see what you have out</p>
       <div class="kiosk-phone-input-wrap">
         <input type="tel" class="input input-xl kiosk-input" id="kiosk-return-phone" maxlength="16" inputmode="tel" autofocus aria-label="Your phone number" />
       </div>
-      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-return-phone-continue">CONTINUE →</button>
+      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-return-phone-continue">Continue</button>
     </div>
   </section>
 
@@ -192,7 +196,7 @@
       <h1 class="kiosk-step-title">Hi, <span id="kiosk-return-greeting-name">there</span>!</h1>
       <p class="kiosk-step-sub" id="kiosk-return-sub">Tap an item, then hand it to the front desk.</p>
       <div class="kiosk-return-list" id="kiosk-return-list"></div>
-      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-back-home">DONE</button>
+      <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-back-home">Done</button>
     </div>
   </section>
 
@@ -249,15 +253,15 @@
              the old shape and built a fresh flow on every entry, which
              re-attached the catalog listeners and created duplicate items. -->
         <button class="btn btn-home-primary">
-          <div class="btn-icon">📤</div>
-          <span class="btn-label">CHECK OUT</span>
-          <div class="btn-subtitle">Lend equipment</div>
+          <div class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></div>
+          <span class="btn-label">Check out</span>
+          <div class="btn-subtitle">Lend something to someone</div>
         </button>
 
         <button class="btn btn-home-primary">
-          <div class="btn-icon">📥</div>
-          <span class="btn-label">CHECK IN</span>
-          <div class="btn-subtitle">Return equipment</div>
+          <div class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></div>
+          <span class="btn-label">Check in</span>
+          <div class="btn-subtitle">Take something back</div>
         </button>
       </div>
     </div>
@@ -278,28 +282,28 @@
     
     <div class="screen-body">
       <div class="step step-phone active">
-        <h1 class="step-title">📱 Enter phone number</h1>
+        <h1 class="step-title">Borrower's phone number</h1>
         <div class="input-container">
           <input type="tel" class="input input-lg" placeholder="(   )    -    " maxlength="14" autofocus aria-label="Phone number" />
         </div>
-        <button class="btn btn-primary btn-xl step-continue">CONTINUE →</button>
+        <button class="btn btn-primary btn-xl step-continue">Continue</button>
         <div class="recent-phones"></div>
       </div>
       
       <div class="step step-name hidden">
-        <h1 class="step-title">👤 What's your name?</h1>
+        <h1 class="step-title">Borrower's name</h1>
         <div class="input-container">
           <input type="text" class="input input-lg" placeholder="Enter full name" maxlength="100" aria-label="Full name" />
         </div>
         <div class="step-name-actions">
-          <button class="btn btn-primary btn-xl step-continue">CONTINUE →</button>
-          <button class="btn btn-ghost step-walkin">🚶 Walk-in — no name</button>
+          <button class="btn btn-primary btn-xl step-continue">Continue</button>
+          <button class="btn btn-ghost step-walkin">Walk-in — skip the name</button>
         </div>
       </div>
       
       <div class="step step-items hidden">
-        <h1 class="step-title">📋 What do you need?</h1>
-        <p class="step-subhint">Tap what you need, or type to search. The front desk will bring it to you.</p>
+        <h1 class="step-title">What are they borrowing?</h1>
+        <p class="step-subhint">Tap items to add them, or type to search. Anything not on the list can be added.</p>
         <div class="item-search">
           <input type="text" class="input search-input" placeholder="e.g. key to room 1050, HDMI dongle, clicker" maxlength="200" data-kbd="alphanumeric" aria-label="What do you need? Search the item list" />
         </div>
@@ -314,11 +318,11 @@
           </div>
         </div>
         <div class="selected-items"></div>
-        <button class="btn btn-primary btn-xl step-continue">CONTINUE →</button>
+        <button class="btn btn-primary btn-xl step-continue">Continue</button>
       </div>
       
       <div class="step step-confirm hidden">
-        <h1 class="step-title">✅ Confirm check-out</h1>
+        <h1 class="step-title">Check it over</h1>
         <div class="confirmation-card">
           <div class="confirm-borrower">
             <div class="confirm-phone"></div>
@@ -332,7 +336,7 @@
           </div>
         </div>
         <div class="confirm-actions">
-          <button class="btn btn-primary btn-xl btn-checkout">✓ CHECK OUT</button>
+          <button class="btn btn-primary btn-xl btn-checkout">Check out</button>
           <button class="btn btn-ghost btn-print-receipt" type="button">🖨️ Print receipt after</button>
         </div>
       </div>
@@ -406,13 +410,13 @@
       </div>
       
       <div class="return-actions">
-        <button class="btn btn-return btn-success" data-condition="good">✓ RETURNED OK</button>
-        <button class="btn btn-return btn-warning" data-condition="damaged">⚠ DAMAGED</button>
-        <button class="btn btn-return btn-danger" data-condition="lost">✗ LOST</button>
+        <button class="btn btn-return btn-success" data-condition="good">Returned OK</button>
+        <button class="btn btn-return btn-warning" data-condition="damaged">Damaged</button>
+        <button class="btn btn-return btn-danger" data-condition="lost">Lost</button>
       </div>
       
       <div class="notes-section">
-        <textarea class="input notes-input" aria-label="Notes about this return" placeholder="Optional notes..." rows="3"></textarea>
+        <textarea class="input notes-input" aria-label="Notes about this return" placeholder="Notes (optional)" rows="3"></textarea>
       </div>
     </div>
   </section>
@@ -421,10 +425,11 @@
   <section id="screen-admin-login" class="screen hidden">
     <div class="login-container">
       <div class="login-card">
-        <h1 class="login-title">Admin Access</h1>
+        <h1 class="login-title">Staff sign-in</h1>
+        <p class="login-sub">Enter the desk PIN</p>
         <div class="pin-input-container">
-          <input type="password" class="pin-input" placeholder="Enter PIN" maxlength="8" inputmode="numeric" autocomplete="off" aria-label="Admin PIN" />
-          <button class="btn btn-primary pin-submit">LOGIN</button>
+          <input type="password" class="pin-input" placeholder="PIN" maxlength="8" inputmode="numeric" autocomplete="off" aria-label="Staff PIN" />
+          <button class="btn btn-primary pin-submit">Sign in</button>
         </div>
         <button class="btn btn-ghost" onclick="app.cancelAdminLogin()">Cancel</button>
       </div>
@@ -434,24 +439,27 @@
   <!-- Admin Panel -->
   <section id="screen-admin" class="screen hidden">
     <header class="screen-header">
-      <button class="btn-back" data-action="admin-back">Back</button>
       <button class="btn-back" data-action="admin-home">Front desk</button>
-      <h1 class="screen-title">Admin Panel</h1>
+      <h1 class="screen-title">Admin</h1>
       <!-- Filled by renderAdminStats(). Deliberately empty rather than seeded
            with sample numbers: these are the counts a staff member reads to
            decide what needs chasing, and the render is async, so anything
            written here would be on screen -- briefly, but on screen -- as a
            real-looking figure that is not the library's. -->
       <div class="admin-stats"></div>
+      <!-- Signs out and hands the device back to the public screen. It used to
+           be a second "Back" beside "Front desk", and nobody could tell which
+           back was which. -->
+      <button class="btn-admin-link" data-action="admin-back" title="Sign out and return to the public screen">Lock</button>
     </header>
 
     <div id="admin-recent-kiosk" class="admin-recent-kiosk hidden"></div>
 
     <div class="tabs">
-      <button class="tab active" data-tab="queue">📥 Queue <span class="tab-badge" id="queue-count">0</span></button>
-      <button class="tab" data-tab="currently-out">Currently Out</button>
+      <button class="tab active" data-tab="queue">Queue <span class="tab-badge" id="queue-count">0</span></button>
+      <button class="tab" data-tab="currently-out">Out now</button>
       <button class="tab" data-tab="overdue">Overdue</button>
-      <button class="tab" data-tab="all-loans">All Loans</button>
+      <button class="tab" data-tab="all-loans">All loans</button>
       <button class="tab" data-tab="items">Items</button>
       <button class="tab" data-tab="people">People</button>
       <button class="tab" data-tab="reports">Reports</button>

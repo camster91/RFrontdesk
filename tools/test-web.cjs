@@ -179,6 +179,12 @@ const ASSETS = {
 
     await page.evaluate(() => window.app.showAdminLogin());
     await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    // In a browser the device's own keyboard is the keyboard. The app's keypad
+    // used to come up as well, and its letter layout ran off a phone's edges.
+    await page.focus("#screen-admin-login .pin-input");
+    await sleep(400);
+    const kbdUp = await page.evaluate(() => document.getElementById("keyboard").classList.contains("visible"));
+    check("a browser uses the device's keyboard, not the app's own", !kbdUp);
     await page.type("#screen-admin-login .pin-input", PIN);
     await page.click("#screen-admin-login .pin-submit");
     await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 12000 });
@@ -188,6 +194,22 @@ const ASSETS = {
       await sleep(250);
     }
     check("every admin tab renders", (await page.evaluate(() => document.querySelector(".screen:not(.hidden)").id)) === "screen-admin");
+
+    // The panel reopens on the last tab used -- and that tab has to be drawn.
+    // It was switched to after the screen had drawn Queue, so it opened blank.
+    await page.evaluate(() => document.querySelector('#screen-admin [data-action="admin-back"]').click());
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 8000 });
+    await page.evaluate(() => window.app.showAdminLogin());
+    await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });
+    await page.type("#screen-admin-login .pin-input", PIN);
+    await page.click("#screen-admin-login .pin-submit");
+    await page.waitForSelector("#screen-admin:not(.hidden)", { timeout: 12000 });
+    await sleep(800);
+    const reopened = await page.evaluate(() => {
+      const panel = document.querySelector("#screen-admin .tab-panel.active");
+      return { id: panel && panel.id, filled: !!panel && panel.textContent.trim().length > 40 };
+    });
+    check("the remembered tab is drawn when the panel reopens", reopened.id === "tab-settings" && reopened.filled, JSON.stringify(reopened));
 
     const violations = await page.evaluate(() => window.__violations);
     check("the policy blocked nothing the app did", violations.length === 0, violations.join(" | "));

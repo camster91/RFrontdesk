@@ -83,6 +83,13 @@ function startServer() {
     });
     page.on("pageerror", (e) => errors.push(String(e && e.message)));
     await page.setViewport({ width: 1024, height: 1100 });
+    // These checks drive the app's own on-screen keyboard, which a browser only
+    // shows when this device has asked for it (the Windows app always does).
+    await page.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("frontdesk.keyboard", "on");
+      } catch (_) {}
+    });
     await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 30000 });
     await page.waitForFunction(() => !!window.__t, { timeout: 10000 });

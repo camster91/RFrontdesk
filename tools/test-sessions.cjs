@@ -147,6 +147,13 @@ const READ = (store, id) =>
     });
     page.on("pageerror", (e) => errors.push(String(e && e.message)));
     await page.setViewport({ width: 1024, height: 1100 });
+    // These checks drive the app's own on-screen keyboard, which a browser only
+    // shows when this device has asked for it (the Windows app always does).
+    await page.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("frontdesk.keyboard", "on");
+      } catch (_) {}
+    });
     await page.evaluateOnNewDocument(FAST_TIMERS);
 
     const url = `http://127.0.0.1:${PORT}/index.html`;
@@ -218,7 +225,7 @@ const READ = (store, id) =>
 
     await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
     await page.waitForSelector("#screen-kiosk-return-items:not(.hidden)", { timeout: 8000 });
-    const greeted = await page.$eval("#screen-kiosk-return-items .kiosk-step-sub", (el) => el.textContent);
+    const greeted = await page.$eval("#screen-kiosk-return-items .kiosk-step-title", (el) => el.textContent);
     check("and sign in the person who owns them", /Alice Able/.test(greeted), greeted);
 
     // ── 2. a half-finished return does not carry over ───────────────────────

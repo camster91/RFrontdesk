@@ -300,7 +300,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           );
           if (!row) return `no open loan for ${name}`;
           const btn = Array.from(row.querySelectorAll("button")).find(
-            (b) => b.textContent.trim() === "✓"
+            (b) => /^✓( Mark returned)?$/.test(b.textContent.trim())
           );
           if (!btn) return "no check-in button on the row";
           btn.click();

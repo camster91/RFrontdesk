@@ -374,7 +374,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await fill("#kiosk-return-phone", STRANGER_PHONE);
     await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
     await page.waitForSelector("#screen-kiosk-return-phone .kiosk-signin-panel", { timeout: 10000 });
-    check("an unknown number is offered sign-in rather than an empty list", true);
+    check("an unknown number is asked to check it, rather than shown an empty list", true);
     check("and never reaches the item list", (await screen()) === "screen-kiosk-return-phone", await screen());
 
     await gotoWelcome();

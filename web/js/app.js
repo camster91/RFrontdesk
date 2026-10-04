@@ -2406,7 +2406,20 @@ function agoLabel(ms) {
 }
 function formatAbsoluteTime(ms) {
   if (ms == null) return "\u2014";
-  return formatTimeAgo(ms) + " (" + new Date(ms).toLocaleString() + ")";
+  return formatTimeAgo(ms) + " (" + shortWhen(ms) + ")";
+}
+// A clock time a person reads at a glance: "2:48 PM" today, "Oct 3, 2:48 PM"
+// otherwise, the year only when it is not this one. toLocaleString() gave
+// "10/4/2026, 2:48:34 PM" -- seconds nobody needs and a date nobody parses.
+function shortWhen(ms) {
+  if (ms == null) return "\u2014";
+  const d = new Date(ms);
+  const now = /* @__PURE__ */ new Date();
+  const time = d.toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return time;
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return `${d.toLocaleDateString(void 0, opts)}, ${time}`;
 }
 function formatDueLabel(ts) {
   if (ts == null) return "No due time";
@@ -2881,6 +2894,26 @@ __export(keyboard_exports, {
   OnScreenKeyboard: () => OnScreenKeyboard,
   initKeyboard: () => initKeyboard
 });
+// Whether this device uses the app's own on-screen keyboard. It was built for
+// the Windows touch desk, where it is the only keyboard there is; on a phone or
+// tablet in a browser it came up *as well as* the device's own, and its alpha
+// layout ran off both sides of a phone screen. "auto" means: on inside the
+// Windows app, off in a browser. Settings can force it either way, per device.
+var KEYBOARD_PREF_KEY = "frontdesk.keyboard";
+function onScreenKeyboardMode() {
+  try {
+    const v = localStorage.getItem(KEYBOARD_PREF_KEY);
+    if (v === "on" || v === "off") return v;
+  } catch (_) {
+  }
+  return "auto";
+}
+function onScreenKeyboardWanted() {
+  const mode = onScreenKeyboardMode();
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  return isHosted();
+}
 // Input types the on-screen keyboard types into. Anything else (radio, checkbox,
 // date, range, file, ...) is left to its own control.
 var KBD_TEXT_TYPES = /* @__PURE__ */ new Set(["text", "search", "tel", "password", "email", "url", "number"]);
@@ -3289,6 +3322,7 @@ var init_keyboard = __esm({
           const t = e.target;
           if (!(t instanceof HTMLElement)) return;
           if (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA") return;
+          if (!onScreenKeyboardWanted()) return;
           if (t.dataset.kbd === "off") return;
           // Only fields that take typed text. A radio, checkbox or date input is
           // an <input> too, and the keyboard used to come up on all of them and
@@ -4885,7 +4919,7 @@ var CheckoutFlow = class {
     const continueBtn = root.querySelector(".step-items .step-continue");
     if (continueBtn) {
       continueBtn.disabled = this.state.items.length === 0;
-      continueBtn.textContent = this.state.items.length > 0 ? `CONTINUE \u2192 (${this.state.items.length} selected)` : "CONTINUE \u2192";
+      continueBtn.textContent = this.state.items.length > 0 ? `Continue (${this.state.items.length} selected)` : "Continue";
     }
   }
   _makeItemCard(item) {
@@ -5018,7 +5052,7 @@ var CheckoutFlow = class {
     const settings = await getSettings();
     const dueAt = Date.now() + (settings.defaultLoanHours || 8) * 3600 * 1e3;
     this.state.dueAt = dueAt;
-    if (dueEl) dueEl.textContent = formatDueLabel(dueAt) + ` (${new Date(dueAt).toLocaleString()})`;
+    if (dueEl) dueEl.textContent = formatDueLabel(dueAt) + ` (${shortWhen(dueAt)})`;
     const printBtn = root.querySelector(".btn-print-receipt");
     if (printBtn) {
       printBtn.onclick = () => {
@@ -5158,8 +5192,8 @@ var CheckinFlow = class {
     const itemName = item?.name || loan.itemNameSnapshot || "?";
     const borrowerName = borrower?.name || loan.borrowerNameSnapshot || "(unknown)";
     const phone = borrower?.phoneFormatted || (loan.borrowerPhoneSnapshot ? formatPhone(loan.borrowerPhoneSnapshot) : "");
-    const outAt = new Date(loan.checkedOutAt).toLocaleString();
-    const dueAt = loan.dueAt ? new Date(loan.dueAt).toLocaleString() : "\u2014";
+    const outAt = shortWhen(loan.checkedOutAt);
+    const dueAt = loan.dueAt ? shortWhen(loan.dueAt) : "\u2014";
     const wasOverdue = loan.dueAt && loan.dueAt < Date.now();
     const conditionLabel = {
       good: "\u2713 Returned in good condition",
@@ -5423,8 +5457,8 @@ var CheckinFlow = class {
     const outAt = new Date(loan.checkedOutAt);
     const dueAt = loan.dueAt ? new Date(loan.dueAt) : null;
     timing.innerHTML = `
-      <span><span class="timing-label">Out:</span> <span class="timing-value">${escapeHtml(outText)}</span> <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${outAt.toLocaleString()})</span></span>
-      <span><span class="timing-label">Due:</span> <span class="timing-value ${dueClass}">${escapeHtml(dueText)}</span>${dueAt ? ` <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${dueAt.toLocaleString()})</span>` : ""}</span>
+      <span><span class="timing-label">Out:</span> <span class="timing-value">${escapeHtml(outText)}</span> <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${escapeHtml(shortWhen(outAt.getTime()))})</span></span>
+      <span><span class="timing-label">Due:</span> <span class="timing-value ${dueClass}">${escapeHtml(dueText)}</span>${dueAt ? ` <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${escapeHtml(shortWhen(dueAt.getTime()))})</span>` : ""}</span>
     `;
     row.appendChild(timing);
     row.onclick = () => this.handleSelectLoan(loan);
@@ -6850,6 +6884,10 @@ async function handleReturnPhoneSubmit() {
 }
 window.__handleReturnPhoneSubmit = handleReturnPhoneSubmit;
 function _showSignInPrompt(phone) {
+  // The return flow with a number this device has never seen. It used to offer
+  // to "sign in here" with a name -- which made an empty account and then said
+  // "You're all clear", when what the person almost always needs is to check
+  // the number they typed. Nothing can be out under a number nobody used.
   const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (continueBtn) continueBtn.style.display = "none";
   const existingPicker = document.querySelector(".kiosk-borrower-picker");
@@ -6862,48 +6900,14 @@ function _showSignInPrompt(phone) {
   panel.className = "kiosk-signin-panel";
   panel.innerHTML = `
     <div class="kiosk-signin-card">
-      <div class="kiosk-signin-icon">\u2753</div>
-      <div class="kiosk-signin-title">We don't have an account for (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)} on this device</div>
-      <div class="kiosk-signin-sub">If you used the kiosk before, your data is on the device you used. Want to sign in here?</div>
-      <input type="text" class="input input-xl kiosk-input" id="kiosk-signin-name" placeholder="Your name" maxlength="100" autocomplete="off" />
+      <div class="kiosk-signin-title">Nothing is out under (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)}</div>
+      <div class="kiosk-signin-sub">Check the number and try again. If you borrowed under a different number, use that one \u2014 or ask the front desk.</div>
       <div class="kiosk-signin-actions">
-        <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-signin-create">SIGN IN HERE</button>
-        <button class="btn btn-ghost kiosk-cta-secondary" data-action="kiosk-signin-cancel">Cancel</button>
+        <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-signin-cancel">Try again</button>
       </div>
     </div>
   `;
   body.appendChild(panel);
-  panel.querySelector('[data-action="kiosk-signin-create"]').onclick = async () => {
-    const nameInput2 = panel.querySelector("#kiosk-signin-name");
-    const name = nameInput2?.value?.trim();
-    if (!name) {
-      showToast("Please enter your name", {
-        type: "error"
-      });
-      nameInput2?.focus();
-      return;
-    }
-    try {
-      await openDB();
-      const borrower = await upsertBorrower({
-        phone,
-        name
-      });
-      state.borrower = borrower;
-      state.phone = phone;
-      panel.remove();
-      if (continueBtn) continueBtn.style.display = "";
-      await _renderReturnList();
-      goToScreen(KIOSK_SCREENS.returnItems);
-      showToast(`Welcome, ${name}!`, {
-        type: "success"
-      });
-    } catch (err) {
-      showToast("Failed: " + err.message, {
-        type: "error"
-      });
-    }
-  };
   panel.querySelector('[data-action="kiosk-signin-cancel"]').onclick = () => {
     panel.remove();
     if (continueBtn) continueBtn.style.display = "";
@@ -6913,19 +6917,6 @@ function _showSignInPrompt(phone) {
       phoneInput.focus();
     }
   };
-  setTimeout(() => {
-    const nameInput2 = panel.querySelector("#kiosk-signin-name");
-    if (nameInput2) nameInput2.focus();
-  }, 100);
-  const nameInput = panel.querySelector("#kiosk-signin-name");
-  if (nameInput) {
-    nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        panel.querySelector('[data-action="kiosk-signin-create"]').click();
-      }
-    });
-  }
 }
 async function _renderReturnList() {
   const now = Date.now();
@@ -6991,7 +6982,8 @@ async function _renderReturnList() {
   const subEl = document.querySelector("#screen-kiosk-return-items .kiosk-step-sub");
   if (subEl) {
     const phone = state.phone || "";
-    subEl.textContent = `Signed in as ${state.borrower.name} \xB7 (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)} \xB7 hand items to the front desk`;
+    // The greeting above already says who this is; this line says what to do.
+    subEl.textContent = "Tap anything you're bringing back, then hand it to the front desk.";
   }
 }
 function _showBorrowerPicker(matches, phone, thenScreen) {
@@ -7151,7 +7143,7 @@ function _askCondition(loan) {
         </div>
         <div data-role="note-wrap" class="kiosk-condition-note hidden">
           <input type="text" class="input input-xl kiosk-input" data-role="note" maxlength="300" placeholder="e.g. one key is bent, cable missing" autocomplete="off" />
-          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-role="note-submit">SEND TO FRONT DESK</button>
+          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-role="note-submit">Send to the front desk</button>
         </div>
         <button type="button" class="btn btn-ghost kiosk-cta-secondary" data-role="cancel">Cancel</button>
       </div>
@@ -7392,9 +7384,13 @@ function _clearPinField() {
   if (pinInput) pinInput.value = "";
 }
 async function showAdmin() {
-  goToScreen("admin");
+  // Pick the tab first, then enter the screen: entering runs the enter hook,
+  // which draws whichever tab is active at that moment. In the other order the
+  // hook drew Queue and the remembered tab was switched to afterwards, never
+  // drawn -- so the panel opened on a blank Settings, Items or People.
   _wireAdminChrome();
   _restoreActiveTab();
+  goToScreen("admin");
   touchAdminSession();
   await renderAdminStats();
   await renderRecentKiosk();
@@ -7641,6 +7637,16 @@ async function renderAdminStats() {
       <span class="stat">Items: <strong>${items.length}</strong></span>
       <span class="stat">People: <strong>${borrowers.length}</strong></span>
     `;
+    // The Queue tab's badge, kept in step with the header. It was only ever set
+    // by drawing the Queue tab, so a panel that opened on another tab showed
+    // "Queue 0" beside "Returns to confirm: 1".
+    const pendingRequests = await getRequests({ status: "pending" }).catch(() => []);
+    const queued = pendingReturns.length + pendingRequests.length;
+    const queueBadge = document.getElementById("queue-count");
+    if (queueBadge) {
+      queueBadge.textContent = String(queued);
+      queueBadge.style.display = queued ? "" : "none";
+    }
   } catch (err) {
     // Swallowing this left the last good counts on screen, or -- on a first
     // render -- an empty bar, either way with nothing to say the numbers are
@@ -7746,19 +7752,25 @@ function _makePendingReturnRow(loan) {
   row.className = "admin-list-item queue-row";
   const age = agoLabel(Date.now() - (loan.returnRequestedAt || 0));
   const damaged = loan.returnRequestedCondition === "damaged";
+  const who = [
+    escapeHtml3(loan.borrowerNameSnapshot || "Unknown"),
+    loan.borrowerPhoneSnapshot ? escapeHtml3(formatPhone(loan.borrowerPhoneSnapshot)) : "",
+    escapeHtml3(age)
+  ].filter(Boolean).join(" \xB7 ");
+  // One button per decision. A damaged report used to offer "Accept as reported
+  // (damaged)" next to "Returned, damaged" -- two buttons that did the same
+  // thing -- and staff had to work out which one they meant.
   row.innerHTML = `
     <div class="queue-header">
       <div class="queue-borrower">
         <span class="queue-name">${escapeHtml3(loan.itemNameSnapshot || "Item")}</span>
-        <span class="queue-phone">${escapeHtml3(loan.borrowerNameSnapshot || "Unknown")}</span>
-        ${loan.borrowerPhoneSnapshot ? `<span class="queue-phone">${escapeHtml3(formatPhone(loan.borrowerPhoneSnapshot))}</span>` : ""}
+        <span class="queue-meta">${who}</span>
       </div>
-      <div class="queue-age">${age}</div>
     </div>
-    ${damaged ? `<div class="queue-description" style="color:var(--warning);">⚠️ Borrower reports a problem${loan.returnRequestedNote ? `: ${escapeHtml3(loan.returnRequestedNote)}` : ""}</div>` : `<div class="queue-description">Borrower says it is in good shape.</div>`}
+    ${damaged ? `<div class="queue-description queue-warning">Reported a problem${loan.returnRequestedNote ? `: ${escapeHtml3(loan.returnRequestedNote)}` : ""}</div>` : `<div class="queue-description">Says it's in good shape.</div>`}
     <div class="queue-actions">
-      <button class="btn btn-primary" data-action="confirm-return" data-loan-id="${loan.id}">${damaged ? "Accept as reported (damaged)" : "Confirm return"}</button>
-      <button class="btn ${damaged ? "btn-danger" : "btn-secondary"}" data-action="confirm-return-damaged" data-loan-id="${loan.id}">Returned, damaged</button>
+      <button class="btn btn-primary" data-action="confirm-return" data-loan-id="${loan.id}">${damaged ? "Confirm return (damaged)" : "Confirm return"}</button>
+      ${damaged ? "" : `<button class="btn btn-secondary" data-action="confirm-return-damaged" data-loan-id="${loan.id}">It's damaged</button>`}
       <button class="btn btn-ghost" data-action="deny-return" data-loan-id="${loan.id}">Not handed in</button>
     </div>
   `;
@@ -8918,7 +8930,17 @@ async function renderSettings() {
     </div>
 
     <div class="setting-group">
-      <button class="btn btn-primary" data-action="save-settings">Save Settings</button>
+      <label class="setting-label" for="setting-keyboard">On-screen keyboard</label>
+      <select class="setting-input" id="setting-keyboard" data-setting="keyboard">
+        <option value="auto"${onScreenKeyboardMode() === "auto" ? " selected" : ""}>Automatic (${isHosted() ? "on in this app" : "off \u2014 this device has its own"})</option>
+        <option value="on"${onScreenKeyboardMode() === "on" ? " selected" : ""}>Always show</option>
+        <option value="off"${onScreenKeyboardMode() === "off" ? " selected" : ""}>Never show</option>
+      </select>
+      <div class="loan-meta" style="margin-top:6px;">Just for this device. Turn it on for a touchscreen with no keyboard of its own.</div>
+    </div>
+
+    <div class="setting-group">
+      <button class="btn btn-primary" data-action="save-settings">Save settings</button>
     </div>
 
     <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
@@ -8987,6 +9009,13 @@ async function renderSettings() {
     await updateSettings(updates);
     _pinFailures = 0;
     _pinLockedUntil = 0;
+    const kbdMode = panel.querySelector('select[data-setting="keyboard"]').value;
+    try {
+      if (kbdMode === "auto") localStorage.removeItem(KEYBOARD_PREF_KEY);
+      else localStorage.setItem(KEYBOARD_PREF_KEY, kbdMode);
+    } catch (_) {
+    }
+    if (!onScreenKeyboardWanted()) putKeyboardAway();
     document.body.classList.toggle("light", newTheme === "light");
     showToast("Settings saved", {
       type: "success"
@@ -9703,9 +9732,10 @@ async function _makeOpenLoanRow(loan) {
   const badge = document.createElement("div");
   badge.className = `loan-badge ${loan.dueAt && loan.dueAt < Date.now() ? "badge-overdue" : "badge-today"}`;
   if (loan.dueAt && loan.dueAt < Date.now()) {
-    badge.textContent = `OVERDUE ${formatRelativeTime(Date.now() - loan.dueAt)}`;
+    badge.textContent = `Overdue ${formatRelativeTime(Date.now() - loan.dueAt)}`;
   } else {
-    badge.textContent = formatRelativeTime(Date.now() - loan.checkedOutAt);
+    // A bare "1h" read as a due time; it is how long the item has been out.
+    badge.textContent = `Out ${formatRelativeTime(Date.now() - loan.checkedOutAt)}`;
   }
   row.appendChild(badge);
   const details = document.createElement("div");
@@ -9718,7 +9748,9 @@ async function _makeOpenLoanRow(loan) {
   const quickCheckin = document.createElement("button");
   quickCheckin.className = "btn btn-success";
   quickCheckin.style.cssText = "min-height:48px; padding:8px 16px; font-size:14px;";
-  quickCheckin.textContent = "\u2713";
+  // A lone tick on a full-width green bar said nothing about what it would do.
+  quickCheckin.textContent = "\u2713 Mark returned";
+  quickCheckin.setAttribute("aria-label", `Mark ${loan.itemNameSnapshot || "this item"} returned`);
   quickCheckin.onclick = async (e) => {
     e.stopPropagation();
     try {
