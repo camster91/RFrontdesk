@@ -1,0 +1,71 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Third-party actions are pinned to exact commits (tag in the comment).
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write # Azure sign-in without stored secrets (OIDC), used only for code signing.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Fetch WebView2 assemblies
+        shell: pwsh
+        run: ./host/fetch-deps.ps1
+
+      # -NoSymbols: the .pdb is for local crash reports, not for the desk zip.
+      - name: Build
+        shell: pwsh
+        run: ./host/build.ps1 -NoSymbols
+
+      # Code signing (Azure Artifact Signing). Runs only on main and only once the
+      # AZURE_* repository variables exist; see docs/code-signing.md. Until then
+      # the build still runs and produces an unsigned zip.
+      - name: Sign in to Azure (code signing)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign RotmanFrontDesk.exe
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\RotmanFrontDesk.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signature
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/RotmanFrontDesk.exe
+          $sig | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+          if ($sig.Status -ne 'Valid') { throw "RotmanFrontDesk.exe signature is $($sig.Status)" }
+
+      # Packaged after signing: the zip's For IT.txt records the exe's hash and
+      # signature, so it has to describe the signed binary.
+      - name: Package
+        shell: pwsh
+        run: ./tools/package.ps1
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rotman-front-desk
+          path: release/*.zip
+          if-no-files-found: error
