@@ -11,9 +11,9 @@ What is left before and after shipping. Tick items off as they are done.
 - [ ] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
       Mark it ready for review first; it is still a draft. Merging does not deploy
       anything.
-- [ ] **Publish the web build.** The latest polish is not live yet. Run
-      `cd deploy && npx wrangler deploy` with `CLOUDFLARE_API_TOKEN` set
-      (see README, "On the web").
+- [x] **Publish the web build.** Done 2026-10-05: the polish is live at
+      desk.rotmanav.ca. For later changes, run `cd deploy && npx wrangler deploy`
+      with `CLOUDFLARE_API_TOKEN` set (see README, "On the web").
 
 ## Setting up a desk
 
