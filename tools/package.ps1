@@ -61,6 +61,18 @@ Say "packing $product $fileVersion"
 $hash = (Get-FileHash -Path $exe -Algorithm SHA256).Hash
 Say "exe sha256 $hash"
 
+# Read the signature off the exe rather than assuming, so For IT.txt never
+# claims "unsigned" for a signed build (or the reverse).
+$sig = Get-AuthenticodeSignature -FilePath $exe
+if ($sig.Status -eq 'Valid') {
+    $signedLine = "yes -- $($sig.SignerCertificate.Subject)"
+    $signedIntro = "This folder is an in-house application, Authenticode-signed by its publisher."
+} else {
+    $signedLine = 'no'
+    $signedIntro = "This folder is an unsigned in-house application."
+}
+Say "exe signed: $signedLine"
+
 # --- Stage -----------------------------------------------------------------
 # Built in a temp folder rather than in the project, so the project never holds
 # a second copy of the app that can drift from dist\.
@@ -139,7 +151,7 @@ the download page. Nothing else is required.
 FOR IT -- ENDPOINT SECURITY
 ===========================
 
-This folder is an unsigned in-house application. On a managed machine the
+$signedIntro On a managed machine the
 endpoint agent will very likely take an interest in it. Two things resolve that,
 and the full write-up -- including what was measured rather than assumed -- is
 docs\EDR_AND_SIGNING.md in the project folder this was built from.
@@ -178,7 +190,7 @@ THE BINARY IN THIS ZIP
 File    : RotmanFrontDesk.exe
 Version : $fileVersion
 SHA-256 : $hash
-Signed  : no
+Signed  : $signedLine
 "@
     Set-Content -Path (Join-Path $root 'For IT.txt') -Encoding ASCII -Value $forIt
 
