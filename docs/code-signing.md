@@ -15,7 +15,7 @@ The same Azure signing account and certificate profile can sign both apps. The B
 1. **Microsoft Entra ID → App registrations →** `rclicker-github-signing` → **Certificates & secrets → Federated credentials → Add credential**:
    - Scenario: **GitHub Actions deploying Azure resources**
    - Organization: `camster91`, Repository: `RFrontdesk`, Entity type: **Branch**, Branch: `main`
-2. In https://github.com/camster91/RFrontdesk → **Settings → Secrets and variables → Actions → Variables**, add the same six variables Rclicker uses:
+2. In https://github.com/camster91/RFrontdesk → **Settings → Secrets and variables → Actions → Variables**, add the shared Azure identifiers and the exact publisher name:
 
 | Name | Value |
 | --- | --- |
