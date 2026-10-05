@@ -4,6 +4,8 @@ GitHub builds `RotmanFrontDesk.exe` on every push (`.github/workflows/build.yml`
 
 Until the setup below is done, the signing steps are skipped and the zip is unsigned. Nothing else changes.
 
+See [the prepared account settings and activation checklist](azure-signing-prep.md) for the current account IDs, immutable GitHub subject and required publisher variable. Add `AZURE_CLIENT_ID` only after the Azure setup is complete.
+
 This is the cloud alternative to option A in `EDR_AND_SIGNING.md` (a certificate from IT). Both work; `host/build.ps1 -Pfx` still signs locally with an IT certificate.
 
 ## If Rclicker is already set up (recommended)
@@ -23,6 +25,7 @@ The same Azure signing account and certificate profile can sign both apps. The B
 | `AZURE_SIGNING_ENDPOINT` | e.g. `https://eus.codesigning.azure.net` |
 | `AZURE_SIGNING_ACCOUNT` | e.g. `rclickersigning` |
 | `AZURE_SIGNING_PROFILE` | e.g. `rclicker` |
+| `AZURE_SIGNING_PUBLISHER` | Exact certificate common name, currently `Cameron Ashley` |
 
 The next push to `main` signs the exe.
 
