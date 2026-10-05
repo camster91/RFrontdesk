@@ -29,8 +29,12 @@ What is left before and after shipping. Tick items off as they are done.
 
 ## Outside this app
 
-- [ ] **Fix the rotmanav.ca homepage.** It shows Cloudflare's "DNS points to
-      prohibited IP" error. The /desk, /clicker and /mics pages are not affected.
+- [x] **Fix the rotmanav.ca homepage.** Done: since 2026-10-02 the `rotmanav-hub`
+      Worker serves a "Rotman AV" page there with links to Cast, Clicker, Front
+      Desk and Mics.
+- [ ] **Tidy the leftover subdomains.** `admin.`, `ai.` and `app.rotmanav.ca` still
+      point at Cloudflare's own addresses with nothing behind them, so they show
+      the "DNS points to prohibited IP" error. Remove them, or point them at the hub.
 - [ ] **Get a code-signing certificate** for the Windows build, so endpoint
       security tools trust it. See `docs/EDR_AND_SIGNING.md`.
 
