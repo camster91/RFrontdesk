@@ -552,10 +552,10 @@ function startServer() {
     });
     check("adding an item puts it in the tap-list", (afterAdd.name || "").toLowerCase() === "hdmi dongle", afterAdd.name);
     check("the new item is already selected, so the tap is not needed twice", afterAdd.selected);
-    // The app sentence-cases names typed into the catalog, so "HDMI dongle"
-    // is stored as "Hdmi Dongle". Pinned here so a change in that behaviour
-    // shows up rather than passing unnoticed.
-    check("typed names are normalised to sentence case", afterAdd.name === "Hdmi Dongle", afterAdd.name);
+    // Lower-case words get a capital; capitals people typed are kept, so
+    // "HDMI dongle" is stored as "HDMI Dongle" (it used to become "Hdmi
+    // Dongle"). Pinned here so a change in that behaviour shows up.
+    check("typed names get capitals but keep the ones typed", afterAdd.name === "HDMI Dongle", afterAdd.name);
     check("the count on the heading matches the cards under it", afterAdd.counted === afterAdd.cards, JSON.stringify({ heading: afterAdd.heading, cards: afterAdd.cards }));
     check("and Continue counts what is chosen", /1 selected/.test(afterAdd.continueLabel), afterAdd.continueLabel);
 

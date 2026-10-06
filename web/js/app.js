@@ -1837,6 +1837,16 @@ function showToast(message, opts = {}) {
   });
   return toast;
 }
+/** Take every message off the screen: the next person at the kiosk starts clean. */
+function clearToasts() {
+  for (const entry of [..._liveToasts.values()]) {
+    if (!entry || !entry.toast) continue;
+    // At once, not faded: the next person should not watch the last one's
+    // message leave.
+    _forgetToast(entry.toast);
+    if (entry.toast.parentNode) entry.toast.parentNode.removeChild(entry.toast);
+  }
+}
 function dismissToast(toast) {
   if (!toast) return;
   // Before the parentNode check: a toast that was already taken out of the DOM
@@ -2430,7 +2440,19 @@ function sentenceCase(s) {
   if (typeof s !== "string") return s;
   const t = s.trim().replace(/\s+/g, " ");
   if (!t) return t;
-  return t.toLowerCase().split(" ").map((w) => w.length ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
+  // Only a word typed all in lower case is changed, and only its first letter:
+  // "maria lopez" becomes "Maria Lopez", while "HDMI", "iPad" and "McDonald"
+  // stay as typed. This used to lower-case everything first, which turned an
+  // HDMI cable into "Hdmi" and McDonald into "Mcdonald".
+  // Caps lock is the exception: a whole line typed in capitals is shouting, not
+  // an acronym, so its longer words are softened ("MARIA LOPEZ" -> "Maria
+  // Lopez", "HDMI CABLE" -> "HDMI Cable").
+  const shouting = t === t.toUpperCase() && t !== t.toLowerCase() && t.includes(" ");
+  return t.split(" ").map((w) => {
+    if (!w.length) return w;
+    if (shouting && w.length > 4) return w[0] + w.slice(1).toLowerCase();
+    return w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w;
+  }).join(" ");
 }
 var prefersReducedMotion, MONTHS_SHORT;
 var init_ui = __esm({
@@ -3784,6 +3806,10 @@ function putKeyboardAway() {
 }
 // The kiosk is the public, unattended surface. Anything that reaches staff
 // screens, the admin login, or staff-only shortcuts must be refused from here.
+/** The public is looking: a kiosk screen, or the splash it starts on. */
+function _onPublicScreen() {
+  return currentScreen === "splash" || isKioskScreen(currentScreen);
+}
 function isKioskScreen(name) {
   return name === "welcome" || typeof name === "string" && name.indexOf("kiosk-") === 0;
 }
@@ -5699,7 +5725,7 @@ async function autoBackup({ force = false } = {}) {
           await updateSettings({
             lastBackupAt: now
           });
-          showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
+          if (force || !_onPublicScreen()) showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
             type: "info",
             duration: 5e3
           });
@@ -5707,7 +5733,8 @@ async function autoBackup({ force = false } = {}) {
           // The file was written but did not read back the same. Say so loudly:
           // a backup you cannot trust is worse than none, because it is the one
           // you find out about when you need it.
-          showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
+          if (!force && _onPublicScreen()) logToHost("automatic backup could not be verified: " + (result.error || "mismatch"));
+          else showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
             type: "error",
             duration: 15e3
           });
@@ -5744,7 +5771,7 @@ async function autoBackup({ force = false } = {}) {
     await updateSettings({
       lastBackupAt: now
     });
-    showToast("Backup saved. Check your Downloads folder.", {
+    if (force || !_onPublicScreen()) showToast("Backup saved. Check your Downloads folder.", {
       type: "info",
       duration: 4e3
     });
@@ -6098,7 +6125,12 @@ function initKiosk() {
   }
   const confirmBtn = document.querySelector('[data-action="kiosk-confirm-pick"]');
   if (confirmBtn) {
-    confirmBtn.onclick = () => _handleCommit();
+    confirmBtn.onclick = () => {
+      // The add offer on screen is the one this button now names: tap it.
+      const add = confirmBtn.dataset.adds && document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
+      if (add) add.click();
+      else _handleCommit();
+    };
   }
   // `querySelectorAll`, not `querySelector`: two screens carry this action --
   // the borrow confirmation and the list a borrower sees after a return -- and
@@ -6109,6 +6141,31 @@ function initKiosk() {
   // kiosk suite clicks this action scoped to the *borrow* screen.
   for (const btn of document.querySelectorAll('[data-action="kiosk-back-home"]')) {
     btn.onclick = () => _kioskBackHome();
+  }
+  // Same person, one more thing: back to the item step without the phone again.
+  const another = document.querySelector('[data-action="kiosk-borrow-another"]');
+  if (another) {
+    another.onclick = () => {
+      const who = _doneBorrower;
+      _doneBorrower = null;
+      if (!who) {
+        _kioskBackHome();
+        return;
+      }
+      state.borrower = who;
+      state.phone = who.phone || null;
+      state.isNew = false;
+      const greetEl = document.getElementById("kiosk-greeting-name");
+      if (greetEl) greetEl.textContent = who.name;
+      _cancelDoneCountdown();
+      clearToasts();
+      _resetNeedStep();
+      goToScreen(KIOSK_SCREENS.borrowNeed);
+      setTimeout(() => {
+        const need = document.getElementById("kiosk-need");
+        if (need) need.focus();
+      }, 100);
+    };
   }
   const returnPhoneContinue = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (returnPhoneContinue) {
@@ -6372,6 +6429,7 @@ function _renderSuggestions(matches, query, opts = {}) {
   if (!container) return;
   const { create = null, catalogEmpty = false } = opts;
   container.innerHTML = "";
+  _setBorrowLabel(null);
   // What this list is the answer to. `_onNeedInput` compares the box against it
   // and takes the list away as soon as they disagree -- see there for why that
   // matters more than the flicker it costs.
@@ -6410,6 +6468,7 @@ function _renderSuggestions(matches, query, opts = {}) {
       btn.appendChild(hint);
       btn.onclick = () => _kioskCreateAndCheckout(create);
       container.appendChild(btn);
+      _setBorrowLabel(`Add "${create.name}" and borrow it`);
     } else if (create && create.reason) {
       const why = document.createElement("div");
       why.className = "kiosk-suggestion-empty";
@@ -6549,7 +6608,7 @@ async function _handleCommit() {
   }
   const check = kioskCreateCheck(query);
   showToast(check.ok
-    ? `That item is not on the list — tap Add "${check.name}" below, or ask the front desk.`
+    ? `That item is not on the list. Tap Add "${check.name}" and borrow it, or ask the front desk.`
     : "That item is not on the list. Please ask the front desk.", {
     type: "error",
     duration: 5e3
@@ -6646,8 +6705,12 @@ async function _kioskCreateAndCheckout(create) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6696,8 +6759,12 @@ async function _checkout(item, typedFrom) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = item.name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6775,7 +6842,21 @@ function _cancelDoneCountdown() {
  * Registered as an `onEnter` hook for the step, so every route into it is
  * covered rather than the four that happen to call `goToScreen` today.
  */
+/**
+ * The item step's main button. Normally "Borrow it"; while the search has come
+ * back empty and the add offer is showing, it names the add -- so the button a
+ * borrower reaches for does what it says, instead of answering "not on the
+ * list, tap the other button". Pressing Enter still never adds anything.
+ */
+function _setBorrowLabel(text) {
+  const btn = document.querySelector('[data-action="kiosk-confirm-pick"]');
+  if (!btn) return;
+  btn.textContent = text || "Borrow it";
+  if (text) btn.dataset.adds = "1";
+  else delete btn.dataset.adds;
+}
 function _resetNeedStep() {
+  _setBorrowLabel(null);
   // A debounced pass from the previous borrower must not land after the clear and
   // re-render a list nobody asked for.
   if (_kioskTypeaheadTimer) {
@@ -6826,9 +6907,12 @@ function _armKioskIdle() {
 function _bumpKioskIdle() {
   if (_kioskIdleTimer) _armKioskIdle();
 }
+var _doneBorrower = null;
 function _kioskBackHome() {
+  _doneBorrower = null;
   _cancelDoneCountdown();
   _clearKioskOverlays();
+  clearToasts();
   state.phone = null;
   state.borrower = null;
   state.isNew = false;
@@ -7064,41 +7148,15 @@ function _makeReturnRow(loan, now) {
   return row;
 }
 async function _confirmAndReturnLoan(loan) {
-  const now = Date.now();
-  const isOverdue = loan.dueAt && loan.dueAt < now;
-  const overdueText = isOverdue ? `<div style="background:rgba(231,76,60,0.15); color:#e74c3c; padding:8px 12px; border-radius:6px; font-weight:600; margin-top:8px;">\u26A0\uFE0F Overdue by ${formatRelativeTime(loan.dueAt - now)}</div>` : "";
-  const dueText = loan.dueAt && !isOverdue ? `<div>Due: ${new Date(loan.dueAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })}</div>` : "";
-  const confirmed = await _confirmDialog("Return this item?", `<div style="text-align:left; padding:4px 0;">
-       <div style="font-size:22px; font-weight:700; margin-bottom:12px; color:var(--text);">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-       <div style="color:var(--text-muted); font-size:14px; line-height:1.6;">
-         <div><strong>Out:</strong> ${loan.checkedOutAt ? new Date(loan.checkedOutAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }) : "\u2014"}</div>
-         ${dueText}
-       </div>
-       ${overdueText}
-     </div>
-     <div style="margin-top:12px; padding:10px; background:var(--bg-alt, rgba(255,255,255,0.05)); border-radius:6px; font-size:13px; color:var(--text-muted);">
-       Hand it to the front desk and they will close it off. Nothing is marked returned until they do.
-     </div>`, {
-    danger: true,
-    confirmLabel: "Yes, I'm handing it in"
-  });
-  if (!confirmed) return;
+  // One step, not two. Tapping an item used to open a "Return this item?" dialog
+  // and then put "Is it coming back in good shape?" *below* the screen's big
+  // Done button -- so a borrower who tapped Done after the first answer walked
+  // away believing it was handed in, with nothing recorded. The question now
+  // covers the screen, and answering it is the hand-in.
   // Condition is asked for, not assumed. This used to hardcode "good", so
   // "Damaged"/"Lost" could never be recorded from a kiosk return even though the
   // item detail screen counts them.
-  const condition = await _askCondition(loan);
+  const condition = await _askCondition(loan, { modal: true });
   if (!condition) return;
   try {
     await openDB();
@@ -7123,7 +7181,7 @@ async function _confirmAndReturnLoan(loan) {
  * wrong -> say what" needs a dialog that stays open between steps, which the
  * promise adapter around showDialog cannot do (it closes on the first click).
  */
-function _askCondition(loan) {
+function _askCondition(loan, opts = {}) {
   return new Promise((resolve) => {
     const host = document.querySelector(".screen:not(.hidden)");
     const body = host && host.querySelector(".kiosk-flow-body");
@@ -7131,14 +7189,23 @@ function _askCondition(loan) {
       resolve(null);
       return;
     }
+    const now = Date.now();
+    const overdue = loan.dueAt && loan.dueAt < now;
+    const when = loan.checkedOutAt ? `Out ${agoLabel(now - loan.checkedOutAt)}` : "";
+    const late = overdue ? ` \u00b7 <span class="kiosk-return-item-overdue">overdue by ${formatRelativeTime(loan.dueAt - now)}</span>` : "";
     const panel = document.createElement("div");
-    panel.className = "kiosk-signin-panel";
+    panel.className = "kiosk-signin-panel" + (opts.modal ? " kiosk-modal" : "");
+    if (opts.modal) {
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+    }
     panel.innerHTML = `
       <div class="kiosk-signin-card">
         <div class="kiosk-condition-title">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-        <div class="kiosk-signin-sub">Is it coming back in good shape?</div>
+        ${when ? `<div class="kiosk-signin-sub">${escapeHtml2(when)}${late}</div>` : ""}
+        <div class="kiosk-signin-sub">Handing it back? Is it in good shape?</div>
         <div class="kiosk-condition-actions">
-          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good</button>
+          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good, hand it in</button>
           <button type="button" class="btn btn-secondary btn-xl kiosk-cta" data-cond="damaged">Something's wrong</button>
         </div>
         <div data-role="note-wrap" class="kiosk-condition-note hidden">
@@ -7148,7 +7215,7 @@ function _askCondition(loan) {
         <button type="button" class="btn btn-ghost kiosk-cta-secondary" data-role="cancel">Cancel</button>
       </div>
     `;
-    body.appendChild(panel);
+    (opts.modal ? host : body).appendChild(panel);
     const done = (value) => {
       _kioskPendingPanels.delete(cancel);
       panel.remove();

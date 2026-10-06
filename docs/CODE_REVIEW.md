@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 760 checks, all green) —
+covered by `node tools/test-all.cjs` (**thirteen** suites, 766 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -2096,6 +2096,40 @@ Checked here with Mono `mcs -langversion:5` and the WebView2 reference
 assemblies: the host compiles, and the host suite's four modes ran 91 checks,
 none failed (parse 68, plain 3, kiosk 5, files 15). The PowerShell scripts were
 parse-checked with PowerShell 7. The first real Windows build is the GitHub run.
+
+### Against the paper sheet it replaces (2026-10-06)
+
+The desk used a paper sheet: name, item, time out, signature; time in when it
+came back. Walking the kiosk at tablet size from a fresh install, as a
+borrower would, found five places where the app was worse than the paper:
+
+- **A return could be lost without a word.** Tapping an item opened a "Return
+  this item?" dialog, then put "Is it in good shape?" *below* the screen's big
+  Done button. Tapping Done there -- the obvious next move -- left with
+  nothing recorded: the item stayed out, and the borrower thought it was
+  handed in. It is now one question over the screen (*All good, hand it in* /
+  *Something's wrong* / *Cancel*), and Done cannot be pressed until it is
+  answered. Three taps per item became two.
+- **"Borrow it" refused new items.** On a new desk nothing is on the list yet,
+  so every first borrow typed a name, pressed the big button, and was told
+  "not on the list -- tap Add below". The button now says *Add "HDMI cable"
+  and borrow it* when that is the only way forward, and does it. Enter still
+  never adds anything.
+- **One item per visit.** A paper line can list two things; the kiosk asked
+  for the phone number again for each. The confirmation now has *Borrow
+  something else*, which goes straight back to the item step for the same
+  person, and only while that screen is up.
+- **Messages carried over to the next person**, including an error from the
+  last borrower and a "Backup saved" notice on the public welcome screen.
+  Messages are cleared when a borrow completes and when the kiosk goes back
+  to its welcome screen, and automatic backup notices are kept off the public
+  screens (a failure there goes to the log; staff still see it on theirs).
+- **Typed names lost their capitals**: "HDMI cable" became "Hdmi Cable" and
+  McDonald became Mcdonald (issue 4). Only words typed all in lower case are
+  changed now; a whole line typed in capitals is still softened.
+
+What paper did that the app still does not: a signature. The phone number is
+the identity, as before.
 
 ---
 
