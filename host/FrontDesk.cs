@@ -571,7 +571,11 @@ namespace FrontDeskHost
 
         /// <summary>
         /// Every element is a flag. Anything unrecognised is ignored, so a flag
-        /// from a newer build reaching an older one is not an error.
+        /// from a newer build reaching an older one is not an error -- with one
+        /// exception: a misspelling of the lock flag ("--no-devtool",
+        /// "--nodevtools") locks. It used to be ignored, which left a public
+        /// kiosk unlocked with nothing to say so. Failing closed is the safe way
+        /// round: a locked desk is a nuisance, an unlocked one is a hole.
         /// </summary>
         public static StartupOptions Parse(string[] argv)
         {
@@ -582,9 +586,25 @@ namespace FrontDeskHost
                 if (string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase)) o.Minimized = true;
                 else if (string.Equals(a, "--devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = true;
                 else if (string.Equals(a, "--no-devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = false;
+                else if (a != null && a.StartsWith("-", StringComparison.Ordinal))
+                {
+                    o.Unknown.Add(a);
+                    string flat = a.Replace("-", "").Replace("_", "").ToLowerInvariant();
+                    if (flat.StartsWith("no") && flat.Contains("dev")) o.DevTools = false;
+                }
             }
             return o;
         }
+
+        /// <summary>Flags on the command line that this build did not recognise.</summary>
+        public List<string> Unknown = new List<string>();
+
+        /// <summary>
+        /// A locked-down kiosk: started with --no-devtools. The public is at the
+        /// screen, so the app keeps them on the page -- no way to the desktop,
+        /// the file system or out of the app from inside it.
+        /// </summary>
+        public bool Kiosk { get { return !DevTools; } }
     }
 
     internal static class Autostart
@@ -683,6 +703,15 @@ namespace FrontDeskHost
             MinimumSize = new Size(900, 640);
             Size = new Size(1280, 860);
             BackColor = Color.FromArgb(10, 10, 11);
+            // A kiosk fills the screen with no frame: no title bar, no close or
+            // minimise buttons, and the taskbar covered. It used to open as a
+            // normal window, one click from the desktop. The frame has to go
+            // before the window is maximised, or the taskbar stays in front.
+            if (_startup.Kiosk)
+            {
+                FormBorderStyle = FormBorderStyle.None;
+                _fullScreen = true;
+            }
             WindowState = FormWindowState.Maximized;
             KeyPreview = true;
 
@@ -698,7 +727,9 @@ namespace FrontDeskHost
             base.OnLoad(e);
             // Start in the tray when Windows launched us, so autostart does not
             // throw a window over whatever the operator was already doing.
-            if (_startup.Minimized)
+            // Not a kiosk, though: a public tablet that starts hidden in the tray
+            // shows the desktop to whoever walks up after a reboot.
+            if (_startup.Minimized && !_startup.Kiosk)
             {
                 WindowState = FormWindowState.Minimized;
                 Hide();
@@ -757,6 +788,8 @@ namespace FrontDeskHost
             _web.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             _web.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+            if (_startup.Unknown.Count > 0)
+                Paths.Log("ignored unknown flags: " + string.Join(" ", _startup.Unknown.ToArray()) + (_startup.Kiosk ? " (running locked)" : ""));
             Paths.Log("start: version=" + Build.Version + " runtime=" + RuntimeVersion +
                       " data=" + Paths.Data + " portable=" + Paths.Portable);
 
@@ -844,12 +877,20 @@ namespace FrontDeskHost
         /// way off the page it is supposed to be showing. The kiosk has no overdue
         /// list; nothing legitimate is lost by refusing there.
         /// </summary>
+        // The log is a plain file beside the app and is never trimmed, so it
+        // records the kind of link, not the phone number in it.
+        private static string SchemeOf(string uri)
+        {
+            int i = uri == null ? -1 : uri.IndexOf(':');
+            return i > 0 ? uri.Substring(0, i) + ":" : "(link)";
+        }
+
         private bool TryShellScheme(string uri)
         {
             if (!IsShellScheme(uri)) return false;
             if (!_startup.DevTools)
             {
-                Paths.Log("refused shell link on a locked-down install: " + uri);
+                Paths.Log("refused shell link on a locked-down install: " + SchemeOf(uri));
                 return true;
             }
             try
@@ -866,7 +907,7 @@ namespace FrontDeskHost
                 // No handler registered, or the shell refused it. The click did
                 // nothing, and the log is where a "the Call button doesn't work"
                 // report gets answered from.
-                Paths.Log("could not open " + uri + ": " + ex.Message);
+                Paths.Log("could not open a " + SchemeOf(uri) + " link: " + ex.Message);
                 return true;
             }
         }
@@ -1065,6 +1106,21 @@ namespace FrontDeskHost
                 ShowFromTray();
             };
             menu.Items.Add("Back up now", null, backupNow);
+            // On a kiosk the tray offers nothing that leaves the app. "Open
+            // folder" was File Explorer -- and from its address bar, a command
+            // prompt -- on the public tablet, beside the backups that hold every
+            // name and phone number. Exit and the startup toggle went too: set
+            // those up from an ordinary (unlocked) start.
+            if (_startup.Kiosk)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("Reload", null, delegate
+                {
+                    if (_web.CoreWebView2 != null) _web.CoreWebView2.Reload();
+                });
+                _tray.ContextMenuStrip = menu;
+                return;
+            }
             menu.Items.Add("Open data folder", null, delegate { OpenFolder(Paths.Data); });
             menu.Items.Add("Open backup folder", null, delegate { OpenFolder(Paths.Backups); });
             menu.Items.Add(new ToolStripSeparator());
@@ -1160,6 +1216,13 @@ namespace FrontDeskHost
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
+            // A kiosk stays full screen: F11 and Escape used to drop it back to a
+            // window with a close button.
+            if (_startup.Kiosk && (e.KeyCode == Keys.F11 || e.KeyCode == Keys.Escape))
+            {
+                e.Handled = true;
+                return;
+            }
             if (e.KeyCode == Keys.F11)
             {
                 ToggleFullScreen();
@@ -1196,6 +1259,14 @@ namespace FrontDeskHost
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            // Alt+F4 at the public tablet used to quit the desk. Windows shutting
+            // down, a sign-out or Task Manager (which needs Ctrl+Alt+Del) still
+            // close it; a person standing at the screen does not.
+            if (_startup.Kiosk && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                return;
+            }
             // The X button exits. Closing to the tray would be the friendlier
             // default for a kiosk, but an invisible running process is a
             // support call waiting to happen -- the tray icon covers the

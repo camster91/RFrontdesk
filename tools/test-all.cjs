@@ -21,8 +21,7 @@ const SUITES = [
   ["backup round trip", "test-restore.cjs"],
   ["catalog at scale", "test-catalog.cjs"],
   ["sessions, lock and keyboard", "test-sessions.cjs"],
-  ["records: merges, loans, imports", "test-records.cjs"],
-  ["web build", "test-web.cjs"]
+  ["records: merges, loans, imports", "test-records.cjs"]
 ];
 
 const results = [];

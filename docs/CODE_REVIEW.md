@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**fourteen** suites, 737 checks, all green) —
+covered by `node tools/test-all.cjs` (**thirteen** suites, 713 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -2031,9 +2031,6 @@ Screens:
 
 Host, keyboard, packaging:
 
-- `--no-devtools` still leaves the tray's Open folder (Explorer, then a shell),
-  Exit and Start with Windows, a normal window frame, and silently ignores a
-  misspelt flag.
 - A startup entry written by an older build is never corrected, while Settings
   shows the command a new one would use.
 - One failed write probe sends the host to `%LOCALAPPDATA%` and an empty database
@@ -2043,8 +2040,31 @@ Host, keyboard, packaging:
 - The zip does not carry WebView2's `LICENSE.txt`/`NOTICE.txt`, and `For IT.txt`
   says "unsigned" even for a signed build.
 - Every `ProcessFailed` kind asks "Reload?", and for `BrowserProcessExited` the
-  reload throws and leaves the window dead; the log is never rotated, holds
-  phone numbers from `tel:`/`sms:` links, and takes newlines from the page.
+  reload throws and leaves the window dead; the log is never rotated and takes
+  newlines from the page.
+
+### Fixed when the app became Windows-only (2026-10-06)
+
+The web build was retired so there is one desk with one set of records, and the
+Windows kiosk was locked down instead:
+
+- `--no-devtools` now opens borderless and full screen (taskbar covered), and
+  F11, Escape and Alt+F4 do nothing; sign-out, shutdown and Task Manager still
+  close it. It used to be a normal window one click from the desktop.
+- The kiosk's tray menu is Show, Back up now and Reload only. *Open data folder*
+  and *Open backup folder* were File Explorer on the public tablet; *Exit* and
+  *Start with Windows* went with them (autostart is still in Settings, behind
+  the PIN).
+- A kiosk started by Windows comes up on screen, not hidden in the tray.
+- A misspelt lock flag locks (`--no-devtool`, `--nodevtools`, ...); unknown
+  flags are logged.
+- The log records a link's scheme, not the phone number in it.
+
+`host/FrontDesk.cs` and `tools/HostTests.cs` were compiled with Mono's `mcs`
+under `-langversion:5` against the WebView2 1.0.4191.47 reference assemblies,
+which also compiled Phase 13's backup change for the first time, and the host
+suite's three modes ran under Mono: 44 checks, none failed. The Windows build
+itself (`csc` from .NET Framework) has still to be run.
 
 ---
 

@@ -1,47 +1,37 @@
 # To do
 
-What is left before and after shipping. Tick items off as they are done.
+Front Desk is a Windows app. What is left, in order. Tick items off as they are done.
 
 ## Before shipping
 
-- [ ] **Build and test the Windows app.** On a Windows machine, build it and run
-      `node tools/test-all.cjs`. The backup change in `host/FrontDesk.cs` has not
-      been compiled yet, and the "host flags and navigation" suite only runs on
-      Windows.
+- [ ] **Build and test on Windows.** On a Windows machine, run
+      `pwsh -File host/build.ps1`, then `node tools/test-all.cjs`. The Windows
+      code compiles and its tests pass under Mono, but the real Windows build has
+      not been run yet.
 - [ ] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
-      Mark it ready for review first; it is still a draft. Merging does not deploy
-      anything.
-- [x] **Publish the web build.** Done 2026-10-05: the polish is live at
-      desk.rotmanav.ca. For later changes, run `cd deploy && npx wrangler deploy`
-      with `CLOUDFLARE_API_TOKEN` set (see README, "On the web").
+      Mark it ready for review first; it is still a draft.
+- [ ] **Package it:** `pwsh -File tools/package.ps1` makes the zip that goes to a desk.
 
 ## Setting up a desk
 
-- [ ] **Change the PIN** on every device. It starts as 1234.
-- [ ] **Lock the tablet to the app:** Guided Access on an iPad, app pinning on
-      Android, or kiosk mode in Chrome.
-- [ ] **Sign the tablet in to Cloudflare Access** once. The sign-in lasts 30 days.
-- [ ] **Add other staff emails** to the "Staff" policy of the "Front Desk
-      (desk.rotmanav.ca)" Access app, if anyone else will set up or re-sign-in the
-      tablet. Right now only one email can sign in.
-- [ ] **Keep the backup downloads** somewhere safe. In the browser, records live
-      only on the device.
+- [ ] **Start it locked down on a public tablet:** add `--no-devtools` to its
+      shortcut. It then runs full screen, and the tray has no way out of the app.
+- [ ] **Change the PIN** the first time you sign in. It starts as 1234.
+- [ ] **Turn on "Start with Windows"** in Settings → This computer.
+- [ ] **Check the backups folder** after the first day: `data\backups` beside the app.
 
 ## Outside this app
 
-- [x] **Fix the rotmanav.ca homepage.** Done: since 2026-10-02 the `rotmanav-hub`
-      Worker serves a "Rotman AV" page there with links to Cast, Clicker, Front
-      Desk and Mics.
-- [x] **Tidy the leftover subdomains.** Done 2026-10-06: `admin.`, `ai.` and
-      `app.rotmanav.ca` now route to the `rotmanav-hub` Worker, which sends them on
-      to rotmanav.ca.
-- [ ] **Get a code-signing certificate** for the Windows build, so endpoint
-      security tools trust it. See `docs/EDR_AND_SIGNING.md`.
+- [x] **The rotmanav.ca homepage** works (the `rotmanav-hub` Worker).
+- [x] **Leftover subdomains** `admin.`, `ai.` and `app.rotmanav.ca` go to the homepage.
+- [x] **The web version is retired.** desk.rotmanav.ca, its routes and its sign-in
+      are gone, and the homepage no longer lists Front Desk.
+- [ ] **Get a code-signing certificate** so endpoint security tools trust the exe.
+      See `docs/EDR_AND_SIGNING.md`.
 
 ## Remaining fixes (lower priority)
 
-Found in the Phase 13 review and not yet fixed. Details are in
-`docs/CODE_REVIEW.md`, under "Found, not fixed".
+Details in `docs/CODE_REVIEW.md`, under "Found, not fixed".
 
 **App**
 - [ ] A dismissed duplicate group comes back after one checkout.
@@ -53,24 +43,14 @@ Found in the Phase 13 review and not yet fixed. Details are in
 - [ ] Settings → Import replaces everything without asking first.
 
 **Windows app and packaging**
-- [ ] `--no-devtools` still allows the tray's Open folder, Exit and Start with
-      Windows, and ignores a misspelt flag.
 - [ ] An old startup entry is never updated to the current command.
 - [ ] One failed write check can open an empty database for that launch.
 - [ ] Backup cleanup deletes any `.json` in the backups folder, including copies
       saved there by hand.
 - [ ] The zip leaves out WebView2's licence files, and `For IT.txt` always says
       "unsigned".
-- [ ] A crashed browser process can leave the window dead; the log is never
-      trimmed and keeps phone numbers.
+- [ ] A crashed browser process can leave the window dead; the log is never trimmed.
 
 ## Older open items
 
-Listed under "Still open" in `docs/CODE_REVIEW.md`:
-
-- [ ] Test the Windows startup entry on a real machine.
-- [ ] Add a test for Wipe All Data.
-- [ ] Add a test for leaving the kiosk's Done screen.
-- [ ] Decide whether names keep their capitals (now "McDonald" becomes
-      "Mcdonald").
-- [ ] Review the README's "Known quirks".
+Listed under "Still open" in `docs/CODE_REVIEW.md`, and as GitHub issues 1–8.

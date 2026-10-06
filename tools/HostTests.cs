@@ -94,6 +94,17 @@ namespace FrontDeskHost
             StartupOptions bare = StartupOptions.Parse(new string[] { "--no-devtools" });
             Check("every argument Parse is given is read as a flag", !bare.DevTools, null);
 
+            // A misspelt lock flag locks. It used to be ignored, leaving a public
+            // kiosk unlocked with nothing to say so.
+            foreach (string typo in new string[] { "--no-devtool", "--nodevtools", "--no_devtools", "-no-dev-tools" })
+            {
+                StartupOptions t = StartupOptions.Parse(new string[] { "app.exe", typo });
+                Check("a misspelt lock flag (" + typo + ") still locks", t.Kiosk && t.Unknown.Count == 1, null);
+            }
+            StartupOptions other = StartupOptions.Parse(new string[] { "app.exe", "--something-new" });
+            Check("an unrelated unknown flag is ignored, not a lock", !other.Kiosk && other.Unknown.Count == 1, null);
+            Check("Kiosk is the same thing as --no-devtools", kiosk.Kiosk && !none.Kiosk, null);
+
             // The virtual host is the only origin allowed to load in the window.
             Check("the app's own page is allowed", MainForm.IsAppUri("https://frontdesk.local/index.html"), null);
             Check("the bare host is allowed", MainForm.IsAppUri("https://frontdesk.local/"), null);
