@@ -28,7 +28,7 @@ For the Azure account itself (subscription, signing account, identity check, cer
 ## Checking a build
 
 - The shared workflow's **Verify signatures** step fails the run if the signature isn't valid.
-- `For IT.txt` inside the zip shows `Signed : yes -- <publisher>` and the exe's SHA-256.
+- `For IT.txt` inside the zip shows `Signed  : yes, by <publisher>` and the exe's SHA-256.
 - On Windows: right-click `RotmanFrontDesk.exe` → **Properties** → **Digital Signatures**.
 
 ## Troubleshooting

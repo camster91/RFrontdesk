@@ -18,7 +18,11 @@
 // C# 5, like the source it is compiled with: this compiler is the in-box one.
 
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
 
 namespace FrontDeskHost
 {
@@ -57,7 +61,12 @@ namespace FrontDeskHost
             string mode = Mode(argv);
             if (mode == "kiosk") Kiosk();
             else if (mode == "plain") Plain();
-            else ParseAndUrls();
+            else if (mode == "files") Files();
+            else
+            {
+                ParseAndUrls();
+                Decisions();
+            }
 
             Console.WriteLine("  " + _checks + " checks in mode '" + mode + "', " + _failures + " failed");
             return _failures == 0 ? 0 : 1;
@@ -94,6 +103,17 @@ namespace FrontDeskHost
             StartupOptions bare = StartupOptions.Parse(new string[] { "--no-devtools" });
             Check("every argument Parse is given is read as a flag", !bare.DevTools, null);
 
+            // A misspelt lock flag locks. It used to be ignored, leaving a public
+            // kiosk unlocked with nothing to say so.
+            foreach (string typo in new string[] { "--no-devtool", "--nodevtools", "--no_devtools", "-no-dev-tools" })
+            {
+                StartupOptions t = StartupOptions.Parse(new string[] { "app.exe", typo });
+                Check("a misspelt lock flag (" + typo + ") still locks", t.Kiosk && t.Unknown.Count == 1, null);
+            }
+            StartupOptions other = StartupOptions.Parse(new string[] { "app.exe", "--something-new" });
+            Check("an unrelated unknown flag is ignored, not a lock", !other.Kiosk && other.Unknown.Count == 1, null);
+            Check("Kiosk is the same thing as --no-devtools", kiosk.Kiosk && !none.Kiosk, null);
+
             // The virtual host is the only origin allowed to load in the window.
             Check("the app's own page is allowed", MainForm.IsAppUri("https://frontdesk.local/index.html"), null);
             Check("the bare host is allowed", MainForm.IsAppUri("https://frontdesk.local/"), null);
@@ -129,6 +149,169 @@ namespace FrontDeskHost
             Check("a null string is not a shell link", !MainForm.IsShellScheme(null), null);
             Check("an absurdly long link never reaches the shell",
                 !MainForm.IsShellScheme("tel:" + new string('9', 600)), null);
+        }
+
+        /// <summary>
+        /// The Windows-side choices that used to go wrong: the startup entry, the
+        /// data folder, backup cleanup, the log, and what a browser crash does.
+        /// </summary>
+        private static void Decisions()
+        {
+            // Setup flags.
+            StartupOptions inst = StartupOptions.Parse(new string[] { "--install", "--quiet", "--kiosk", "--autostart", "--no-desktop" });
+            Check("--install and its options are recognised",
+                inst.Install && inst.Quiet && inst.AutostartOnInstall && inst.NoDesktopShortcut && inst.Unknown.Count == 0, null);
+            Check("--kiosk locks, the same as --no-devtools", inst.Kiosk, null);
+            StartupOptions un = StartupOptions.Parse(new string[] { "--uninstall", "--delete-data" });
+            Check("--uninstall and --delete-data are recognised", un.Uninstall && un.DeleteData && !un.Kiosk, null);
+            Check("--no-desktop is not mistaken for a misspelt lock flag", !inst.Unknown.Contains("--no-desktop"), null);
+
+            // The startup entry.
+            string exe = @"C:\Users\desk\AppData\Local\Programs\Rotman Front Desk\RotmanFrontDesk.exe";
+            string other = @"E:\Front Desk\RotmanFrontDesk.exe";
+            Func<string, bool> allExist = delegate(string f) { return true; };
+            Func<string, bool> noneExist = delegate(string f) { return false; };
+            Check("the exe is read out of a quoted entry",
+                Autostart.ExeOf("\"" + exe + "\" --minimized") == exe, null);
+            Check("the exe is read out of an unquoted entry",
+                Autostart.ExeOf(@"C:\fd\RotmanFrontDesk.exe --minimized") == @"C:\fd\RotmanFrontDesk.exe", null);
+            Check("no entry is left alone", Autostart.Repair(null, exe, true, allExist) == null, null);
+            Check("an up-to-date entry is left alone",
+                Autostart.Repair(Autostart.CommandFor(exe, true), exe, true, allExist) == null, null);
+            Check("this copy's entry with old flags is brought up to date",
+                Autostart.Repair("\"" + exe + "\"", exe, true, allExist) == Autostart.CommandFor(exe, true), null);
+            Check("an entry for a moved or deleted copy is pointed at this one",
+                Autostart.Repair("\"" + other + "\" --minimized", exe, true, noneExist) == Autostart.CommandFor(exe, true), null);
+            Check("another copy's working entry is not taken over",
+                Autostart.Repair("\"" + other + "\" --minimized", exe, true, allExist) == null, null);
+            string fixedLocked = Autostart.Repair("\"" + other + "\" --minimized --no-devtools", exe, true, noneExist);
+            Check("a correction never drops the kiosk lock",
+                fixedLocked != null && Autostart.IsLocked(fixedLocked), fixedLocked);
+            string fixedByKiosk = Autostart.Repair(Autostart.CommandFor(exe, true), exe, false, allExist);
+            Check("a locked launch locks its own entry",
+                fixedByKiosk != null && Autostart.IsLocked(fixedByKiosk), fixedByKiosk);
+
+            // The data folder.
+            bool portable;
+            string root = @"C:\fd";
+            string fallback = @"C:\Users\desk\AppData\Local\FrontDesk\data";
+            Func<string, bool> writable = delegate(string d) { return true; };
+            Func<string, bool> notWritable = delegate(string d) { return false; };
+            Func<string, bool> hasDb = delegate(string d) { return d.EndsWith("browser", StringComparison.Ordinal); };
+            Check("a writable app folder is used",
+                Paths.ChooseData(root, fallback, writable, noneExist, out portable) == Path.Combine(root, "data") && portable, null);
+            Check("one failed write check does not leave the desk's database for an empty one",
+                Paths.ChooseData(root, fallback, notWritable, hasDb, out portable) == Path.Combine(root, "data") && portable, null);
+            Check("a read-only folder with no database still falls back",
+                Paths.ChooseData(root, fallback, notWritable, noneExist, out portable) == fallback && !portable, null);
+
+            // Backup cleanup.
+            Check("a daily backup is the app's own", Bridge.IsAutoBackupName("frontdesk-backup-2026-10-06.json"), null);
+            Check("a timed backup is the app's own", Bridge.IsAutoBackupName("frontdesk-backup-2026-10-06-142233.json"), null);
+            Check("a copy saved by hand is not", !Bridge.IsAutoBackupName("before-the-move.json"), null);
+            Check("a renamed copy is not", !Bridge.IsAutoBackupName("frontdesk-backup-2026-10-06 (keep).json"), null);
+            Check("an export from elsewhere is not", !Bridge.IsAutoBackupName("frontdesk-export.json"), null);
+
+            // The log.
+            Check("a page message cannot add a log line",
+                Paths.OneLine("bad\r\n2026-01-01 00:00:00  forged", 2000).IndexOf('\n') < 0, null);
+            Check("a page message is capped", Paths.OneLine(new string('x', 5000), 2000).Length <= 2003, null);
+
+            // A browser crash.
+            Check("a crashed browser is rebuilt, not reloaded",
+                MainForm.RecoveryFor(CoreWebView2ProcessFailedKind.BrowserProcessExited, false) == MainForm.Recovery.Recreate, null);
+            Check("a crashed page reloads without asking",
+                MainForm.RecoveryFor(CoreWebView2ProcessFailedKind.RenderProcessExited, false) == MainForm.Recovery.Reload, null);
+            Check("a hung page asks staff first",
+                MainForm.RecoveryFor(CoreWebView2ProcessFailedKind.RenderProcessUnresponsive, false) == MainForm.Recovery.AskReload, null);
+            Check("a hung page on a kiosk reloads, with nobody to ask",
+                MainForm.RecoveryFor(CoreWebView2ProcessFailedKind.RenderProcessUnresponsive, true) == MainForm.Recovery.Reload, null);
+            Check("a GPU restart puts no question in front of the desk",
+                MainForm.RecoveryFor(CoreWebView2ProcessFailedKind.GpuProcessExited, false) == MainForm.Recovery.Ignore, null);
+
+            // Setup paths.
+            Check("a folder is inside itself", Installer.IsInside(root, root), null);
+            Check("a subfolder is inside", Installer.IsInside(Path.Combine(root, "data"), root), null);
+            Check("a sibling with the same prefix is not inside", !Installer.IsInside(root + "-old", root), null);
+            Check("the install folder is per-user",
+                Installer.DefaultInstallDir().EndsWith(Path.Combine("Programs", "Rotman Front Desk"), StringComparison.Ordinal),
+                Installer.DefaultInstallDir());
+        }
+
+        /// <summary>
+        /// The parts that touch files, in a temporary folder of their own:
+        /// install over an old copy, the log trim, and reading the log's tail.
+        /// </summary>
+        private static void Files()
+        {
+            string tmp = Path.Combine(Path.GetTempPath(), "fd-hosttest-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                // A new build, with a clean data folder.
+                string src = Path.Combine(tmp, "unzipped");
+                Write(Path.Combine(src, "RotmanFrontDesk.exe"), "new exe");
+                Write(Path.Combine(src, "web", "index.html"), "new page");
+                Write(Path.Combine(src, "data", "README.txt"), "readme");
+                // An old install with records and a file the new build dropped.
+                string dst = Path.Combine(tmp, "installed");
+                Write(Path.Combine(dst, "RotmanFrontDesk.exe"), "old exe");
+                Write(Path.Combine(dst, "web", "old.js"), "old");
+                Write(Path.Combine(dst, "data", "browser", "db"), "records");
+                Write(Path.Combine(dst, "data", "backups", "frontdesk-backup-2026-10-01.json"), "{}");
+
+                Installer.CopyApp(src, dst);
+                Check("an update replaces the app", Read(Path.Combine(dst, "RotmanFrontDesk.exe")) == "new exe", null);
+                Check("an update removes what the new build dropped", !File.Exists(Path.Combine(dst, "web", "old.js")), null);
+                Check("an update keeps the records", Read(Path.Combine(dst, "data", "browser", "db")) == "records", null);
+                Check("an update keeps the backups",
+                    File.Exists(Path.Combine(dst, "data", "backups", "frontdesk-backup-2026-10-01.json")), null);
+                Check("an update leaves no staging folder", !Directory.Exists(Path.Combine(dst, ".setup-new")), null);
+
+                // A first install from a folder the desk was already being run from.
+                string used = Path.Combine(tmp, "used");
+                Write(Path.Combine(used, "RotmanFrontDesk.exe"), "exe");
+                Write(Path.Combine(used, "data", "browser", "db"), "portable records");
+                string fresh = Path.Combine(tmp, "fresh");
+                Installer.CopyApp(used, fresh);
+                Check("a first install brings the records along",
+                    Read(Path.Combine(fresh, "data", "browser", "db")) == "portable records", null);
+                Check("and makes a backups folder", Directory.Exists(Path.Combine(fresh, "data", "backups")), null);
+                Check("and leaves the source alone", File.Exists(Path.Combine(used, "data", "browser", "db")), null);
+
+                // The log.
+                string log = Path.Combine(tmp, "frontdesk.log");
+                StringBuilder big = new StringBuilder();
+                for (int i = 0; i < 3000; i++) big.Append("line " + i + "\n");
+                File.WriteAllText(log, big.ToString());
+                string tail = Paths.Tail(log, 100);
+                Check("the tail ends with the last line", tail.EndsWith("line 2999\n", StringComparison.Ordinal), tail);
+                Check("the tail starts on a whole line", tail.StartsWith("line ", StringComparison.Ordinal), tail);
+                Check("the tail is short", tail.Length <= 100, null);
+                Check("a short log is read whole", Paths.Tail(Path.Combine(tmp, "unzipped", "data", "README.txt"), 100) == "readme", null);
+                Check("a missing log reads as empty", Paths.Tail(Path.Combine(tmp, "nope.log"), 100) == "", null);
+
+                Paths.RollLog(log, 1000);
+                Check("a long log is set aside", !File.Exists(log) && File.Exists(log + ".1"), null);
+                File.WriteAllText(log, "small");
+                Paths.RollLog(log, 1000);
+                Check("a short log is left alone", File.Exists(log), null);
+            }
+            finally
+            {
+                try { Directory.Delete(tmp, true); }
+                catch { }
+            }
+        }
+
+        private static void Write(string path, string text)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, text);
+        }
+
+        private static string Read(string path)
+        {
+            return File.Exists(path) ? File.ReadAllText(path) : null;
         }
 
         /// <summary>

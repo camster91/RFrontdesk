@@ -6,7 +6,18 @@ Built for the AV counter at the Rotman School of Management (University of Toron
 
 ## What it does and why
 
-The desk lends out cables, adapters, keys and other gear all day, often from a tablet that members of the public can see and touch. Front Desk gives staff a fast checkout and returns flow behind a PIN, and gives borrowers a kiosk that can only borrow and ask to return. It needs no installer and no admin rights: unzip the folder, run the exe, and copying the folder moves the whole desk to another machine.
+The desk lends out cables, adapters, keys and other gear all day, often from a tablet that members of the public can see and touch. Front Desk gives staff a fast checkout and returns flow behind a PIN, and gives borrowers a kiosk that can only borrow and ask to return. It needs no admin rights: install it for one Windows user with a click, or just run the exe from the unzipped folder. Either way the records live in a `data` folder beside the app, so copying that folder moves the whole desk to another machine.
+
+## Getting and installing it
+
+1. **Download.** GitHub builds it: **Actions → Build →** the latest run on `main` **→ Artifacts → rotman-front-desk**. On `main` the exe is signed (see [docs/code-signing.md](docs/code-signing.md)).
+2. **Install.** Extract the zip, double-click **Install Front Desk**, click Install. It installs for you only, into `%LOCALAPPDATA%\Programs\Rotman Front Desk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
+3. **Update.** Install a newer zip the same way. The records are kept.
+4. **Uninstall.** Windows **Settings → Apps → Rotman Front Desk → Uninstall**. The records are kept unless you tick the box to delete them.
+
+For IT: `RotmanFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]` and `--uninstall --quiet [--delete-data]`. The zip's `For IT.txt` lists exactly what it writes where.
+
+The installer is built into the one exe, on purpose: a separate self-extracting setup is the shape endpoint agents (SentinelOne, CrowdStrike) delete, and a second exe would be a second file to sign.
 
 ## Key features
 
@@ -18,7 +29,7 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 - **Built for scale**: paged lists and a search tested against a catalog of ten thousand items
 - **Reports**: period summaries, a loans-over-time chart, busiest items and borrowers, untouched inventory, and CSV export with spreadsheet formula-injection protection
 - **Backups**: automatic daily backup (newest 30 kept), backup on demand, verified on write, restore that refuses invalid files and never changes the device PIN
-- **Kiosk hardening** (`--no-devtools`): DevTools disabled, navigation locked to the app's own page, shell links refused, and the setting survives a reboot via the startup entry
+- **Kiosk hardening** (`--kiosk`, or the install option): full screen with no way out of the app (no close button, Alt+F4, Escape or Exit), DevTools disabled, navigation locked to the app's own page, shell links refused, and the setting survives a reboot via the startup entry
 - **Touch-first UI** with an on-screen keyboard, dark and light themes from one set of colour tokens, and WCAG AA contrast measured against the actual painted background in both themes
 
 ## Tech stack
@@ -30,7 +41,9 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 
 ## Building
 
-On Windows, with PowerShell 7:
+GitHub does this on every push and pull request (`.github/workflows/build.yml`): fetch WebView2, build, run every test suite, sign (on `main`), package, and try install, update and uninstall from the zip. Nobody needs a build computer, and nothing is deployed.
+
+To build by hand on Windows, with PowerShell 7:
 
 ```powershell
 pwsh -File host/fetch-deps.ps1     # download the WebView2 assemblies (fresh clone)
@@ -49,10 +62,11 @@ node tools/serve.cjs               # serves web/ on 127.0.0.1
 ## Testing
 
 ```powershell
+npm ci                             # once: the test tools
 node tools/test-all.cjs
 ```
 
-Runs every suite: host bridge, host flags and navigation, toast stack, screen router, report aggregation, touch keyboard, browser UI, kiosk, layout at real widths (375 to 1440 px, touch and mouse), backup round trip, and catalog at scale. The browser suites need Microsoft Edge installed.
+Runs every suite: host bridge, host flags, setup and crash recovery, toast stack, screen router, report aggregation, touch keyboard, browser UI, kiosk, layout at real widths (375 to 1440 px, touch and mouse), backup round trip, catalog at scale, sessions, and records. The browser suites need Microsoft Edge installed.
 
 ## Project structure
 
@@ -61,6 +75,7 @@ web/      the app (index.html, js/app.js, styles.css)
 host/     the Windows wrapper (C#), build script and icon
 tools/    test suites, local dev server, icon generator, packaging script
 docs/     code review notes and code signing notes
+.github/  the GitHub build
 ```
 
 The full code review, with what was fixed and how each fix was verified, is in [docs/CODE_REVIEW.md](docs/CODE_REVIEW.md).

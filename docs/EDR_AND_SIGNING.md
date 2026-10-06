@@ -198,6 +198,13 @@ certificate: nothing trusts the root. A certificate from the U of T CA returns
 success. The test certificate and the signed copy were both deleted afterwards;
 the shipped exe was never signed with it.
 
+### Signing on GitHub
+
+The GitHub build signs on `main` with **Azure Artifact Signing**, a publicly
+trusted certificate, so it needs no certificate from IT. Setup is in
+[`code-signing.md`](code-signing.md). An IT certificate still works for a
+local build with `host\build.ps1 -Pfx`.
+
 ### Option B: allowlist this file (works today, needs IT)
 
 Give IT the path and the hash **printed by the build that is actually going to

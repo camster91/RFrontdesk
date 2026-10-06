@@ -1,0 +1,11 @@
+{
+  "name": "rotman-front-desk",
+  "private": true,
+  "description": "Test tools only. The app itself has no build step and no npm dependencies.",
+  "scripts": {
+    "test": "node tools/test-all.cjs"
+  },
+  "devDependencies": {
+    "puppeteer": "25.12.0"
+  }
+}

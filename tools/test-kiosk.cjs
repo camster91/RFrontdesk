@@ -374,7 +374,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await fill("#kiosk-return-phone", STRANGER_PHONE);
     await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
     await page.waitForSelector("#screen-kiosk-return-phone .kiosk-signin-panel", { timeout: 10000 });
-    check("an unknown number is offered sign-in rather than an empty list", true);
+    check("an unknown number is asked to check it, rather than shown an empty list", true);
     check("and never reaches the item list", (await screen()) === "screen-kiosk-return-phone", await screen());
 
     await gotoWelcome();
@@ -600,9 +600,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // that matters is a fresh page where the hold has never been used: the desk
     // button has to be enough on its own.
     //
-    // A fresh document reaches the staff home one way, by tapping the splash
-    // inside its 400ms window. A 10ms poll catches it without racing.
-    await page.evaluateOnNewDocument(() => {
+    // A tap on the splash used to land on the staff home -- names, phone
+    // numbers, checkout and check-in, with no PIN in front of them -- and the
+    // splash is what every F5 or crash-reload at the public tablet shows. It now
+    // goes where the splash's own timer goes: the kiosk.
+    const splashTap = await page.evaluateOnNewDocument(() => {
       const t = setInterval(() => {
         const s = document.getElementById("screen-splash");
         if (s && !s.classList.contains("hidden")) {
@@ -612,8 +614,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       }, 10);
     });
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 15000 });
+    await sleep(300);
+    check("a tap on the splash lands on the kiosk, not the staff home", (await screen()) === "screen-welcome", await screen());
+    await page.removeScriptToEvaluateOnNewDocument(splashTap.identifier);
+
+    // Every real route to the staff home now passes the PIN, which arms LOGIN as
+    // a side effect. The case this section exists for is a document where that
+    // never happened, so it is reached by navigating from the splash in-page --
+    // the one non-kiosk screen a fresh document starts on.
+    await page.evaluateOnNewDocument(() => {
+      const t = setInterval(() => {
+        const s = document.getElementById("screen-splash");
+        if (s && !s.classList.contains("hidden") && window.app && window.app.goToScreen) {
+          clearInterval(t);
+          window.app.goToScreen("home");
+        }
+      }, 10);
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("#screen-home:not(.hidden)", { timeout: 15000 });
-    check("a fresh page reaches the desk without the hold gesture", (await screen()) === "screen-home", await screen());
+    check("a fresh page can be put on the desk screen", (await screen()) === "screen-home", await screen());
 
     check("and the desk has its own way into the panel", (await clickIn("screen-home", "#btn-to-admin")) === "ok");
     await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });

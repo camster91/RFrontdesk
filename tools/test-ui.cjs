@@ -97,6 +97,13 @@ function startServer() {
       if (m.type() === "error") errors.push("console: " + m.text());
     });
 
+    // These checks drive the app's own on-screen keyboard, which a browser only
+    // shows when this device has asked for it (the Windows app always does).
+    await page.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("frontdesk.keyboard", "on");
+      } catch (_) {}
+    });
     await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "domcontentloaded" });
     // __appReady is set at the end of the bundle, before bootstrap() has built
     // the screens, so waiting on it alone races the app. The welcome screen is

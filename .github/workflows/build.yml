@@ -1,5 +1,9 @@
 name: Build
 
+# Builds, tests and packages Rotman Front Desk on a GitHub Windows machine, so
+# nobody needs a build computer, and signs it on main (docs/code-signing.md).
+# It deploys nothing: the zip is a download on the run page, under Artifacts.
+
 on:
   push:
   pull_request:
@@ -11,12 +15,25 @@ permissions:
 
 jobs:
   # Compiles the app into dist\ and uploads that folder unsigned.
+  # Every test suite runs here; a failure stops signing and packaging.
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # The tests drive the Edge that is already on the machine.
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install test tools
+        run: npm ci --ignore-scripts
 
       - name: Fetch WebView2 assemblies
         shell: pwsh
@@ -25,7 +42,12 @@ jobs:
       # -NoSymbols: the .pdb is for local crash reports, not for the desk zip.
       - name: Build
         shell: pwsh
-        run: ./host/build.ps1 -NoSymbols
+        run: |
+          ./host/build.ps1 -NoSymbols
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Test
+        run: node tools/test-all.cjs
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -68,7 +90,50 @@ jobs:
 
       - name: Package
         shell: pwsh
-        run: ./tools/package.ps1
+        run: |
+          ./tools/package.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Try the installer from the zip (install, update, uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run($exe, [string[]] $a) {
+            $p = Start-Process $exe -ArgumentList $a -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "$($a -join ' ') exited with $($p.ExitCode)" }
+          }
+          $unzipped = Join-Path $env:RUNNER_TEMP 'unzipped'
+          Expand-Archive (Get-Item release/*.zip).FullName $unzipped
+          $app = Join-Path $unzipped 'Rotman Front Desk'
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Rotman Front Desk'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Rotman Front Desk.lnk'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk'
+
+          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          foreach ($f in 'RotmanFrontDesk.exe', 'web\index.html', 'data\backups', 'licenses\WebView2 LICENSE.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "install is missing $f" }
+          }
+          if (-not (Test-Path $lnk)) { throw 'no Start menu shortcut' }
+          if ((Get-ItemProperty $key).InstallLocation -ne $dir) { throw 'no Apps entry' }
+          Write-Host 'install: ok'
+
+          New-Item -ItemType Directory -Force (Join-Path $dir 'data\browser') | Out-Null
+          Set-Content (Join-Path $dir 'data\browser\marker') 'records'
+          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'an update lost the records' }
+          Write-Host 'update keeps the records: ok'
+
+          Run (Join-Path $dir 'RotmanFrontDesk.exe') @('--uninstall', '--quiet')
+          if (Test-Path (Join-Path $dir 'RotmanFrontDesk.exe')) { throw 'uninstall left the exe' }
+          if (Test-Path $lnk) { throw 'uninstall left the shortcut' }
+          if (Test-Path $key) { throw 'uninstall left the Apps entry' }
+          if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'uninstall deleted the records without being asked' }
+          Write-Host 'uninstall keeps the records: ok'
+
+          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          Run (Join-Path $dir 'RotmanFrontDesk.exe') @('--uninstall', '--quiet', '--delete-data')
+          if (Test-Path $dir) { throw "uninstall --delete-data left: $((Get-ChildItem $dir -Recurse -Name) -join ', ')" }
+          Write-Host 'uninstall --delete-data removes everything: ok'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

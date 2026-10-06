@@ -15,7 +15,7 @@
   --magenta: #E6007E;
   --magenta-hover: #C5006B;
   --magenta-soft: rgba(230, 0, 126, 0.08);
-  --magenta-glow: rgba(230, 0, 126, 0.35);
+  --magenta-glow: rgba(230, 0, 126, 0.18);
   --magenta-soft-2: rgba(230, 0, 126, 0.15);
 
   /* Dark Theme Backgrounds */
@@ -160,7 +160,7 @@ body.light {
   --magenta-hover: #A80059;
   --magenta-soft: rgba(230, 0, 126, 0.08);
   --magenta-soft-2: rgba(230, 0, 126, 0.14);
-  --magenta-glow: rgba(230, 0, 126, 0.22);
+  --magenta-glow: rgba(230, 0, 126, 0.12);
 
   --bg: #f4f5f8;
   --bg-alt: #ffffff;
@@ -3086,6 +3086,15 @@ html.kbd-open .pin-input-container .pin-submit {
   margin-bottom: var(--space-4);
 }
 
+.return-report {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md, 8px);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
 .return-actions {
   display: flex;
   gap: var(--space-3);
@@ -3494,8 +3503,11 @@ html.kbd-open .pin-input-container .pin-submit {
   .kiosk-body {
     padding-top: max(var(--space-7), env(safe-area-inset-top));
     padding-bottom: max(var(--space-7), env(safe-area-inset-bottom));
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
+    /* max(), not the bare inset: the inset is 0 on most screens, and this
+       used to wipe out the side gutter, so the welcome cards ran edge to edge
+       on a phone. */
+    padding-left: max(var(--space-4), env(safe-area-inset-left));
+    padding-right: max(var(--space-4), env(safe-area-inset-right));
   }
 }
 
@@ -3596,4 +3608,162 @@ html.kbd-open .pin-input-container .pin-submit {
   text-align: center;
   font-size: 12px;
   color: #555;
+}
+
+
+/* ── 2026 polish ──────────────────────────────────────────────────────────
+   Line icons instead of emoji (which render differently on every device and
+   read as clip-art), a text column so a card's title and subtitle stay
+   together on a phone, a PIN field that belongs to the dark card it sits in,
+   and calmer queue rows. */
+.kiosk-icon,
+.btn-icon,
+.kiosk-done-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.kiosk-icon svg {
+  width: 64px;
+  height: 64px;
+  color: var(--magenta);
+}
+.btn-icon svg {
+  width: 40px;
+  height: 40px;
+}
+.kiosk-done-icon svg {
+  width: 88px;
+  height: 88px;
+  color: var(--success-text);
+}
+.kiosk-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+.kiosk-label {
+  letter-spacing: -0.01em;
+}
+.kiosk-sub {
+  font-size: 15px;
+}
+.btn-kiosk {
+  border-width: 1px;
+}
+/* Two equal cards side by side wherever there is room. They used to size to
+   their text, so a longer label ("Return something") pushed the pair past the
+   row's max-width and stacked them, running the second off a tablet screen. */
+@media (min-width: 601px) {
+  .kiosk-actions {
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+  .btn-kiosk {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 380px;
+  }
+}
+.btn-label {
+  letter-spacing: -0.01em;
+}
+
+@media (max-width: 600px) {
+  .btn-kiosk {
+    min-height: 112px;
+    padding: var(--space-4) var(--space-5);
+    justify-content: flex-start;
+  }
+  .kiosk-text {
+    align-items: flex-start;
+  }
+  .kiosk-icon svg {
+    width: 40px;
+    height: 40px;
+  }
+  .kiosk-sub {
+    font-size: 14px;
+  }
+  .btn-icon svg {
+    width: 32px;
+    height: 32px;
+  }
+  .kiosk-done-icon svg {
+    width: 64px;
+    height: 64px;
+  }
+}
+
+/* The PIN field had no background of its own, so it was a browser-white box
+   on a dark card, with the placeholder letter-spaced into "E n t e r  P I N". */
+.pin-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: inherit;
+  outline: none;
+}
+.pin-input::placeholder {
+  letter-spacing: normal;
+  color: var(--text-muted);
+}
+.pin-input:focus {
+  border-color: var(--magenta);
+  box-shadow: 0 0 0 3px var(--magenta-soft-2);
+}
+.login-title {
+  margin-bottom: var(--space-1);
+}
+.login-sub {
+  color: var(--text-muted);
+  font-size: 15px;
+  margin: 0 0 var(--space-5);
+}
+html.kbd-open .login-sub {
+  display: none;
+}
+
+/* Queue rows: who and when on one quiet line under the item, not three
+   monospace fragments that wrapped into each other on a phone. */
+.queue-borrower {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+.queue-meta {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.queue-warning {
+  color: var(--warning-text);
+  font-style: normal;
+}
+
+/* The admin header's Lock sits at the far end, away from "Front desk". */
+#screen-admin .screen-header [data-action="admin-back"] {
+  margin-left: var(--space-3);
+  flex-shrink: 0;
+}
+/* Where the counts cannot share the row, they drop beneath it and Lock stays
+   up top beside the title, instead of wrapping onto a line of its own. */
+@media (max-width: 900px) {
+  #screen-admin .screen-header .screen-title {
+    flex: 1 1 auto;
+  }
+  #screen-admin .screen-header .admin-stats {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+}
+@media (min-width: 601px) {
+  .btn-kiosk {
+    padding: var(--space-6) var(--space-5);
+  }
 }
