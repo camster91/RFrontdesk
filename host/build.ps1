@@ -43,13 +43,7 @@ param(
     [string] $PfxPassword = '',
 
     # RFC 3161 timestamp server, used only when signing.
-    [string] $TimestampUrl = 'http://timestamp.digicert.com',
-
-    # Accept a signature whose root this machine does not trust. For the GitHub
-    # build: its Windows machines do not have the University of Toronto root,
-    # so a correct signature reads "UnknownError" there and "Valid" on a desk.
-    # Still refuses a signature that is missing or not made by -Pfx/-Sign.
-    [switch] $AllowUntrustedRoot = $false
+    [string] $TimestampUrl = 'http://timestamp.digicert.com'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -340,14 +334,7 @@ if ($cert) {
     }
 
     $sig = Get-AuthenticodeSignature $exePath
-    if ($sig.Status -ne 'Valid') {
-        $ours = $sig.SignerCertificate -and ($sig.SignerCertificate.Thumbprint -eq $cert.Thumbprint)
-        if ($AllowUntrustedRoot -and $ours -and $sig.Status -eq 'UnknownError') {
-            Say "signed; this machine does not trust the certificate's root, desks that do see it as valid"
-        } else {
-            Fail "Signed, but the signature does not verify: $($sig.Status) $($sig.StatusMessage)"
-        }
-    }
+    if ($sig.Status -ne 'Valid') { Fail "Signed, but the signature does not verify: $($sig.Status) $($sig.StatusMessage)" }
     Say "signature: $($sig.SignerCertificate.Subject)"
     # A signature without a timestamp stops verifying the day the certificate
     # expires, and every installed copy starts being flagged again. Worth saying

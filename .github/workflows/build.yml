@@ -1,39 +1,32 @@
-name: Build Windows app
+name: Build
 
 # Builds, tests and packages Rotman Front Desk on a GitHub Windows machine, so
-# nobody needs a build computer. It signs the exe when a certificate has been
-# added as a secret (see docs/EDR_AND_SIGNING.md, "Signing on GitHub").
-#
-# It never deploys or publishes anything by itself:
-#   - every run puts the zip on its run page, under Artifacts;
-#   - pushing a version tag (v1.2.3) also makes a DRAFT release, which stays
-#     hidden until a person presses Publish.
+# nobody needs a build computer, and signs it on main (docs/code-signing.md).
+# It deploys nothing: the zip is a download on the run page, under Artifacts.
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
+# Third-party actions are pinned to exact commits (tag in the comment).
 permissions:
   contents: read
-
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write # Azure sign-in without stored secrets (OIDC), used only for code signing.
     timeout-minutes: 30
     env:
       # The tests drive the Edge that is already on the machine.
       PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -41,46 +34,53 @@ jobs:
       - name: Install test tools
         run: npm ci --ignore-scripts
 
-      - name: Fetch WebView2
+      - name: Fetch WebView2 assemblies
         shell: pwsh
         run: ./host/fetch-deps.ps1
 
-      - name: Take the version from the tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      # -NoSymbols: the .pdb is for local crash reports, not for the desk zip.
+      - name: Build
         shell: pwsh
         run: |
-          $v = $env:GITHUB_REF_NAME.TrimStart('v')
-          if ($v -notmatch '^\d+\.\d+\.\d+$') { Write-Error "Tag must look like v1.2.3, not $env:GITHUB_REF_NAME"; exit 1 }
-          (Get-Content host/AssemblyInfo.cs -Raw) -replace '"\d+\.\d+\.\d+\.\d+"', "`"$v.0`"" |
-            Set-Content host/AssemblyInfo.cs -NoNewline
-          (Get-Content host/FrontDesk.cs -Raw) -replace 'Version = "\d+\.\d+\.\d+"', "Version = `"$v`"" |
-            Set-Content host/FrontDesk.cs -NoNewline
-          Write-Host "version $v"
-
-      - name: Build, and sign when a certificate is set up
-        shell: pwsh
-        env:
-          PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
-          PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
-        run: |
-          if ($env:PFX_BASE64) {
-            if (-not $env:PFX_PASSWORD) { Write-Error "SIGNING_PFX_PASSWORD is not set."; exit 1 }
-            $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
-            try {
-              ./host/build.ps1 -NoSymbols -Pfx $pfx -PfxPassword $env:PFX_PASSWORD -AllowUntrustedRoot
-            } finally {
-              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
-            }
-          } else {
-            Write-Host "::warning::No signing certificate is set up, so this build is unsigned. See docs/EDR_AND_SIGNING.md."
-            ./host/build.ps1 -NoSymbols
-          }
+          ./host/build.ps1 -NoSymbols
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Test
         run: node tools/test-all.cjs
 
+      # Code signing (Azure Artifact Signing). Runs only on main and only once the
+      # AZURE_* repository variables exist; see docs/code-signing.md. Until then
+      # the build still runs and produces an unsigned zip.
+      - name: Sign in to Azure (code signing)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign RotmanFrontDesk.exe
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\RotmanFrontDesk.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signature
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/RotmanFrontDesk.exe
+          $sig | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+          if ($sig.Status -ne 'Valid') { throw "RotmanFrontDesk.exe signature is $($sig.Status)" }
+
+      # Packaged after signing: the zip's For IT.txt records the exe's hash and
+      # signature, so it has to describe the signed binary.
       - name: Package
         shell: pwsh
         run: |
@@ -128,28 +128,8 @@ jobs:
           if (Test-Path $dir) { throw "uninstall --delete-data left: $((Get-ChildItem $dir -Recurse -Name) -join ', ')" }
           Write-Host 'uninstall --delete-data removes everything: ok'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Rotman-Front-Desk
+          name: rotman-front-desk
           path: release/*.zip
           if-no-files-found: error
-
-  draft-release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: Rotman-Front-Desk
-          path: release
-
-      - name: Make a draft release (a person publishes it)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "$GITHUB_REF_NAME" release/*.zip
-          --repo "$GITHUB_REPOSITORY" --draft --generate-notes
-          --title "Rotman Front Desk $GITHUB_REF_NAME"

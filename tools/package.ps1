@@ -66,14 +66,14 @@ Say "exe sha256 $hash"
 # Read off the exe, so For IT.txt says what is true of this build. It used to
 # say "Signed: no" whatever the build was.
 $sig = Get-AuthenticodeSignature $exe
-# Signed means a signature is there. Whether it shows as Valid depends on the
-# machine trusting the root: the GitHub build machine does not have the
-# University of Toronto root, the desks do.
+# Signed means a signature is there; Valid also needs the machine to trust its
+# root. (An Azure Artifact Signing certificate is trusted everywhere; one from
+# the University's own CA only on its domain machines.)
 $signed = [bool]$sig.SignerCertificate
 if ($signed) {
     $signedLine = "yes, by $($sig.SignerCertificate.Subject)"
     if ($sig.TimeStamperCertificate) { $signedLine += ", timestamped" }
-    if ($sig.Status -ne 'Valid') { $signedLine += " (shown as $($sig.Status) on the build machine, which does not trust the root)" }
+    if ($sig.Status -ne 'Valid') { $signedLine += " (shown as $($sig.Status) on the build machine)" }
 } else {
     $signedLine = "no ($($sig.Status))"
 }
@@ -210,7 +210,8 @@ A. Sign it. A code-signing certificate from the University of Toronto Certificat
    Authority is enough, because that root is already trusted on domain machines.
    Ask for: Digital Signature key usage, Extended Key Usage Code Signing
    (1.3.6.1.5.5.7.3.3), delivered as a .pfx including the private key, SHA-256.
-   The GitHub build signs every release with it once it is added as a secret.
+   (The GitHub build signs with Azure Artifact Signing instead, once it is set
+   up: see docs\code-signing.md.)
 
 B. Allowlist it in the SentinelOne console as a false positive, and attach the
    exe. Prefer the console route over a per-hash entry: every build is a

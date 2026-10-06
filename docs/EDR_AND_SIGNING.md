@@ -200,33 +200,10 @@ the shipped exe was never signed with it.
 
 ### Signing on GitHub
 
-The GitHub build (`.github/workflows/build.yml`) signs every build once the
-certificate is stored as two repository secrets. Nothing else changes, and the
-certificate never sits on anyone's computer after this.
-
-1. On any Windows machine, turn the `.pfx` into text:
-
-   ```powershell
-   [Convert]::ToBase64String([IO.File]::ReadAllBytes("codesign.pfx")) | Set-Clipboard
-   ```
-
-2. On GitHub: the repo → **Settings → Secrets and variables → Actions → New
-   repository secret**.
-   - `SIGNING_PFX_BASE64` — paste the clipboard.
-   - `SIGNING_PFX_PASSWORD` — the `.pfx` password.
-3. Delete the clipboard copy and keep the `.pfx` wherever IT wants it kept.
-4. Run the build (Actions → *Build Windows app* → Run workflow). The log says
-   `signature: CN=...`, and `For IT.txt` in the zip says `Signed : yes, by ...`.
-
-The build writes the `.pfx` to the runner's temp folder, signs, and deletes it;
-GitHub's machines are wiped after every run. Secrets are not given to pull
-requests from forks, so a fork cannot sign anything.
-
-GitHub's machines do not trust the University of Toronto root, so the build
-runs with `-AllowUntrustedRoot`: there, a correct signature reads `UnknownError`
-instead of `Valid`. It still fails if the signature is missing or was made by
-any certificate but this one. On a desk machine, which trusts the root, the
-same signature reads `Valid`.
+The GitHub build signs on `main` with **Azure Artifact Signing**, a publicly
+trusted certificate, so it needs no certificate from IT. Setup is in
+[`code-signing.md`](code-signing.md). An IT certificate still works for a
+local build with `host\build.ps1 -Pfx`.
 
 ### Option B: allowlist this file (works today, needs IT)
 

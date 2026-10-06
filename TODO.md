@@ -4,12 +4,12 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 
 ## Before shipping
 
-- [x] **Build and test on Windows** — GitHub does it now, on every pull request
-      (Actions → *Build Windows app*). No build computer needed.
+- [x] **Build and test on Windows** — GitHub does it now, on every push and pull
+      request (Actions → *Build*). No build computer needed.
 - [ ] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
       Mark it ready for review first; it is still a draft.
-- [ ] **Download the zip** from the latest run's Artifacts, or tag `v1.0.0` for a
-      draft release, and try *Install Front Desk* on a real desk.
+- [ ] **Download the zip** from the latest run's Artifacts and try
+      *Install Front Desk* on a real desk.
 
 ## Setting up a desk
 
@@ -26,8 +26,8 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 - [x] **The web version is retired.** desk.rotmanav.ca, its routes and its sign-in
       are gone, and the homepage no longer lists Front Desk.
 - [ ] **Get a code-signing certificate** so endpoint security tools trust the exe.
-      See `docs/EDR_AND_SIGNING.md`. Then add it to GitHub as two secrets,
-      `SIGNING_PFX_BASE64` and `SIGNING_PFX_PASSWORD`, and every build is signed.
+      The GitHub build signs on `main` with Azure Artifact Signing once its six
+      `AZURE_*` variables are set; see `docs/code-signing.md`.
 
 ## Remaining fixes (lower priority)
 
