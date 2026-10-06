@@ -1,8 +1,8 @@
-# RFrontdesk (Rotman Front Desk)
+# RFrontdesk (RFrontDesk)
 
 An equipment loan desk as a portable Windows app: staff check items in and out, borrowers use a locked-down self-service kiosk, and everything (records, backups, log) lives in one folder you can copy.
 
-Built for the AV counter at the Rotman School of Management (University of Toronto).
+Built to replace a paper sign-out sheet at an equipment desk.
 
 ## What it does and why
 
@@ -10,12 +10,12 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 
 ## Getting and installing it
 
-1. **Download.** GitHub builds it: **Actions → Build →** the latest run on `main` **→ Artifacts → rotman-front-desk**. On `main` the exe is signed (see [docs/code-signing.md](docs/code-signing.md)).
-2. **Install.** Extract the zip, double-click **Install Front Desk**, click Install. It installs for you only, into `%LOCALAPPDATA%\Programs\Rotman Front Desk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
+1. **Download.** GitHub builds it: **Actions → Build →** the latest run on `main` **→ Artifacts → rfrontdesk**. On `main` the exe is signed (see [docs/code-signing.md](docs/code-signing.md)).
+2. **Install.** Extract the zip, double-click **Install Front Desk**, click Install. It installs for you only, into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
 3. **Update.** Install a newer zip the same way. The records are kept.
-4. **Uninstall.** Windows **Settings → Apps → Rotman Front Desk → Uninstall**. The records are kept unless you tick the box to delete them.
+4. **Uninstall.** Windows **Settings → Apps → RFrontDesk → Uninstall**. The records are kept unless you tick the box to delete them.
 
-For IT: `RotmanFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]` and `--uninstall --quiet [--delete-data]`. The zip's `For IT.txt` lists exactly what it writes where.
+For IT: `RFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]` and `--uninstall --quiet [--delete-data]`. The zip's `For IT.txt` lists exactly what it writes where.
 
 The installer is built into the one exe, on purpose: a separate self-extracting setup is the shape endpoint agents (SentinelOne, CrowdStrike) delete, and a second exe would be a second file to sign.
 

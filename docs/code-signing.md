@@ -1,6 +1,6 @@
 # Code signing (Azure Artifact Signing)
 
-GitHub builds `RotmanFrontDesk.exe` on every push (`.github/workflows/build.yml`) and, on `main`, signs it with **Azure Artifact Signing** (formerly "Trusted Signing"). The signed zip is attached to each run under **Actions → Build → Artifacts → rotman-front-desk**.
+GitHub builds `RFrontDesk.exe` on every push (`.github/workflows/build.yml`) and, on `main`, signs it with **Azure Artifact Signing** (formerly "Trusted Signing"). The signed zip is attached to each run under **Actions → Build → Artifacts → rfrontdesk**.
 
 Signing goes through the shared workflow in the Rclicker repo (`camster91/Rclicker/.github/workflows/sign-windows.yml`), which every one of camster91's Windows apps uses. The Azure IDs live in that one file, so this repository stores no secrets and no Azure variables. GitHub signs in to Azure with a short-lived OIDC token.
 
@@ -9,8 +9,8 @@ This is the cloud alternative to option A in `EDR_AND_SIGNING.md` (a certificate
 ## How the build works
 
 1. **build** compiles into `dist\\` and uploads it unsigned as the artifact `rfrontdesk-windows`.
-2. **sign** (only on `main`) calls the shared workflow. It signs and verifies `RotmanFrontDesk.exe` and uploads `rfrontdesk-windows-signed`.
-3. **package** runs `tools/package.ps1` on the signed folder, or on the unsigned one for other branches, and uploads the zip as `rotman-front-desk`. It runs after signing so `For IT.txt` records the signed exe's hash.
+2. **sign** (only on `main`) calls the shared workflow. It signs and verifies `RFrontDesk.exe` and uploads `rfrontdesk-windows-signed`.
+3. **package** runs `tools/package.ps1` on the signed folder, or on the unsigned one for other branches, and uploads the zip as `rfrontdesk`. It runs after signing so `For IT.txt` records the signed exe's hash.
 
 If signing fails on `main`, nothing is packaged, so an unsigned zip can never pass for a signed one.
 
@@ -29,7 +29,7 @@ For the Azure account itself (subscription, signing account, identity check, cer
 
 - The shared workflow's **Verify signatures** step fails the run if the signature isn't valid.
 - `For IT.txt` inside the zip shows `Signed  : yes, by <publisher>` and the exe's SHA-256.
-- On Windows: right-click `RotmanFrontDesk.exe` → **Properties** → **Digital Signatures**.
+- On Windows: right-click `RFrontDesk.exe` → **Properties** → **Digital Signatures**.
 
 ## Troubleshooting
 
@@ -39,6 +39,6 @@ For the Azure account itself (subscription, signing account, identity check, cer
 
 ## Notes
 
-- Only `RotmanFrontDesk.exe` is signed. The WebView2 DLLs are already signed by Microsoft.
+- Only `RFrontDesk.exe` is signed. The WebView2 DLLs are already signed by Microsoft.
 - The certificate names whoever passed the Azure identity check (you, or Ashbi if you verified as an organization). It is publicly trusted, so it works on any Windows PC, not just domain machines.
 - A new certificate can still see a SmartScreen prompt for a short while until downloads build reputation. Endpoint agents usually trust a valid, timestamped signature much sooner.

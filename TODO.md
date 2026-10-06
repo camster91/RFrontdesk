@@ -6,8 +6,7 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 
 - [x] **Build and test on Windows** — GitHub does it now, on every push and pull
       request (Actions → *Build*). No build computer needed.
-- [ ] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
-      Mark it ready for review first; it is still a draft.
+- [x] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
 - [ ] **Download the zip** from the latest run's Artifacts and try
       *Install Front Desk* on a real desk.
 
@@ -21,28 +20,22 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 
 ## Outside this app
 
-- [x] **The rotmanav.ca homepage** works (the `rotmanav-hub` Worker).
-- [x] **Leftover subdomains** `admin.`, `ai.` and `app.rotmanav.ca` go to the homepage.
-- [x] **The web version is retired.** desk.rotmanav.ca, its routes and its sign-in
-      are gone, and the homepage no longer lists Front Desk.
-- [ ] **Code signing: merge camster91/Rclicker#21.** The build here is ready
-      (#14), but Rclicker's shared signing workflow on `main` is still the old
-      one, which looks for `AZURE_*` settings this repo no longer has, so builds
-      come out unsigned. Once #21 is merged, the next build on `main` is signed.
-      See `docs/code-signing.md`.
+- [x] **Code signing.** Every build on `main` is signed with Azure Artifact
+      Signing through the shared Rclicker workflow; the first signed build is
+      run 37467605234. See `docs/code-signing.md`.
 
-## Remaining fixes (lower priority)
+## Remaining fixes
 
-Details in `docs/CODE_REVIEW.md`, under "Found, not fixed".
+All done. Details in `docs/CODE_REVIEW.md`, under "The last seven".
 
 **App**
-- [ ] A dismissed duplicate group comes back after one checkout.
-- [ ] Two places can lose a setting or alias if two writes happen at once.
-- [ ] All loans: the date filter misses older loans on a busy desk (1,000 cap).
-- [ ] People → "Merge with…" only offers the first ten people.
-- [ ] Editing an item or person allows an empty name.
-- [ ] People says "No people yet" when a search just finds nothing.
-- [ ] Settings → Import replaces everything without asking first.
+- [x] A dismissed duplicate group comes back after one checkout.
+- [x] Two places can lose a setting or alias if two writes happen at once.
+- [x] All loans: the date filter misses older loans on a busy desk (1,000 cap).
+- [x] People → "Merge with…" only offers the first ten people.
+- [x] Editing an item or person allows an empty name.
+- [x] People says "No people yet" when a search just finds nothing.
+- [x] Settings → Import replaces everything without asking first.
 
 **Windows app and packaging** — all done
 - [x] An old startup entry is never updated to the current command.

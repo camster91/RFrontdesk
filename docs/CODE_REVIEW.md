@@ -1,7 +1,7 @@
 # Front Desk — Code Review
 
 Date: 2026-09-18
-Subject: `frontdesk.html` (Rotman Front Desk, single-file build, Jun 10 2026)
+Subject: `frontdesk.html` (RFrontDesk, single-file build, Jun 10 2026)
 Method: static read of the split source (`web/js/app.js`), three parallel reviewers
 covering the data layer + flows, the interaction layer, and the admin/kiosk/backup
 surfaces.
@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 760 checks, all green) —
+covered by `node tools/test-all.cjs` (**thirteen** suites, 780 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -106,7 +106,7 @@ visibility by class/DOM, never by a computed style a transition touches.
 | H1 schema mismatch silently wipes the database | `openDB` now salvages first: `_salvageStores` reads every surviving store into memory, the database is recreated, `_restoreSalvage` puts the records back into the stores the new schema still has. A `localStorage` report (`_recordRecoveryReport` / `takeRecoveryReport`) records how many records carried over and how many were dropped, and bootstrap toasts it with a "take a backup" prompt. | Runtime: staged a version-3 database holding items/borrowers/loans/settings but **no `requests`** store. Reload produced `stores: [borrowers, items, loans, requests, settings]` with the seeded "Survivor Item" intact — recovered, not wiped. |
 | H2 `onversionchange` nulls without `close()` | The handler now calls `close()` before nulling, so another tab — or this app after a future schema bump — can actually upgrade or delete. | Static; verified by the H1 test's recreate path reaching completion rather than tripping `onblocked`. |
 | H3 three unescaped DB values in `innerHTML` | `_makeClosedLoanRow` escapes `conditionIn` (its colour was already whitelisted); the loan-hours input coerces via `Number(settings.defaultLoanHours) || 8`; both `data-request-id` sites coerce via `Number(req.id)`. | Static. Worth doing because Import writes records verbatim (A4), so an edited backup was a real injection path. |
-| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under `TZ=America/Toronto` plus live filtering in the app. |
+| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under an Eastern-time `TZ` plus live filtering in the app. |
 | **`getSettings` could revert the staff PIN** (exposed *by* the H1 work) | Settings live under the key `1`, but a rebuilt or older database can hold a real settings record under another key. `getSettings` treated that as "no settings" and wrote defaults — silently reverting the staff PIN, loan duration and theme while the user's actual settings sat unread in the same store. It now adopts an existing record (`existing.find(s => s && s.pin) \|\| existing[0]`), re-keys it to `id: 1`, and deletes the leftovers. | Runtime: with `{id: 'legacy', pin: '4321', defaultLoanHours: 12, theme: 'light'}` staged, the result was a single `{id: 1, pin: '4321', hours: 12, theme: 'light'}` and `<body>` actually carried the `light` class — the adopted record was read, not just stored. |
 
 The recovery toast was confirmed separately by staging the `localStorage` marker
@@ -534,7 +534,7 @@ persistent backup folder.
 ### F3. Backup filenames use UTC dates **[REVIEWED]**
 
 `dateStamp()` uses `toISOString().slice(0,10)` (`app.js:3732-3734`), so backups
-after 8pm Toronto are named with tomorrow's date, and two backups in that window
+after 8pm Eastern are named with tomorrow's date, and two backups in that window
 overwrite each other in a directory. The filename is otherwise safe — only
 `[0-9-]` from the ISO date reaches it, no user input.
 
@@ -697,7 +697,7 @@ on submit.
   validation (A4), so a shared or edited backup can inject markup. Every other
   render path checked does escape, including attributes.
 - **H4 [REVIEWED]** Date filters are UTC-anchored (`app.js:5047-5048`,
-  `app.js:5072-5073`), so a Toronto filter of Sep 1 includes loans from Aug 31 8pm
+  `app.js:5072-5073`), so an Eastern-time filter of Sep 1 includes loans from Aug 31 8pm
   onward.
 - **H5 [FIXED]** Clipboard fallback reports success it cannot know
   (`app.js:5467-5486`) — the `execCommand` boolean return is discarded and "Copied"
@@ -1224,7 +1224,7 @@ without knowing a theme exists. Two values are not simple inversions:
 - **`--magenta` is deepened to `#C40069`.** Brand magenta `#E6007E` on white is
   4.46:1 — under the 4.5:1 WCAG AA floor for normal text — and it is used as a
   text colour in 30 places (active tabs, badges, the recent-kiosk strip's item
-  names). `#C40069` is 5.9:1 and still reads as the Rotman colour. Dark keeps the
+  names). `#C40069` is 5.9:1 and still reads as the brand colour. Dark keeps the
   pure brand value.
 - **Shadows are rebuilt.** The dark set is a black glow, which is depth on a
   near-black page and dirt on a white one.
@@ -1723,8 +1723,8 @@ taken out — scale and glow carry it alone. `pulse-glow` is left intact for
 
 ### The mark was invisible on four screens
 
-The Rotman mark is one shared SVG — the `data:image/svg+xml` URI in
-`index.html`'s `__ROT_LOGO` has `fill="none"` on its root and `fill="#fff"` on
+The brand mark is one shared SVG — the `data:image/svg+xml` URI in
+`index.html`'s `__LOGO` has `fill="none"` on its root and `fill="#fff"` on
 its only group — painted into nine `<img data-logo>` placements. White artwork.
 Every one of the nine sits on `--surface` or `--bg`, and on the light theme those
 are `#ffffff` and `#f4f5f8`:
@@ -1880,7 +1880,7 @@ and `tel:`, `sms:` and `mailto:` are handed to Windows on an ordinary install an
 **refused** on a `--no-devtools` install, which is the locked-down one. Everything
 refused is logged with the URL that was refused.
 
-Runtime evidence, not just unit checks: launching `dist\RotmanFrontDesk.exe
+Runtime evidence, not just unit checks: launching `dist\RFrontDesk.exe
 --minimized --no-devtools` produced no `blocked navigation` or `navigation failed`
 lines, and the page's own IndexedDB directory
 (`…/IndexedDB/https_frontdesk.local_0.indexeddb.leveldb/`) was written during that
@@ -2008,29 +2008,11 @@ code before it.
 | R7 | The on-screen keys ignored `maxlength` (12 digits into the 8-digit PIN field). | Enforced. The two kiosk phone fields allow 16, so a leading 1 still fits. |
 | R8 | The kiosk kept the last ten digits of whatever was typed, so a double-tapped digit became someone else's valid number. | Exactly ten digits (after a leading 1) or it is refused; the return field's formatter keeps the first ten, not the last. |
 
-### Found, not fixed
+### Found, not fixed -- now fixed
 
-Each was reproduced or traced in the source by the read that found it.
+All seven are fixed; see *The last seven* below. Host, keyboard and packaging:
+all five fixed -- see *Install, uninstall and a GitHub build* below.
 
-Data layer:
-
-- A dismissed near-duplicate group comes back after one checkout: its key is
-  `group[0]`, the busiest member, which changes with use.
-- `addItemAlias` and `updateSettings` read and write in separate transactions,
-  so a concurrent write is lost (in the worst case a PIN change undone by a
-  background `lastDedupAt` write).
-
-Screens:
-
-- The All Loans date filter runs after a 1,000-loan cap, so older ranges show
-  nothing on a busy desk while the export (capped at 100,000) has them.
-- "Merge with…" on a person offers the first ten people, archived ones included.
-- `_editItem`/`_editBorrower` save an empty name; People says "No people yet"
-  when a search matches nothing; Settings → Import replaces everything without
-  the confirmation the host's Restore asks for.
-
-Host, keyboard, packaging: all five fixed — see *Install, uninstall and a
-GitHub build* below.
 
 ### Fixed when the app became Windows-only (2026-10-06)
 
@@ -2082,7 +2064,7 @@ The five host and packaging findings above, fixed:
 New:
 
 - **Install and uninstall, built into the exe** (`Installer`): per user into
-  `%LOCALAPPDATA%\Programs\Rotman Front Desk`, Start menu and desktop
+  `%LOCALAPPDATA%\Programs\RFrontDesk`, Start menu and desktop
   shortcuts, an Apps entry, options for a public tablet and start-with-Windows,
   silent switches for IT. Updating keeps `data`; uninstalling keeps it unless
   asked. Running setup closes a running copy through a named event, which even a
@@ -2096,6 +2078,66 @@ Checked here with Mono `mcs -langversion:5` and the WebView2 reference
 assemblies: the host compiles, and the host suite's four modes ran 91 checks,
 none failed (parse 68, plain 3, kiosk 5, files 15). The PowerShell scripts were
 parse-checked with PowerShell 7. The first real Windows build is the GitHub run.
+
+### Against the paper sheet it replaces (2026-10-06)
+
+The desk used a paper sheet: name, item, time out, signature; time in when it
+came back. Walking the kiosk at tablet size from a fresh install, as a
+borrower would, found five places where the app was worse than the paper:
+
+- **A return could be lost without a word.** Tapping an item opened a "Return
+  this item?" dialog, then put "Is it in good shape?" *below* the screen's big
+  Done button. Tapping Done there -- the obvious next move -- left with
+  nothing recorded: the item stayed out, and the borrower thought it was
+  handed in. It is now one question over the screen (*All good, hand it in* /
+  *Something's wrong* / *Cancel*), and Done cannot be pressed until it is
+  answered. Three taps per item became two.
+- **"Borrow it" refused new items.** On a new desk nothing is on the list yet,
+  so every first borrow typed a name, pressed the big button, and was told
+  "not on the list -- tap Add below". The button now says *Add "HDMI cable"
+  and borrow it* when that is the only way forward, and does it. Enter still
+  never adds anything.
+- **One item per visit.** A paper line can list two things; the kiosk asked
+  for the phone number again for each. The confirmation now has *Borrow
+  something else*, which goes straight back to the item step for the same
+  person, and only while that screen is up.
+- **Messages carried over to the next person**, including an error from the
+  last borrower and a "Backup saved" notice on the public welcome screen.
+  Messages are cleared when a borrow completes and when the kiosk goes back
+  to its welcome screen, and automatic backup notices are kept off the public
+  screens (a failure there goes to the log; staff still see it on theirs).
+- **Typed names lost their capitals**: "HDMI cable" became "Hdmi Cable" and
+  McDonald became Mcdonald (issue 4). Only words typed all in lower case are
+  changed now; a whole line typed in capitals is still softened.
+
+What paper did that the app still does not: a signature. The phone number is
+the identity, as before.
+
+### The last seven (2026-10-06)
+
+The seven left in *Found, not fixed*, each with a check in
+`tools/test-records.cjs` (or `test-restore.cjs` for Import), and the two
+data-layer ones confirmed to fail against the old code:
+
+- **A dismissed duplicate group stays dismissed.** The dismissal was looked up
+  under the busiest member's name, which a checkout can change. It now counts
+  if the exact set of items was dismissed under any member's name, and new
+  dismissals are stored under the alphabetically first name, which does not
+  move.
+- **Settings and aliases no longer lose a write.** `updateSettings` and
+  `addItemAlias` read and wrote in two transactions, so a write landing in
+  between was undone. Each is one transaction now, applied to the record as it
+  is at that moment.
+- **All loans finds old ranges.** The date range is applied to every loan and
+  then the first 200 are shown; the 1,000 cap that came first is gone.
+- **Merge with… lists everyone**, sorted, with a search box, and leaves
+  archived people out. It offered the first ten the store returned.
+- **A blank name is refused** when editing an item or a person; the old name is
+  kept and the desk is told.
+- **People says "Nobody matches"** for a search that finds no one, and a phone
+  number typed with dashes matches.
+- **Settings → Import asks first**, naming the file and how much is in it, as
+  Restore always has. A file that is not a backup is refused without asking.
 
 ---
 

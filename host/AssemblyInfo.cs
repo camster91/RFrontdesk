@@ -14,11 +14,11 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-[assembly: AssemblyTitle("Rotman Front Desk")]
+[assembly: AssemblyTitle("RFrontDesk")]
 [assembly: AssemblyDescription("Equipment checkout and returns for the front desk.")]
-[assembly: AssemblyProduct("Rotman Front Desk")]
-[assembly: AssemblyCompany("Rotman School of Management")]
-[assembly: AssemblyCopyright("Rotman School of Management")]
+[assembly: AssemblyProduct("RFrontDesk")]
+[assembly: AssemblyCompany("RFrontDesk")]
+[assembly: AssemblyCopyright("RFrontDesk")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]

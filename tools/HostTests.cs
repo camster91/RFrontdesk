@@ -138,7 +138,7 @@ namespace FrontDeskHost
             Check("a phone number is a shell link", MainForm.IsShellScheme("tel:+14165551234"), null);
             Check("a text message is a shell link", MainForm.IsShellScheme("sms:+14165551234"), null);
             Check("an email address is a shell link",
-                MainForm.IsShellScheme("mailto:desk@rotman.utoronto.ca"), null);
+                MainForm.IsShellScheme("mailto:desk@example.org"), null);
             Check("shell schemes are matched without regard to case",
                 MainForm.IsShellScheme("TEL:+14165551234"), null);
             Check("a page is not a shell link",
@@ -167,14 +167,14 @@ namespace FrontDeskHost
             Check("--no-desktop is not mistaken for a misspelt lock flag", !inst.Unknown.Contains("--no-desktop"), null);
 
             // The startup entry.
-            string exe = @"C:\Users\desk\AppData\Local\Programs\Rotman Front Desk\RotmanFrontDesk.exe";
-            string other = @"E:\Front Desk\RotmanFrontDesk.exe";
+            string exe = @"C:\Users\desk\AppData\Local\Programs\RFrontDesk\RFrontDesk.exe";
+            string other = @"E:\Front Desk\RFrontDesk.exe";
             Func<string, bool> allExist = delegate(string f) { return true; };
             Func<string, bool> noneExist = delegate(string f) { return false; };
             Check("the exe is read out of a quoted entry",
                 Autostart.ExeOf("\"" + exe + "\" --minimized") == exe, null);
             Check("the exe is read out of an unquoted entry",
-                Autostart.ExeOf(@"C:\fd\RotmanFrontDesk.exe --minimized") == @"C:\fd\RotmanFrontDesk.exe", null);
+                Autostart.ExeOf(@"C:\fd\RFrontDesk.exe --minimized") == @"C:\fd\RFrontDesk.exe", null);
             Check("no entry is left alone", Autostart.Repair(null, exe, true, allExist) == null, null);
             Check("an up-to-date entry is left alone",
                 Autostart.Repair(Autostart.CommandFor(exe, true), exe, true, allExist) == null, null);
@@ -234,7 +234,7 @@ namespace FrontDeskHost
             Check("a subfolder is inside", Installer.IsInside(Path.Combine(root, "data"), root), null);
             Check("a sibling with the same prefix is not inside", !Installer.IsInside(root + "-old", root), null);
             Check("the install folder is per-user",
-                Installer.DefaultInstallDir().EndsWith(Path.Combine("Programs", "Rotman Front Desk"), StringComparison.Ordinal),
+                Installer.DefaultInstallDir().EndsWith(Path.Combine("Programs", "RFrontDesk"), StringComparison.Ordinal),
                 Installer.DefaultInstallDir());
         }
 
@@ -249,18 +249,18 @@ namespace FrontDeskHost
             {
                 // A new build, with a clean data folder.
                 string src = Path.Combine(tmp, "unzipped");
-                Write(Path.Combine(src, "RotmanFrontDesk.exe"), "new exe");
+                Write(Path.Combine(src, "RFrontDesk.exe"), "new exe");
                 Write(Path.Combine(src, "web", "index.html"), "new page");
                 Write(Path.Combine(src, "data", "README.txt"), "readme");
                 // An old install with records and a file the new build dropped.
                 string dst = Path.Combine(tmp, "installed");
-                Write(Path.Combine(dst, "RotmanFrontDesk.exe"), "old exe");
+                Write(Path.Combine(dst, "RFrontDesk.exe"), "old exe");
                 Write(Path.Combine(dst, "web", "old.js"), "old");
                 Write(Path.Combine(dst, "data", "browser", "db"), "records");
                 Write(Path.Combine(dst, "data", "backups", "frontdesk-backup-2026-10-01.json"), "{}");
 
                 Installer.CopyApp(src, dst);
-                Check("an update replaces the app", Read(Path.Combine(dst, "RotmanFrontDesk.exe")) == "new exe", null);
+                Check("an update replaces the app", Read(Path.Combine(dst, "RFrontDesk.exe")) == "new exe", null);
                 Check("an update removes what the new build dropped", !File.Exists(Path.Combine(dst, "web", "old.js")), null);
                 Check("an update keeps the records", Read(Path.Combine(dst, "data", "browser", "db")) == "records", null);
                 Check("an update keeps the backups",
@@ -269,7 +269,7 @@ namespace FrontDeskHost
 
                 // A first install from a folder the desk was already being run from.
                 string used = Path.Combine(tmp, "used");
-                Write(Path.Combine(used, "RotmanFrontDesk.exe"), "exe");
+                Write(Path.Combine(used, "RFrontDesk.exe"), "exe");
                 Write(Path.Combine(used, "data", "browser", "db"), "portable records");
                 string fresh = Path.Combine(tmp, "fresh");
                 Installer.CopyApp(used, fresh);

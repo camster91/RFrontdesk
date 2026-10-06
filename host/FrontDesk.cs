@@ -1,4 +1,4 @@
-// Rotman Front Desk — Windows host.
+// RFrontDesk — Windows host.
 //
 // A real window (no browser chrome) wrapping the existing web app, with the
 // data moved out of Edge's profile and into a folder the operator owns.
@@ -740,7 +740,7 @@ namespace FrontDeskHost
     internal static class Autostart
     {
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        private const string ValueName = "RotmanFrontDesk";
+        private const string ValueName = "RFrontDesk";
 
         /// <summary>
         /// The arguments the startup entry should use.
@@ -908,8 +908,8 @@ namespace FrontDeskHost
     /// <summary>
     /// Install and uninstall, for one Windows user, with no admin rights.
     ///
-    ///   RotmanFrontDesk.exe --install      (the zip's "Install Front Desk.cmd" runs this)
-    ///   RotmanFrontDesk.exe --uninstall    (what Settings > Apps runs)
+    ///   RFrontDesk.exe --install      (the zip's "Install Front Desk.cmd" runs this)
+    ///   RFrontDesk.exe --uninstall    (what Settings > Apps runs)
     ///   add --quiet for IT: no windows; with --install, --kiosk, --autostart and
     ///   --no-desktop choose the options; with --uninstall, --delete-data removes
     ///   the records too.
@@ -919,17 +919,17 @@ namespace FrontDeskHost
     /// docs\EDR_AND_SIGNING.md), and a second exe is a second binary to sign and
     /// allowlist. This way the one signed exe does everything.
     ///
-    /// It installs to %LOCALAPPDATA%\Programs\Rotman Front Desk -- the per-user
+    /// It installs to %LOCALAPPDATA%\Programs\RFrontDesk -- the per-user
     /// place Windows itself suggests -- because the app keeps its data beside
     /// itself and Program Files is not writable without admin rights.
     /// </summary>
     internal static class Installer
     {
-        public const string ExeName = "RotmanFrontDesk.exe";
-        public const string AppName = "Rotman Front Desk";
-        private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk";
+        public const string ExeName = "RFrontDesk.exe";
+        public const string AppName = "RFrontDesk";
+        private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RFrontDesk";
         private const string StagingName = ".setup-new";
-        private const string LeftoverPrefix = "RotmanFrontDesk-removed-";
+        private const string LeftoverPrefix = "RFrontDesk-removed-";
 
         public static string DefaultInstallDir()
         {
@@ -1137,7 +1137,7 @@ namespace FrontDeskHost
             {
                 k.SetValue("DisplayName", AppName);
                 k.SetValue("DisplayVersion", Build.Version);
-                k.SetValue("Publisher", "Rotman School of Management");
+                k.SetValue("Publisher", "RFrontDesk");
                 k.SetValue("DisplayIcon", exe + ",0");
                 k.SetValue("InstallLocation", dir);
                 k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture));
@@ -1547,7 +1547,7 @@ namespace FrontDeskHost
         public static string RuntimeVersion;
 
         /// <summary>Setup sets this to ask a running copy to close, so it can be updated or removed.</summary>
-        public const string QuitEventName = @"Local\RotmanFrontDesk.Quit";
+        public const string QuitEventName = @"Local\RFrontDesk.Quit";
 
         private EventWaitHandle _quitEvent;
         private RegisteredWaitHandle _quitWait;
@@ -1567,7 +1567,7 @@ namespace FrontDeskHost
         {
             _startup = startup;
 
-            Text = "Rotman Front Desk";
+            Text = "RFrontDesk";
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(900, 640);
             Size = new Size(1280, 860);
@@ -2095,7 +2095,7 @@ namespace FrontDeskHost
         {
             _tray = new NotifyIcon();
             _tray.Icon = MakeIcon();
-            _tray.Text = "Rotman Front Desk";
+            _tray.Text = "RFrontDesk";
             _tray.Visible = true;
             _tray.DoubleClick += delegate { ShowFromTray(); };
 
@@ -2428,7 +2428,7 @@ namespace FrontDeskHost
         private static void RunApp(StartupOptions startup)
         {
             bool createdNew;
-            _instance = new Mutex(true, @"Local\RotmanFrontDesk.SingleInstance", out createdNew);
+            _instance = new Mutex(true, @"Local\RFrontDesk.SingleInstance", out createdNew);
             if (!createdNew)
             {
                 MainForm.ActivateExisting();

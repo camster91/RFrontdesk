@@ -140,7 +140,7 @@ const SEED = `(() => new Promise((resolve, reject) => {
         phoneFormatted: "(416) 555-" + String(1000 + i),
         name: nm,
         nameLower: nm.toLowerCase(),
-        contact2: i % 3 === 0 ? "a.very.long.email.address@rotman.utoronto.ca" : "",
+        contact2: i % 3 === 0 ? "a.very.long.email.address@example-university.org" : "",
         timesCheckedOut: i * 2,
         lastSeenAt: Date.now() - i * 3600000,
         notes: i % 4 === 0 ? "Faculty - prefers email. Keeps the clicker over the weekend when teaching." : "",

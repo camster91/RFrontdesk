@@ -1077,10 +1077,21 @@ async function getKioskDueAt() {
 }
 async function updateSettings(updates) {
   await openDB();
-  const settings = await getSettings();
-  Object.assign(settings, updates);
-  await put("settings", settings);
-  return settings;
+  // Makes sure the record exists (and adopts an old one) before the write.
+  const base = await getSettings();
+  // The read and the write are one transaction. They used to be two, so a
+  // background write landing in between -- the daily backup recording
+  // lastBackupAt, say -- was overwritten with the stale copy, and in the worst
+  // case a PIN change was undone by it.
+  return runTx([
+    "settings"
+  ], "readwrite", async (s) => {
+    const store = s.get("settings");
+    const current = await s.req(store.get(1)) || base;
+    const next = Object.assign({}, current, updates, { id: 1 });
+    await s.req(store.put(next));
+    return next;
+  });
 }
 /**
  * Merge one catalog entry into another.
@@ -1481,6 +1492,15 @@ function _dedupKeyFor(itemOrNameLower, near) {
 }
 
 /**
+ * The key a whole group is recorded under: its alphabetically first name, so
+ * it does not move when usage reorders the group.
+ */
+function _dedupGroupKey(members, near) {
+  const names = (members || []).map((m) => _dedupKeyFor(m, false)).filter(Boolean).sort();
+  return names.length ? _dedupKeyFor(names[0], near) : "";
+}
+
+/**
  * The duplicate groups a human should still be shown: unacknowledged, and not
  * silently acknowledged by a stale signature.
  *
@@ -1495,8 +1515,16 @@ async function findUnreviewedDuplicates() {
   const seen = settings.dedupAcknowledged && typeof settings.dedupAcknowledged === "object"
     ? settings.dedupAcknowledged
     : {};
-  const keyFor = (group, near) => _dedupKeyFor(group[0], near);
-  const pendingFor = (list, near) => list.filter((group) => seen[keyFor(group, near)] !== _dedupSignature(group));
+  // Acknowledged if the exact set of items was acknowledged under any member's
+  // name. It used to be looked up under group[0] only -- the busiest member --
+  // so one checkout could reorder the group and bring a dismissed group back.
+  // The signature is the exact set of ids, so matching on any member's name
+  // cannot hide a group that changed.
+  const isSeen = (group, near) => {
+    const sig = _dedupSignature(group);
+    return group.some((m) => seen[_dedupKeyFor(m, near)] === sig);
+  };
+  const pendingFor = (list, near) => list.filter((group) => !isSeen(group, near));
   const groups = pendingFor(duplicates, false);
   const nearGroups = pendingFor(nearDuplicates, true);
   const count = (list) => list.reduce((n, g) => n + g.length, 0);
@@ -1836,6 +1864,16 @@ function showToast(message, opts = {}) {
     timer
   });
   return toast;
+}
+/** Take every message off the screen: the next person at the kiosk starts clean. */
+function clearToasts() {
+  for (const entry of [..._liveToasts.values()]) {
+    if (!entry || !entry.toast) continue;
+    // At once, not faded: the next person should not watch the last one's
+    // message leave.
+    _forgetToast(entry.toast);
+    if (entry.toast.parentNode) entry.toast.parentNode.removeChild(entry.toast);
+  }
 }
 function dismissToast(toast) {
   if (!toast) return;
@@ -2430,7 +2468,19 @@ function sentenceCase(s) {
   if (typeof s !== "string") return s;
   const t = s.trim().replace(/\s+/g, " ");
   if (!t) return t;
-  return t.toLowerCase().split(" ").map((w) => w.length ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
+  // Only a word typed all in lower case is changed, and only its first letter:
+  // "maria lopez" becomes "Maria Lopez", while "HDMI", "iPad" and "McDonald"
+  // stay as typed. This used to lower-case everything first, which turned an
+  // HDMI cable into "Hdmi" and McDonald into "Mcdonald".
+  // Caps lock is the exception: a whole line typed in capitals is shouting, not
+  // an acronym, so its longer words are softened ("MARIA LOPEZ" -> "Maria
+  // Lopez", "HDMI CABLE" -> "HDMI Cable").
+  const shouting = t === t.toUpperCase() && t !== t.toLowerCase() && t.includes(" ");
+  return t.split(" ").map((w) => {
+    if (!w.length) return w;
+    if (shouting && w.length > 4) return w[0] + w.slice(1).toLowerCase();
+    return w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w;
+  }).join(" ");
 }
 var prefersReducedMotion, MONTHS_SHORT;
 var init_ui = __esm({
@@ -2794,20 +2844,32 @@ async function addItemAlias(item, typed, { label } = {}) {
   if (!k) return item;
   const own = _nameKeyOf(item).key;
   if (k === own) return item;
-  const aliases = Array.isArray(item.aliases) ? item.aliases.slice() : [];
-  if (aliases.some((a) => a && a.k === k)) return item;
-  aliases.push({
-    k,
-    label: String(label || typed).trim().slice(0, 60),
-    addedAt: Date.now()
-  });
+  if ((Array.isArray(item.aliases) ? item.aliases : []).some((a) => a && a.k === k)) return item;
   // Newest kept, and few of them. An alias list is a memory of how people got
   // the name wrong, not an archive: a handful covers every real desk, and a long
   // one would ride along on every export and every `_nameKeyOf` alias pass.
-  const capped = aliases.slice(-8);
-  const next = Object.assign({}, item, { aliases: capped });
-  await put("items", next);
-  return next;
+  //
+  // Written onto the item as it is in the store *now*, in one transaction. It
+  // used to put the caller's copy back with the alias added, so anything that
+  // changed the item in between -- a checkout bumping its counters, a staff
+  // edit -- was quietly undone.
+  return runTx([
+    "items"
+  ], "readwrite", async (s) => {
+    const store = s.get("items");
+    const fresh = item.id != null ? await s.req(store.get(item.id)) : null;
+    const target = fresh || item;
+    const have = Array.isArray(target.aliases) ? target.aliases.slice() : [];
+    if (have.some((a) => a && a.k === k)) return target;
+    have.push({
+      k,
+      label: String(label || typed).trim().slice(0, 60),
+      addedAt: Date.now()
+    });
+    const next = Object.assign({}, target, { aliases: have.slice(-8) });
+    await s.req(store.put(next));
+    return next;
+  });
 }
 /**
  * The name an item is also known by, for display. Empty when there are none.
@@ -3784,6 +3846,10 @@ function putKeyboardAway() {
 }
 // The kiosk is the public, unattended surface. Anything that reaches staff
 // screens, the admin login, or staff-only shortcuts must be refused from here.
+/** The public is looking: a kiosk screen, or the splash it starts on. */
+function _onPublicScreen() {
+  return currentScreen === "splash" || isKioskScreen(currentScreen);
+}
 function isKioskScreen(name) {
   return name === "welcome" || typeof name === "string" && name.indexOf("kiosk-") === 0;
 }
@@ -5699,7 +5765,7 @@ async function autoBackup({ force = false } = {}) {
           await updateSettings({
             lastBackupAt: now
           });
-          showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
+          if (force || !_onPublicScreen()) showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
             type: "info",
             duration: 5e3
           });
@@ -5707,7 +5773,8 @@ async function autoBackup({ force = false } = {}) {
           // The file was written but did not read back the same. Say so loudly:
           // a backup you cannot trust is worse than none, because it is the one
           // you find out about when you need it.
-          showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
+          if (!force && _onPublicScreen()) logToHost("automatic backup could not be verified: " + (result.error || "mismatch"));
+          else showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
             type: "error",
             duration: 15e3
           });
@@ -5744,7 +5811,7 @@ async function autoBackup({ force = false } = {}) {
     await updateSettings({
       lastBackupAt: now
     });
-    showToast("Backup saved. Check your Downloads folder.", {
+    if (force || !_onPublicScreen()) showToast("Backup saved. Check your Downloads folder.", {
       type: "info",
       duration: 4e3
     });
@@ -6098,7 +6165,12 @@ function initKiosk() {
   }
   const confirmBtn = document.querySelector('[data-action="kiosk-confirm-pick"]');
   if (confirmBtn) {
-    confirmBtn.onclick = () => _handleCommit();
+    confirmBtn.onclick = () => {
+      // The add offer on screen is the one this button now names: tap it.
+      const add = confirmBtn.dataset.adds && document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
+      if (add) add.click();
+      else _handleCommit();
+    };
   }
   // `querySelectorAll`, not `querySelector`: two screens carry this action --
   // the borrow confirmation and the list a borrower sees after a return -- and
@@ -6109,6 +6181,31 @@ function initKiosk() {
   // kiosk suite clicks this action scoped to the *borrow* screen.
   for (const btn of document.querySelectorAll('[data-action="kiosk-back-home"]')) {
     btn.onclick = () => _kioskBackHome();
+  }
+  // Same person, one more thing: back to the item step without the phone again.
+  const another = document.querySelector('[data-action="kiosk-borrow-another"]');
+  if (another) {
+    another.onclick = () => {
+      const who = _doneBorrower;
+      _doneBorrower = null;
+      if (!who) {
+        _kioskBackHome();
+        return;
+      }
+      state.borrower = who;
+      state.phone = who.phone || null;
+      state.isNew = false;
+      const greetEl = document.getElementById("kiosk-greeting-name");
+      if (greetEl) greetEl.textContent = who.name;
+      _cancelDoneCountdown();
+      clearToasts();
+      _resetNeedStep();
+      goToScreen(KIOSK_SCREENS.borrowNeed);
+      setTimeout(() => {
+        const need = document.getElementById("kiosk-need");
+        if (need) need.focus();
+      }, 100);
+    };
   }
   const returnPhoneContinue = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (returnPhoneContinue) {
@@ -6372,6 +6469,7 @@ function _renderSuggestions(matches, query, opts = {}) {
   if (!container) return;
   const { create = null, catalogEmpty = false } = opts;
   container.innerHTML = "";
+  _setBorrowLabel(null);
   // What this list is the answer to. `_onNeedInput` compares the box against it
   // and takes the list away as soon as they disagree -- see there for why that
   // matters more than the flicker it costs.
@@ -6410,6 +6508,7 @@ function _renderSuggestions(matches, query, opts = {}) {
       btn.appendChild(hint);
       btn.onclick = () => _kioskCreateAndCheckout(create);
       container.appendChild(btn);
+      _setBorrowLabel(`Add "${create.name}" and borrow it`);
     } else if (create && create.reason) {
       const why = document.createElement("div");
       why.className = "kiosk-suggestion-empty";
@@ -6549,7 +6648,7 @@ async function _handleCommit() {
   }
   const check = kioskCreateCheck(query);
   showToast(check.ok
-    ? `That item is not on the list — tap Add "${check.name}" below, or ask the front desk.`
+    ? `That item is not on the list. Tap Add "${check.name}" and borrow it, or ask the front desk.`
     : "That item is not on the list. Please ask the front desk.", {
     type: "error",
     duration: 5e3
@@ -6646,8 +6745,12 @@ async function _kioskCreateAndCheckout(create) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6696,8 +6799,12 @@ async function _checkout(item, typedFrom) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = item.name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6775,7 +6882,21 @@ function _cancelDoneCountdown() {
  * Registered as an `onEnter` hook for the step, so every route into it is
  * covered rather than the four that happen to call `goToScreen` today.
  */
+/**
+ * The item step's main button. Normally "Borrow it"; while the search has come
+ * back empty and the add offer is showing, it names the add -- so the button a
+ * borrower reaches for does what it says, instead of answering "not on the
+ * list, tap the other button". Pressing Enter still never adds anything.
+ */
+function _setBorrowLabel(text) {
+  const btn = document.querySelector('[data-action="kiosk-confirm-pick"]');
+  if (!btn) return;
+  btn.textContent = text || "Borrow it";
+  if (text) btn.dataset.adds = "1";
+  else delete btn.dataset.adds;
+}
 function _resetNeedStep() {
+  _setBorrowLabel(null);
   // A debounced pass from the previous borrower must not land after the clear and
   // re-render a list nobody asked for.
   if (_kioskTypeaheadTimer) {
@@ -6826,9 +6947,12 @@ function _armKioskIdle() {
 function _bumpKioskIdle() {
   if (_kioskIdleTimer) _armKioskIdle();
 }
+var _doneBorrower = null;
 function _kioskBackHome() {
+  _doneBorrower = null;
   _cancelDoneCountdown();
   _clearKioskOverlays();
+  clearToasts();
   state.phone = null;
   state.borrower = null;
   state.isNew = false;
@@ -7064,41 +7188,15 @@ function _makeReturnRow(loan, now) {
   return row;
 }
 async function _confirmAndReturnLoan(loan) {
-  const now = Date.now();
-  const isOverdue = loan.dueAt && loan.dueAt < now;
-  const overdueText = isOverdue ? `<div style="background:rgba(231,76,60,0.15); color:#e74c3c; padding:8px 12px; border-radius:6px; font-weight:600; margin-top:8px;">\u26A0\uFE0F Overdue by ${formatRelativeTime(loan.dueAt - now)}</div>` : "";
-  const dueText = loan.dueAt && !isOverdue ? `<div>Due: ${new Date(loan.dueAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })}</div>` : "";
-  const confirmed = await _confirmDialog("Return this item?", `<div style="text-align:left; padding:4px 0;">
-       <div style="font-size:22px; font-weight:700; margin-bottom:12px; color:var(--text);">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-       <div style="color:var(--text-muted); font-size:14px; line-height:1.6;">
-         <div><strong>Out:</strong> ${loan.checkedOutAt ? new Date(loan.checkedOutAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }) : "\u2014"}</div>
-         ${dueText}
-       </div>
-       ${overdueText}
-     </div>
-     <div style="margin-top:12px; padding:10px; background:var(--bg-alt, rgba(255,255,255,0.05)); border-radius:6px; font-size:13px; color:var(--text-muted);">
-       Hand it to the front desk and they will close it off. Nothing is marked returned until they do.
-     </div>`, {
-    danger: true,
-    confirmLabel: "Yes, I'm handing it in"
-  });
-  if (!confirmed) return;
+  // One step, not two. Tapping an item used to open a "Return this item?" dialog
+  // and then put "Is it coming back in good shape?" *below* the screen's big
+  // Done button -- so a borrower who tapped Done after the first answer walked
+  // away believing it was handed in, with nothing recorded. The question now
+  // covers the screen, and answering it is the hand-in.
   // Condition is asked for, not assumed. This used to hardcode "good", so
   // "Damaged"/"Lost" could never be recorded from a kiosk return even though the
   // item detail screen counts them.
-  const condition = await _askCondition(loan);
+  const condition = await _askCondition(loan, { modal: true });
   if (!condition) return;
   try {
     await openDB();
@@ -7123,7 +7221,7 @@ async function _confirmAndReturnLoan(loan) {
  * wrong -> say what" needs a dialog that stays open between steps, which the
  * promise adapter around showDialog cannot do (it closes on the first click).
  */
-function _askCondition(loan) {
+function _askCondition(loan, opts = {}) {
   return new Promise((resolve) => {
     const host = document.querySelector(".screen:not(.hidden)");
     const body = host && host.querySelector(".kiosk-flow-body");
@@ -7131,14 +7229,23 @@ function _askCondition(loan) {
       resolve(null);
       return;
     }
+    const now = Date.now();
+    const overdue = loan.dueAt && loan.dueAt < now;
+    const when = loan.checkedOutAt ? `Out ${agoLabel(now - loan.checkedOutAt)}` : "";
+    const late = overdue ? ` \u00b7 <span class="kiosk-return-item-overdue">overdue by ${formatRelativeTime(loan.dueAt - now)}</span>` : "";
     const panel = document.createElement("div");
-    panel.className = "kiosk-signin-panel";
+    panel.className = "kiosk-signin-panel" + (opts.modal ? " kiosk-modal" : "");
+    if (opts.modal) {
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+    }
     panel.innerHTML = `
       <div class="kiosk-signin-card">
         <div class="kiosk-condition-title">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-        <div class="kiosk-signin-sub">Is it coming back in good shape?</div>
+        ${when ? `<div class="kiosk-signin-sub">${escapeHtml2(when)}${late}</div>` : ""}
+        <div class="kiosk-signin-sub">Handing it back? Is it in good shape?</div>
         <div class="kiosk-condition-actions">
-          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good</button>
+          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good, hand it in</button>
           <button type="button" class="btn btn-secondary btn-xl kiosk-cta" data-cond="damaged">Something's wrong</button>
         </div>
         <div data-role="note-wrap" class="kiosk-condition-note hidden">
@@ -7148,7 +7255,7 @@ function _askCondition(loan) {
         <button type="button" class="btn btn-ghost kiosk-cta-secondary" data-role="cancel">Cancel</button>
       </div>
     `;
-    body.appendChild(panel);
+    (opts.modal ? host : body).appendChild(panel);
     const done = (value) => {
       _kioskPendingPanels.delete(cancel);
       panel.remove();
@@ -8024,7 +8131,7 @@ async function renderAllLoans() {
 }
 /**
  * A `type="date"` input yields "YYYY-MM-DD", and `new Date("2026-09-01")` parses
- * that as *UTC* midnight. For a Toronto user that is Aug 31, 8pm local, so a
+ * that as *UTC* midnight. For a user in Eastern time that is Aug 31, 8pm local, so a
  * filter "from Sep 1" quietly included the previous evening's loans and "to
  * Sep 1" stopped at 8pm on the day they chose. Build the boundary from local
  * parts instead. `dayOffset` of 1 gives the start of the following local day,
@@ -8042,8 +8149,12 @@ async function _renderAllLoansList(content) {
   const to = panel?.querySelector('input[data-filter="to"]')?.value;
   const fromMs = _localDayStart(from) ?? 0;
   const toMs = _localDayStart(to, 1) ?? Infinity;
+  // Every loan, then the date range, then the 200 shown. The 1,000 cap used to
+  // come first, so on a busy desk any range older than the newest thousand
+  // loans came back empty while the export (which had them) disagreed. The
+  // store is read whole either way; only the slicing moved.
   const all = await getAllLoans({
-    limit: 1e3
+    limit: null
   });
   const filtered = all.filter((l) => l.checkedOutAt >= fromMs && l.checkedOutAt < toMs);
   content.innerHTML = "";
@@ -8742,7 +8853,7 @@ function _wireDuplicatesReview(content, render) {
       const byId = new Map(items.map((it) => [it.id, it]));
       const members = ids.map((id) => byId.get(id)).filter(Boolean);
       if (members.length === 0) return;
-      const nameKey = _dedupKeyFor(members[0], near);
+      const nameKey = _dedupGroupKey(members, near);
       await setDedupAcknowledged(nameKey, _dedupSignature(members));
       showToast("Marked as separate units — won't ask again unless the list changes", {
         type: "info"
@@ -8867,7 +8978,9 @@ async function _renderPeopleList(content, query, sortBy) {
     includeArchived: true
   });
   const q = (query || "").toLowerCase().trim();
-  let filtered = q ? all.filter((b) => b.name.toLowerCase().includes(q) || (b.phoneFormatted || "").includes(q) || b.phone.includes(q)) : all;
+  // Digits alone too, so "416-555-0100" finds the number however it was typed.
+  const qDigits = q.replace(/\D/g, "");
+  let filtered = q ? all.filter((b) => b.name.toLowerCase().includes(q) || (b.phoneFormatted || "").includes(q) || b.phone.includes(q) || qDigits.length >= 3 && b.phone.includes(qDigits)) : all;
   filtered.sort((a, b) => {
     if (sortBy === "timesCheckedOut") return (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0);
     if (sortBy === "lastSeenAt") return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
@@ -8877,7 +8990,12 @@ async function _renderPeopleList(content, query, sortBy) {
   });
   content.innerHTML = "";
   if (filtered.length === 0) {
-    content.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:32px;">No people yet</p>';
+    // "No people yet" was shown for a search that just found nobody, which
+    // reads as if the whole list had gone.
+    const msg = all.length === 0
+      ? "No people yet"
+      : `Nobody matches “${escapeHtml3(query.trim())}”`;
+    content.innerHTML = `<p style="text-align:center; color:var(--text-muted); padding:32px;">${msg}</p>`;
     return;
   }
   for (const b of filtered) {
@@ -9052,7 +9170,30 @@ async function renderSettings() {
   panel.querySelector('[data-action="import"]').onclick = () => importFile.click();
   importFile.onchange = async (e) => {
     const file = e.target.files?.[0];
+    // Cleared at once, so picking the same file again after Cancel still works.
+    importFile.value = "";
     if (!file) return;
+    // Import replaces everything, exactly as Restore does -- and Restore has
+    // always asked first. This used to go straight ahead on picking a file.
+    let counts = null;
+    try {
+      const peek = JSON.parse(await file.text());
+      if (peek && Array.isArray(peek.items) && Array.isArray(peek.borrowers) && Array.isArray(peek.loans)) {
+        counts = ` It holds ${peek.items.length} item${peek.items.length === 1 ? "" : "s"}, ${peek.borrowers.length} ${peek.borrowers.length === 1 ? "person" : "people"} and ${peek.loans.length} loan${peek.loans.length === 1 ? "" : "s"}.`;
+      }
+    } catch (_) {
+    }
+    // Not a backup at all: nothing would be replaced, so there is nothing to
+    // ask -- importFromFile refuses it and says why.
+    const yes = counts === null ? true : await confirmDialog(
+      `Replace everything in Front Desk with the contents of ${file.name}?${counts} Anything checked out or added since that file was saved will be gone.`,
+      {
+        title: "Import a backup",
+        danger: true,
+        confirmLabel: "Replace everything"
+      }
+    );
+    if (!yes) return;
     try {
       await importFromFile(file);
       showToast("Import complete", {
@@ -9098,7 +9239,7 @@ async function _renderHostSettings(container) {
         <h2 class="section-title" style="font-size:18px; margin-bottom:8px;">Backup folder</h2>
         <div class="loan-meta">In the browser, a backup can only be downloaded. The Windows app additionally
         writes one into a folder on this machine on every launch, and keeps the last few &mdash; open
-        <strong>RotmanFrontDesk.exe</strong> to use it.</div>
+        <strong>RFrontDesk.exe</strong> to use it.</div>
       </div>`;
     return;
   }
@@ -9819,7 +9960,7 @@ async function _makeOverdueRow(loan) {
   // staff member had open. So the two buttons exist only when they have a URI,
   // and Copy covers everything else.
   const callHref = telUri(phone);
-  const textHref = smsUri(phone, `Hi, you have an overdue item at the Rotman front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
+  const textHref = smsUri(phone, `Hi, you have an overdue item at the front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
   if (callHref) {
     const callBtn = document.createElement("a");
     callBtn.className = "btn btn-secondary";
@@ -9944,7 +10085,17 @@ async function _editItem(item) {
     ]
   });
   if (choice === "save") {
-    item.name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    // A blank name used to be saved, leaving an item nobody can find or read.
+    // The dialog closes on Save, so the old name is kept and the desk is told.
+    const typedName = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    if (!typedName) {
+      showToast(`An item needs a name, so it is still called "${item.name}". Nothing was changed.`, {
+        type: "error",
+        duration: 5e3
+      });
+      return;
+    }
+    item.name = typedName;
     item.nameLower = item.name.toLowerCase();
     item.category = sentenceCase(form.querySelector('[data-f="category"]').value.trim()) || "Other";
     item.location = form.querySelector('[data-f="location"]').value.trim();
@@ -10055,7 +10206,16 @@ async function _editBorrower(borrower) {
     ]
   });
   if (choice === "save") {
-    borrower.name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    // As for items: a blank name is refused, and the old one kept.
+    const typedName = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    if (!typedName) {
+      showToast(`A person needs a name, so they are still "${borrower.name}". Nothing was changed.`, {
+        type: "error",
+        duration: 5e3
+      });
+      return;
+    }
+    borrower.name = typedName;
     borrower.nameLower = borrower.name.toLowerCase();
     const newPhone = normalizePhone(form.querySelector('[data-f="phone"]').value);
     let phoneChanged = false;
@@ -10095,21 +10255,64 @@ async function _mergeBorrower(borrower) {
     });
     return;
   }
-  const buttons = others.slice(0, 10).map((b) => ({
-    label: `${b.name} \xB7 ${formatPhone(b.phone)}`,
-    value: b,
-    variant: "secondary"
-  }));
-  buttons.push({
-    label: "Cancel",
-    value: null,
-    variant: "ghost"
-  });
-  const other = await showDialog({
+  // A searchable list of everyone, not the first ten. The ten were whoever the
+  // store returned first -- archived people included -- so on a real desk the
+  // duplicate you wanted was usually not on offer at all.
+  const live = others.filter((b) => !b.isArchived);
+  const SHOW_MAX = 30;
+  let chosen = null;
+  const body = document.createElement("div");
+  body.innerHTML = `
+    <p style="color:var(--text-secondary); margin-bottom:12px;">All loans from the person you pick move to
+    <strong>${escapeHtml3(borrower.name)}</strong>, and that person is then deleted.</p>
+    <input class="input" data-f="q" placeholder="Search by name or phone" autocomplete="off" />
+    <div data-role="list" style="display:flex; flex-direction:column; gap:8px; margin-top:12px; max-height:50vh; overflow-y:auto;"></div>
+  `;
+  const input = body.querySelector('[data-f="q"]');
+  const list = body.querySelector('[data-role="list"]');
+  const note = (text) => {
+    const p = document.createElement("p");
+    p.className = "loan-meta";
+    p.style.textAlign = "center";
+    p.textContent = text;
+    list.appendChild(p);
+  };
+  const render = () => {
+    const q = input.value.toLowerCase().trim();
+    const qDigits = q.replace(/\D/g, "");
+    const hits = (q ? live.filter((b) => b.name.toLowerCase().includes(q) || qDigits.length >= 3 && b.phone.includes(qDigits)) : live)
+      .slice()
+      .sort((a, b) => (a.name || "").localeCompare(b.name || "", void 0, { numeric: true }));
+    list.innerHTML = "";
+    for (const b of hits.slice(0, SHOW_MAX)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-secondary";
+      btn.dataset.mergeWith = String(b.id);
+      btn.textContent = `${b.name} \xB7 ${formatPhone(b.phone)}`;
+      btn.onclick = () => {
+        chosen = b;
+        closeDialog();
+      };
+      list.appendChild(btn);
+    }
+    if (hits.length === 0) note(live.length ? "Nobody matches that." : "There is nobody else to merge with (archived people are not listed).");
+    else if (hits.length > SHOW_MAX) note(`Showing ${SHOW_MAX} of ${hits.length}. Type a name or number to narrow it down.`);
+  };
+  input.addEventListener("input", render);
+  render();
+  await showDialog({
     title: `Merge "${borrower.name}" with\u2026`,
-    body: '<p style="color:var(--text-secondary); margin-bottom:12px;">All loans from the chosen borrower will be moved to <strong>' + escapeHtml3(borrower.name) + "</strong>. The other borrower will be deleted.</p>",
-    buttons
+    body,
+    buttons: [
+      {
+        label: "Cancel",
+        value: null,
+        variant: "ghost"
+      }
+    ]
   });
+  const other = chosen;
   if (!other) return;
   const confirmChoice = await showDialog({
     title: "Confirm merge",

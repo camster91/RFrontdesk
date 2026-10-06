@@ -231,8 +231,6 @@ const READ = (store, id) =>
     // ── 2. a half-finished return does not carry over ───────────────────────
     await page.waitForSelector("#kiosk-return-list .kiosk-return-item", { timeout: 8000 });
     await page.evaluate(() => document.querySelector("#kiosk-return-list .kiosk-return-item").click());
-    await page.waitForSelector(".dialog-actions .btn", { timeout: 8000 });
-    await clickText(".dialog-actions .btn", /handing it in/i);
     await page.waitForSelector('.kiosk-condition-actions [data-cond="good"]', { timeout: 8000 });
     // Alice walks away from the condition question.
     await clickIn("screen-kiosk-return-items", '[data-action="kiosk-back-home"]');
