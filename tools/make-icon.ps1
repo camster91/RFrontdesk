@@ -16,7 +16,7 @@
 # 256px tile view -- and a single 32px bitmap scaled up to 256 looks like a
 # mistake.
 #
-# The Rotman wordmark in web/index.html (window.__ROT_LOGO) is deliberately NOT
+# The wordmark in web/index.html (window.__LOGO) is deliberately NOT
 # the icon: it is a 190x69 horizontal wordmark drawn in white for the dark
 # header. Squeezed into a square it would be a few pixels of unreadable text,
 # and an official university mark inside a rounded app tile is a branding
@@ -53,7 +53,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
-# The Rotman magenta, and a darker one of the same hue for the gradient. The
+# The brand magenta, and a darker one of the same hue for the gradient. The
 # darker end is the value the light theme uses for text, so the two agree.
 $magentaTop = [System.Drawing.ColorTranslator]::FromHtml('#E6007E')
 $magentaBottom = [System.Drawing.ColorTranslator]::FromHtml('#A8005A')
@@ -213,7 +213,7 @@ function ConvertTo-IconDib([System.Drawing.Bitmap]$bmp) {
 }
 
 Write-Host ""
-Write-Host "Rotman Front Desk - icon" -ForegroundColor Magenta
+Write-Host "RFrontDesk - icon" -ForegroundColor Magenta
 Write-Host ""
 
 $images = @()

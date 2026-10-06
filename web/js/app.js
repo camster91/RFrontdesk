@@ -8024,7 +8024,7 @@ async function renderAllLoans() {
 }
 /**
  * A `type="date"` input yields "YYYY-MM-DD", and `new Date("2026-09-01")` parses
- * that as *UTC* midnight. For a Toronto user that is Aug 31, 8pm local, so a
+ * that as *UTC* midnight. For a user in Eastern time that is Aug 31, 8pm local, so a
  * filter "from Sep 1" quietly included the previous evening's loans and "to
  * Sep 1" stopped at 8pm on the day they chose. Build the boundary from local
  * parts instead. `dayOffset` of 1 gives the start of the following local day,
@@ -9098,7 +9098,7 @@ async function _renderHostSettings(container) {
         <h2 class="section-title" style="font-size:18px; margin-bottom:8px;">Backup folder</h2>
         <div class="loan-meta">In the browser, a backup can only be downloaded. The Windows app additionally
         writes one into a folder on this machine on every launch, and keeps the last few &mdash; open
-        <strong>RotmanFrontDesk.exe</strong> to use it.</div>
+        <strong>RFrontDesk.exe</strong> to use it.</div>
       </div>`;
     return;
   }
@@ -9819,7 +9819,7 @@ async function _makeOverdueRow(loan) {
   // staff member had open. So the two buttons exist only when they have a URI,
   // and Copy covers everything else.
   const callHref = telUri(phone);
-  const textHref = smsUri(phone, `Hi, you have an overdue item at the Rotman front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
+  const textHref = smsUri(phone, `Hi, you have an overdue item at the front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
   if (callHref) {
     const callBtn = document.createElement("a");
     callBtn.className = "btn btn-secondary";

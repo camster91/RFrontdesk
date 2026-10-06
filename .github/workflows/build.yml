@@ -1,6 +1,6 @@
 name: Build
 
-# Builds, tests and packages Rotman Front Desk on a GitHub Windows machine, so
+# Builds, tests and packages RFrontDesk on a GitHub Windows machine, so
 # nobody needs a build computer, and signs it on main (docs/code-signing.md).
 # It deploys nothing: the zip is a download on the run page, under Artifacts.
 
@@ -56,7 +56,7 @@ jobs:
           if-no-files-found: error
 
   # Code signing (Azure Artifact Signing) through the shared workflow in camster91/Rclicker.
-  # Only main is signed. Signs RotmanFrontDesk.exe only: the WebView2 DLLs are already
+  # Only main is signed. Signs RFrontDesk.exe only: the WebView2 DLLs are already
   # signed by Microsoft. Sign-in uses OIDC, so no secret is stored in this repository.
   sign:
     needs: build
@@ -104,13 +104,13 @@ jobs:
           }
           $unzipped = Join-Path $env:RUNNER_TEMP 'unzipped'
           Expand-Archive (Get-Item release/*.zip).FullName $unzipped
-          $app = Join-Path $unzipped 'Rotman Front Desk'
-          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Rotman Front Desk'
-          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Rotman Front Desk.lnk'
-          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk'
+          $app = Join-Path $unzipped 'RFrontDesk'
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\RFrontDesk'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'RFrontDesk.lnk'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RFrontDesk'
 
-          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
-          foreach ($f in 'RotmanFrontDesk.exe', 'web\index.html', 'data\backups', 'licenses\WebView2 LICENSE.txt') {
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          foreach ($f in 'RFrontDesk.exe', 'web\index.html', 'data\backups', 'licenses\WebView2 LICENSE.txt') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "install is missing $f" }
           }
           if (-not (Test-Path $lnk)) { throw 'no Start menu shortcut' }
@@ -119,24 +119,24 @@ jobs:
 
           New-Item -ItemType Directory -Force (Join-Path $dir 'data\browser') | Out-Null
           Set-Content (Join-Path $dir 'data\browser\marker') 'records'
-          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
           if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'an update lost the records' }
           Write-Host 'update keeps the records: ok'
 
-          Run (Join-Path $dir 'RotmanFrontDesk.exe') @('--uninstall', '--quiet')
-          if (Test-Path (Join-Path $dir 'RotmanFrontDesk.exe')) { throw 'uninstall left the exe' }
+          Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet')
+          if (Test-Path (Join-Path $dir 'RFrontDesk.exe')) { throw 'uninstall left the exe' }
           if (Test-Path $lnk) { throw 'uninstall left the shortcut' }
           if (Test-Path $key) { throw 'uninstall left the Apps entry' }
           if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'uninstall deleted the records without being asked' }
           Write-Host 'uninstall keeps the records: ok'
 
-          Run (Join-Path $app 'RotmanFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
-          Run (Join-Path $dir 'RotmanFrontDesk.exe') @('--uninstall', '--quiet', '--delete-data')
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet', '--delete-data')
           if (Test-Path $dir) { throw "uninstall --delete-data left: $((Get-ChildItem $dir -Recurse -Name) -join ', ')" }
           Write-Host 'uninstall --delete-data removes everything: ok'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: rotman-front-desk
+          name: rfrontdesk
           path: release/*.zip
           if-no-files-found: error

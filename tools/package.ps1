@@ -11,13 +11,13 @@
 # allowed through.
 #
 # The install is inside the app: "Install Front Desk.cmd" in the zip runs
-# RotmanFrontDesk.exe --install, which copies the folder to the user's own
+# RFrontDesk.exe --install, which copies the folder to the user's own
 # %LOCALAPPDATA%\Programs, adds a Start menu shortcut and an entry in Settings >
 # Apps to remove it. No admin rights, and no second exe to sign. Not Program
 # Files: the app writes its data beside itself, and that folder is not writable
 # without elevation.
 #
-# The zip contains a top-level "Rotman Front Desk" folder, so extracting it on
+# The zip contains a top-level "RFrontDesk" folder, so extracting it on
 # Windows produces one tidy folder rather than scattering seven files into
 # Downloads.
 
@@ -33,7 +33,7 @@ param(
     [switch] $NoSymbols = $false,
 
     # The folder name inside the zip, and what extracting creates.
-    [string] $FolderName = 'Rotman Front Desk'
+    [string] $FolderName = 'RFrontDesk'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,10 +42,10 @@ function Say($msg)  { Write-Host "  $msg" }
 function Fail($msg) { Write-Host "  ERROR: $msg" -ForegroundColor Red; exit 1 }
 
 Write-Host ""
-Write-Host "Rotman Front Desk - package" -ForegroundColor Magenta
+Write-Host "RFrontDesk - package" -ForegroundColor Magenta
 Write-Host ""
 
-$exe = Join-Path $DistDir 'RotmanFrontDesk.exe'
+$exe = Join-Path $DistDir 'RFrontDesk.exe'
 if (-not (Test-Path $exe)) { Fail "No build at $DistDir. Run host\build.ps1 first." }
 
 # The version comes off the exe rather than out of AssemblyInfo.cs, so the zip is
@@ -57,7 +57,7 @@ if (-not $fileVersion) { $fileVersion = '0.0.0.0' }
 # nobody writes 1.0.0.0 on a download. The exe's real FileVersion is left alone
 # in For IT.txt, where it should be exact.
 $version = $fileVersion -replace '\.0$', ''
-$product = if ($info.ProductName) { $info.ProductName } else { 'Rotman Front Desk' }
+$product = if ($info.ProductName) { $info.ProductName } else { 'RFrontDesk' }
 Say "packing $product $fileVersion"
 
 $hash = (Get-FileHash -Path $exe -Algorithm SHA256).Hash
@@ -88,7 +88,7 @@ New-Item -ItemType Directory -Force $root | Out-Null
 
 try {
     Copy-Item (Join-Path $DistDir '*') -Destination $root -Recurse -Force
-    if ($NoSymbols) { Remove-Item (Join-Path $root 'RotmanFrontDesk.pdb') -Force -ErrorAction SilentlyContinue }
+    if ($NoSymbols) { Remove-Item (Join-Path $root 'RFrontDesk.pdb') -Force -ErrorAction SilentlyContinue }
 
     # The data folder ships empty -- a README and nothing else. If a build ever
     # carries records, backups or a log into a package, that is a desk's borrower
@@ -125,19 +125,19 @@ newer zip the same way: the records are kept.
 
 FIRST RUN
 ---------
-- The staff screens are behind the Rotman logo: press and hold it for about
+- The staff screens are behind the logo: press and hold it for about
   two seconds.
 - The PIN starts as 1234. Change it the first time you sign in:
   Settings > PIN.
 
 UNINSTALL
 ---------
-Windows Settings > Apps > Installed apps > Rotman Front Desk > Uninstall.
+Windows Settings > Apps > Installed apps > RFrontDesk > Uninstall.
 The desk's records are kept unless you tick the box to delete them too.
 
 WITHOUT INSTALLING
 ------------------
-You can also run RotmanFrontDesk.exe straight from this folder, for example
+You can also run RFrontDesk.exe straight from this folder, for example
 from a USB stick. It keeps its records in the data folder beside it. Do not
 put it in Program Files: it could not save anything there.
 
@@ -174,7 +174,7 @@ project this was built from.
 
 WHAT THIS IS
 ------------
-RotmanFrontDesk.exe is a 64-bit WinForms window hosting a WebView2 control that
+RFrontDesk.exe is a 64-bit WinForms window hosting a WebView2 control that
 loads the HTML, CSS and JavaScript in web\. It needs the Microsoft Edge WebView2
 Runtime, which is already on standard Windows 10 and 11 images. It opens no
 network listener and requests asInvoker, so it never asks for elevation.
@@ -184,17 +184,17 @@ INSTALLING
 Install and uninstall are built into the same exe; there is no separate setup
 program. Everything is per-user, with no admin rights:
 
-  %LOCALAPPDATA%\Programs\Rotman Front Desk\   the app, and its data\ folder
+  %LOCALAPPDATA%\Programs\RFrontDesk\   the app, and its data\ folder
   Start menu shortcut (and a desktop one, unless turned off)
-  HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RFrontDesk
   HKCU\Software\Microsoft\Windows\CurrentVersion\Run  only if "start with
                                                       Windows" is chosen
 
 Silent install, from the unzipped folder:
-  RotmanFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]
+  RFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]
 
 Silent uninstall (keeps the records unless --delete-data is added):
-  "%LOCALAPPDATA%\Programs\Rotman Front Desk\RotmanFrontDesk.exe" --uninstall --quiet
+  "%LOCALAPPDATA%\Programs\RFrontDesk\RFrontDesk.exe" --uninstall --quiet
 
 Exit codes: 0 done, 1 cancelled, 2 failed, 3 removed but some files were in use.
 
@@ -206,8 +206,8 @@ while this shape is allowed through.
 
 WHAT TO DO IF IT IS FLAGGED -- either one
 -----------------------------------------
-A. Sign it. A code-signing certificate from the University of Toronto Certificate
-   Authority is enough, because that root is already trusted on domain machines.
+A. Sign it. A code-signing certificate from the organisation's own certificate
+   authority is enough, when that root is already trusted on domain machines.
    Ask for: Digital Signature key usage, Extended Key Usage Code Signing
    (1.3.6.1.5.5.7.3.3), delivered as a .pfx including the private key, SHA-256.
    (The GitHub build already signs builds from main with Azure Artifact
@@ -220,7 +220,7 @@ B. Allowlist it in the SentinelOne console as a false positive, and attach the
 
 THE BINARY IN THIS ZIP
 ----------------------
-File    : RotmanFrontDesk.exe
+File    : RFrontDesk.exe
 Version : $fileVersion
 SHA-256 : $hash
 Signed  : $signedLine
@@ -234,10 +234,10 @@ Third-party licences are in the licenses\ folder.
     # app's own installer, after checking the zip was extracted first.
     Set-Content -Path (Join-Path $root 'Install Front Desk.cmd') -Encoding ASCII -Value @(
         '@echo off',
-        'rem Installs Rotman Front Desk for this Windows user. No admin rights needed.',
-        'if not exist "%~dp0RotmanFrontDesk.exe" goto notextracted',
+        'rem Installs RFrontDesk for this Windows user. No admin rights needed.',
+        'if not exist "%~dp0RFrontDesk.exe" goto notextracted',
         'if not exist "%~dp0Microsoft.Web.WebView2.Core.dll" goto notextracted',
-        'start "" "%~dp0RotmanFrontDesk.exe" --install',
+        'start "" "%~dp0RFrontDesk.exe" --install',
         'exit /b 0',
         ':notextracted',
         'echo.',
@@ -250,7 +250,7 @@ Third-party licences are in the licenses\ folder.
 
     # --- Zip ---------------------------------------------------------------
     New-Item -ItemType Directory -Force $OutDir | Out-Null
-    $zip = Join-Path $OutDir ("Rotman-Front-Desk-$version.zip")
+    $zip = Join-Path $OutDir ("RFrontDesk-$version.zip")
     if (Test-Path $zip) { Remove-Item $zip -Force }
     Say "compressing..."
     Compress-Archive -Path $root -DestinationPath $zip -CompressionLevel Optimal
@@ -266,7 +266,7 @@ Third-party licences are in the licenses\ folder.
         $unpacked = Join-Path $check $FolderName
         if (-not (Test-Path $unpacked)) { Fail "The zip does not contain a '$FolderName' folder." }
 
-        $unpackedExe = Join-Path $unpacked 'RotmanFrontDesk.exe'
+        $unpackedExe = Join-Path $unpacked 'RFrontDesk.exe'
         if (-not (Test-Path $unpackedExe)) { Fail "No exe in the unpacked folder." }
         foreach ($need in @('Install Front Desk.cmd', 'START HERE.txt', 'For IT.txt',
                             'licenses\WebView2 LICENSE.txt', 'licenses\WebView2 NOTICE.txt')) {

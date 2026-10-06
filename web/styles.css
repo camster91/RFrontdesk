@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════
-   Rotman Front Desk App — Design System v1.0
+   RFrontDesk App — Design System v1.0
    Complete dark theme, touch-first, kiosk-optimized
    ═══════════════════════════════════════════════════ */
 
@@ -11,7 +11,7 @@
 }
 
 :root {
-  /* Rotman Brand Colors */
+  /* Brand colours */
   --magenta: #E6007E;
   --magenta-hover: #C5006B;
   --magenta-soft: rgba(230, 0, 126, 0.08);
@@ -111,8 +111,8 @@
   --shadow-glow: 0 0 0 1px var(--magenta-soft), 0 0 24px var(--magenta-glow);
   --shadow-glow-strong: 0 0 0 2px var(--magenta), 0 0 32px var(--magenta-glow);
 
-  /* The Rotman mark is one shared white-on-transparent SVG -- the data URI in
-     index.html's __ROT_LOGO has fill="none" on its root and fill="#fff" on its
+  /* The brand mark is one shared white-on-transparent SVG -- the data URI in
+     index.html's __LOGO has fill="none" on its root and fill="#fff" on its
      only group -- painted into nine <img data-logo> elements. White is right on
      this theme and wrong on the other one; see the light theme's copy. */
   --logo-filter: none;
@@ -146,7 +146,7 @@
    --magenta is deepened. Brand magenta #E6007E on white is 4.46:1, just under
    the 4.5:1 WCAG AA floor for normal text, and it is used as a text colour in
    30 places (active tabs, badges, links). #C40069 is 5.9:1 on white and still
-   unmistakably the Rotman colour. Dark keeps the pure brand value.
+   unmistakably the brand colour. Dark keeps the pure brand value.
 
    The soft/glow variants keep their magenta rather than following --magenta,
    so tinted fills stay the brand colour instead of the deepened one.

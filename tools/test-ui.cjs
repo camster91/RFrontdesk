@@ -208,7 +208,7 @@ function startServer() {
     check("the host section renders in the browser build", hostSection !== null, hostSection);
     check(
       "and explains the backup folder rather than showing a dead panel",
-      /RotmanFrontDesk\.exe/.test(hostSection || ""),
+      /RFrontDesk\.exe/.test(hostSection || ""),
       hostSection
     );
     check("no host-only buttons leak into the browser build", await page.evaluate(
@@ -882,7 +882,7 @@ function startServer() {
     // --- the brand mark ----------------------------------------------------
     // The mark is an <img>, not text, so `color` says nothing about it: it is
     // one shared white-on-transparent SVG -- the data URI in index.html's
-    // __ROT_LOGO is fill="none" on its root and fill="#fff" on its only group --
+    // __LOGO is fill="none" on its root and fill="#fff" on its only group --
     // painted into nine placements, recoloured only by whatever `filter` the
     // theme applies. The general audit reads `color` on it and so reported the
     // inherited text colour, which is why this went unnoticed: every one of the

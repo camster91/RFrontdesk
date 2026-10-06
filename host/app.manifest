@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="RotmanFrontDesk" />
+  <assemblyIdentity version="1.0.0.0" name="RFrontDesk" />
 
   <!-- The app is used on touch tablets. Without this, WinForms renders at the
        wrong scale on a high-DPI panel and the whole UI comes out blurry. -->

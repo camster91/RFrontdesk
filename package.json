@@ -1,5 +1,5 @@
 {
-  "name": "rotman-front-desk",
+  "name": "rfrontdesk",
   "private": true,
   "description": "Test tools only. The app itself has no build step and no npm dependencies.",
   "scripts": {

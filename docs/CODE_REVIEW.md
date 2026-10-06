@@ -1,7 +1,7 @@
 # Front Desk — Code Review
 
 Date: 2026-09-18
-Subject: `frontdesk.html` (Rotman Front Desk, single-file build, Jun 10 2026)
+Subject: `frontdesk.html` (RFrontDesk, single-file build, Jun 10 2026)
 Method: static read of the split source (`web/js/app.js`), three parallel reviewers
 covering the data layer + flows, the interaction layer, and the admin/kiosk/backup
 surfaces.
@@ -106,7 +106,7 @@ visibility by class/DOM, never by a computed style a transition touches.
 | H1 schema mismatch silently wipes the database | `openDB` now salvages first: `_salvageStores` reads every surviving store into memory, the database is recreated, `_restoreSalvage` puts the records back into the stores the new schema still has. A `localStorage` report (`_recordRecoveryReport` / `takeRecoveryReport`) records how many records carried over and how many were dropped, and bootstrap toasts it with a "take a backup" prompt. | Runtime: staged a version-3 database holding items/borrowers/loans/settings but **no `requests`** store. Reload produced `stores: [borrowers, items, loans, requests, settings]` with the seeded "Survivor Item" intact — recovered, not wiped. |
 | H2 `onversionchange` nulls without `close()` | The handler now calls `close()` before nulling, so another tab — or this app after a future schema bump — can actually upgrade or delete. | Static; verified by the H1 test's recreate path reaching completion rather than tripping `onblocked`. |
 | H3 three unescaped DB values in `innerHTML` | `_makeClosedLoanRow` escapes `conditionIn` (its colour was already whitelisted); the loan-hours input coerces via `Number(settings.defaultLoanHours) || 8`; both `data-request-id` sites coerce via `Number(req.id)`. | Static. Worth doing because Import writes records verbatim (A4), so an edited backup was a real injection path. |
-| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under `TZ=America/Toronto` plus live filtering in the app. |
+| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under an Eastern-time `TZ` plus live filtering in the app. |
 | **`getSettings` could revert the staff PIN** (exposed *by* the H1 work) | Settings live under the key `1`, but a rebuilt or older database can hold a real settings record under another key. `getSettings` treated that as "no settings" and wrote defaults — silently reverting the staff PIN, loan duration and theme while the user's actual settings sat unread in the same store. It now adopts an existing record (`existing.find(s => s && s.pin) \|\| existing[0]`), re-keys it to `id: 1`, and deletes the leftovers. | Runtime: with `{id: 'legacy', pin: '4321', defaultLoanHours: 12, theme: 'light'}` staged, the result was a single `{id: 1, pin: '4321', hours: 12, theme: 'light'}` and `<body>` actually carried the `light` class — the adopted record was read, not just stored. |
 
 The recovery toast was confirmed separately by staging the `localStorage` marker
@@ -534,7 +534,7 @@ persistent backup folder.
 ### F3. Backup filenames use UTC dates **[REVIEWED]**
 
 `dateStamp()` uses `toISOString().slice(0,10)` (`app.js:3732-3734`), so backups
-after 8pm Toronto are named with tomorrow's date, and two backups in that window
+after 8pm Eastern are named with tomorrow's date, and two backups in that window
 overwrite each other in a directory. The filename is otherwise safe — only
 `[0-9-]` from the ISO date reaches it, no user input.
 
@@ -697,7 +697,7 @@ on submit.
   validation (A4), so a shared or edited backup can inject markup. Every other
   render path checked does escape, including attributes.
 - **H4 [REVIEWED]** Date filters are UTC-anchored (`app.js:5047-5048`,
-  `app.js:5072-5073`), so a Toronto filter of Sep 1 includes loans from Aug 31 8pm
+  `app.js:5072-5073`), so an Eastern-time filter of Sep 1 includes loans from Aug 31 8pm
   onward.
 - **H5 [FIXED]** Clipboard fallback reports success it cannot know
   (`app.js:5467-5486`) — the `execCommand` boolean return is discarded and "Copied"
@@ -1224,7 +1224,7 @@ without knowing a theme exists. Two values are not simple inversions:
 - **`--magenta` is deepened to `#C40069`.** Brand magenta `#E6007E` on white is
   4.46:1 — under the 4.5:1 WCAG AA floor for normal text — and it is used as a
   text colour in 30 places (active tabs, badges, the recent-kiosk strip's item
-  names). `#C40069` is 5.9:1 and still reads as the Rotman colour. Dark keeps the
+  names). `#C40069` is 5.9:1 and still reads as the brand colour. Dark keeps the
   pure brand value.
 - **Shadows are rebuilt.** The dark set is a black glow, which is depth on a
   near-black page and dirt on a white one.
@@ -1723,8 +1723,8 @@ taken out — scale and glow carry it alone. `pulse-glow` is left intact for
 
 ### The mark was invisible on four screens
 
-The Rotman mark is one shared SVG — the `data:image/svg+xml` URI in
-`index.html`'s `__ROT_LOGO` has `fill="none"` on its root and `fill="#fff"` on
+The brand mark is one shared SVG — the `data:image/svg+xml` URI in
+`index.html`'s `__LOGO` has `fill="none"` on its root and `fill="#fff"` on
 its only group — painted into nine `<img data-logo>` placements. White artwork.
 Every one of the nine sits on `--surface` or `--bg`, and on the light theme those
 are `#ffffff` and `#f4f5f8`:
@@ -1880,7 +1880,7 @@ and `tel:`, `sms:` and `mailto:` are handed to Windows on an ordinary install an
 **refused** on a `--no-devtools` install, which is the locked-down one. Everything
 refused is logged with the URL that was refused.
 
-Runtime evidence, not just unit checks: launching `dist\RotmanFrontDesk.exe
+Runtime evidence, not just unit checks: launching `dist\RFrontDesk.exe
 --minimized --no-devtools` produced no `blocked navigation` or `navigation failed`
 lines, and the page's own IndexedDB directory
 (`…/IndexedDB/https_frontdesk.local_0.indexeddb.leveldb/`) was written during that
@@ -2082,7 +2082,7 @@ The five host and packaging findings above, fixed:
 New:
 
 - **Install and uninstall, built into the exe** (`Installer`): per user into
-  `%LOCALAPPDATA%\Programs\Rotman Front Desk`, Start menu and desktop
+  `%LOCALAPPDATA%\Programs\RFrontDesk`, Start menu and desktop
   shortcuts, an Apps entry, options for a public tablet and start-with-Windows,
   silent switches for IT. Updating keeps `data`; uninstalling keeps it unless
   asked. Running setup closes a running copy through a named event, which even a

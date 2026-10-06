@@ -20,10 +20,6 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 
 ## Outside this app
 
-- [x] **The rotmanav.ca homepage** works (the `rotmanav-hub` Worker).
-- [x] **Leftover subdomains** `admin.`, `ai.` and `app.rotmanav.ca` go to the homepage.
-- [x] **The web version is retired.** desk.rotmanav.ca, its routes and its sign-in
-      are gone, and the homepage no longer lists Front Desk.
 - [x] **Code signing.** Every build on `main` is signed with Azure Artifact
       Signing through the shared Rclicker workflow; the first signed build is
       run 37467605234. See `docs/code-signing.md`.

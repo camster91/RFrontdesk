@@ -1,4 +1,4 @@
-# Builds Rotman Front Desk into a folder you can copy anywhere.
+# Builds RFrontDesk into a folder you can copy anywhere.
 #
 #   pwsh -File build.ps1              # build into ..\dist
 #   pwsh -File build.ps1 -Sign <thumbprint>      # sign with an installed certificate
@@ -100,7 +100,7 @@ trap {
 }
 
 Write-Host ""
-Write-Host "Rotman Front Desk - build" -ForegroundColor Magenta
+Write-Host "RFrontDesk - build" -ForegroundColor Magenta
 Write-Host ""
 
 # --- Toolchain -------------------------------------------------------------
@@ -211,9 +211,9 @@ if ($cert) {
 # would be left with its records in %TEMP% and the old app still running on the
 # old files. Asking first costs nothing and turns a half-finished build into one
 # sentence the operator can act on.
-$runningApp = @(Get-Process -Name 'RotmanFrontDesk' -ErrorAction SilentlyContinue)
+$runningApp = @(Get-Process -Name 'RFrontDesk' -ErrorAction SilentlyContinue)
 if ($runningApp.Length -gt 0) {
-    Fail "Rotman Front Desk is running (PID $($runningApp.Id -join ', ')). Exit it from the tray icon, then build again."
+    Fail "RFrontDesk is running (PID $($runningApp.Id -join ', ')). Exit it from the tray icon, then build again."
 }
 
 if (Test-Path $dataDir) {
@@ -228,8 +228,8 @@ if (Test-Path $OutputDir) {
 }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 
-$exePath = Join-Path $OutputDir 'RotmanFrontDesk.exe'
-$pdbPath = Join-Path $OutputDir 'RotmanFrontDesk.pdb'
+$exePath = Join-Path $OutputDir 'RFrontDesk.exe'
+$pdbPath = Join-Path $OutputDir 'RFrontDesk.pdb'
 
 # --- Compile ---------------------------------------------------------------
 # /langversion:5 is explicit rather than implied: this compiler only does C# 5,
