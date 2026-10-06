@@ -52,28 +52,46 @@ namespace FrontDeskHost
         public static string LogFile;
         public static bool Portable;
 
+        /// <summary>The newest log is trimmed to this; one older file is kept beside it.</summary>
+        public const long MaxLogBytes = 1024 * 1024;
+
         public static void Resolve()
         {
             Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
             Web = Path.Combine(Root, "web");
-            string preferred = Path.Combine(Root, "data");
-            if (IsWritable(preferred))
-            {
-                Data = preferred;
-                Portable = true;
-            }
-            else
-            {
-                Data = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "FrontDesk", "data");
-                Portable = false;
-            }
+            string fallback = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "FrontDesk", "data");
+            Data = ChooseData(Root, fallback, IsWritable, Directory.Exists, out Portable);
             Backups = Path.Combine(Data, "backups");
             BrowserData = Path.Combine(Data, "browser");
             LogFile = Path.Combine(Data, "frontdesk.log");
             SafeCreate(Data);
             SafeCreate(Backups);
+            RollLog(LogFile, MaxLogBytes);
+        }
+
+        /// <summary>
+        /// Which data folder to open. The one beside the app wins whenever it
+        /// already holds a database, even if the write check failed this time.
+        ///
+        /// It used to be the write check alone. One bad moment -- an antivirus
+        /// scan holding the probe file, a slow network share -- sent that launch
+        /// to an empty database under LocalAppData, and the desk opened with no
+        /// records at all. A folder that has a database is the desk's; if it
+        /// really cannot be written, the app says so when it tries.
+        /// </summary>
+        internal static string ChooseData(string root, string fallback,
+            Func<string, bool> writable, Func<string, bool> dirExists, out bool portable)
+        {
+            string preferred = Path.Combine(root, "data");
+            if (dirExists(Path.Combine(preferred, "browser")) || writable(preferred))
+            {
+                portable = true;
+                return preferred;
+            }
+            portable = false;
+            return fallback;
         }
 
         private static void SafeCreate(string dir)
@@ -84,24 +102,69 @@ namespace FrontDeskHost
 
         private static bool IsWritable(string dir)
         {
+            string probe;
             try
             {
                 Directory.CreateDirectory(dir);
-                string probe = Path.Combine(dir, ".write-probe");
+                probe = Path.Combine(dir, ".write-probe");
                 File.WriteAllText(probe, "1");
-                File.Delete(probe);
-                return true;
             }
             catch
             {
                 return false;
             }
+            // The write is the test. A delete that fails -- a scanner still has
+            // the file open -- says nothing about whether the folder is writable.
+            try { File.Delete(probe); }
+            catch { }
+            return true;
         }
+
+        /// <summary>
+        /// Keep the log from growing for ever: past the limit it becomes
+        /// frontdesk.log.1 (replacing the last one) and a fresh log starts.
+        /// </summary>
+        internal static void RollLog(string logFile, long maxBytes)
+        {
+            try
+            {
+                FileInfo f = new FileInfo(logFile);
+                if (!f.Exists || f.Length <= maxBytes) return;
+                string old = logFile + ".1";
+                if (File.Exists(old)) File.Delete(old);
+                File.Move(logFile, old);
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// One line, no control characters, and a sane length. For anything the
+        /// page sends: a message with a newline in it could forge a log line.
+        /// </summary>
+        internal static string OneLine(string s, int max)
+        {
+            if (s == null) return "";
+            StringBuilder b = new StringBuilder(Math.Min(s.Length, max));
+            foreach (char c in s)
+            {
+                if (b.Length >= max) break;
+                b.Append(char.IsControl(c) ? ' ' : c);
+            }
+            if (s.Length > max) b.Append("...");
+            return b.ToString();
+        }
+
+        private static int _logWrites;
 
         public static void Log(string message)
         {
             try
             {
+                // Checked now and then rather than on every line: a desk left
+                // running for months never restarts to trim it.
+                if (++_logWrites % 200 == 0) RollLog(LogFile, MaxLogBytes);
                 string line = string.Format(
                     CultureInfo.InvariantCulture,
                     "{0:yyyy-MM-dd HH:mm:ss}  {1}{2}",
@@ -110,6 +173,37 @@ namespace FrontDeskHost
             }
             catch
             {
+            }
+        }
+
+        /// <summary>
+        /// The last part of the log, read from the end of the file. The whole
+        /// file used to be read into memory to show its final 20,000 characters.
+        /// </summary>
+        internal static string Tail(string path, int maxChars)
+        {
+            if (!File.Exists(path)) return "";
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                long want = Math.Min(fs.Length, (long)maxChars * 4);
+                fs.Seek(-want, SeekOrigin.End);
+                byte[] buf = new byte[want];
+                int got = 0;
+                while (got < buf.Length)
+                {
+                    int n = fs.Read(buf, got, buf.Length - got);
+                    if (n <= 0) break;
+                    got += n;
+                }
+                string text = Encoding.UTF8.GetString(buf, 0, got);
+                if (text.Length > maxChars) text = text.Substring(text.Length - maxChars);
+                // Started mid-file: drop the partial first line.
+                if (want < fs.Length)
+                {
+                    int nl = text.IndexOf('\n');
+                    if (nl >= 0) text = text.Substring(nl + 1);
+                }
+                return text;
             }
         }
     }
@@ -412,10 +506,8 @@ namespace FrontDeskHost
         {
             try
             {
-                if (!File.Exists(Paths.LogFile)) return "{\"ok\":true,\"text\":\"\"}";
-                string text = File.ReadAllText(Paths.LogFile);
-                // Only the tail -- the log is append-only and could be long.
-                if (text.Length > 20000) text = text.Substring(text.Length - 20000);
+                // Only the tail, read from the end of the file.
+                string text = Paths.Tail(Paths.LogFile, 20000);
                 return "{\"ok\":true,\"text\":" + Json.Str(text) + "}";
             }
             catch (Exception ex)
@@ -452,7 +544,7 @@ namespace FrontDeskHost
         /// <summary>The page reports its own errors here, so they land next to the host's.</summary>
         public string LogClientError(string message)
         {
-            Paths.Log("client: " + message);
+            Paths.Log("client: " + Paths.OneLine(message, 2000));
             return "{\"ok\":true}";
         }
 
@@ -495,11 +587,33 @@ namespace FrontDeskHost
             return files;
         }
 
-        /// <summary>Keep the newest N, delete the rest. Returns what went.</summary>
+        /// <summary>
+        /// The app's own backups: frontdesk-backup-2026-10-06.json, or with a
+        /// time on the end. Only these are ever rotated out.
+        /// </summary>
+        internal static bool IsAutoBackupName(string name)
+        {
+            return name != null && AutoBackupName.IsMatch(name);
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex AutoBackupName =
+            new System.Text.RegularExpressions.Regex(
+                @"^frontdesk-backup-\d{4}-\d{2}-\d{2}(-\d{6})?\.json$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// Keep the newest N of the app's own backups, delete the older ones.
+        /// Returns what went.
+        ///
+        /// Any other .json in the folder -- a copy someone saved there by hand,
+        /// an export from another desk -- is shown in the restore list but never
+        /// deleted. It used to count toward the 30 and go like any other.
+        /// </summary>
         private static List<string> Rotate()
         {
             List<string> gone = new List<string>();
-            List<FileInfo> files = List();
+            List<FileInfo> files = List().FindAll(delegate(FileInfo f) { return IsAutoBackupName(f.Name); });
             for (int i = Build.KeepBackups; i < files.Count; i++)
             {
                 try
@@ -542,6 +656,14 @@ namespace FrontDeskHost
     {
         public bool Minimized;
         public bool DevTools = true;
+
+        // Setup: see Installer. These run instead of the app.
+        public bool Install;
+        public bool Uninstall;
+        public bool Quiet;
+        public bool AutostartOnInstall;
+        public bool NoDesktopShortcut;
+        public bool DeleteData;
 
         /// <summary>
         /// How this process was started. Read from the real command line rather
@@ -586,6 +708,14 @@ namespace FrontDeskHost
                 if (string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase)) o.Minimized = true;
                 else if (string.Equals(a, "--devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = true;
                 else if (string.Equals(a, "--no-devtools", StringComparison.OrdinalIgnoreCase)) o.DevTools = false;
+                // The plain-English name for the same lock, used by the installer.
+                else if (string.Equals(a, "--kiosk", StringComparison.OrdinalIgnoreCase)) o.DevTools = false;
+                else if (string.Equals(a, "--install", StringComparison.OrdinalIgnoreCase)) o.Install = true;
+                else if (string.Equals(a, "--uninstall", StringComparison.OrdinalIgnoreCase)) o.Uninstall = true;
+                else if (string.Equals(a, "--quiet", StringComparison.OrdinalIgnoreCase)) o.Quiet = true;
+                else if (string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase)) o.AutostartOnInstall = true;
+                else if (string.Equals(a, "--no-desktop", StringComparison.OrdinalIgnoreCase)) o.NoDesktopShortcut = true;
+                else if (string.Equals(a, "--delete-data", StringComparison.OrdinalIgnoreCase)) o.DeleteData = true;
                 else if (a != null && a.StartsWith("-", StringComparison.Ordinal))
                 {
                     o.Unknown.Add(a);
@@ -628,13 +758,113 @@ namespace FrontDeskHost
         /// </summary>
         public static string Args()
         {
-            return StartupOptions.Current.DevTools ? "--minimized" : "--minimized --no-devtools";
+            return ArgsFor(StartupOptions.Current.DevTools);
+        }
+
+        internal static string ArgsFor(bool devTools)
+        {
+            return devTools ? "--minimized" : "--minimized --no-devtools";
         }
 
         /// <summary>The command Windows will run at logon, as it stands now.</summary>
         public static string Command()
         {
-            return "\"" + Application.ExecutablePath + "\" " + Args();
+            return CommandFor(Application.ExecutablePath, StartupOptions.Current.DevTools);
+        }
+
+        internal static string CommandFor(string exePath, bool devTools)
+        {
+            return "\"" + exePath + "\" " + ArgsFor(devTools);
+        }
+
+        /// <summary>The exe a stored Run value starts: the quoted part, or up to the first space.</summary>
+        internal static string ExeOf(string command)
+        {
+            if (string.IsNullOrEmpty(command)) return "";
+            string c = command.Trim();
+            if (c.StartsWith("\"", StringComparison.Ordinal))
+            {
+                int end = c.IndexOf('"', 1);
+                return end > 1 ? c.Substring(1, end - 1) : c.Substring(1);
+            }
+            int sp = c.IndexOf(' ');
+            return sp > 0 ? c.Substring(0, sp) : c;
+        }
+
+        internal static bool IsLocked(string command)
+        {
+            if (command == null) return false;
+            return command.IndexOf("--no-devtools", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   command.IndexOf("--kiosk", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>
+        /// What an existing startup entry should be changed to, or null to leave it.
+        ///
+        /// The entry used to be written once and never looked at again, so moving
+        /// the folder, or installing over an old copy, left Windows starting an
+        /// exe that was gone. It is now corrected at launch -- but only when it is
+        /// this copy's entry (same exe) or points at nothing: a second copy run
+        /// from a USB stick must not take the startup entry over from the
+        /// installed one. And a correction never drops the lock: if the stored
+        /// entry is locked, the new one is too, even when this launch is not.
+        /// </summary>
+        internal static string Repair(string stored, string exePath, bool devTools, Func<string, bool> fileExists)
+        {
+            if (string.IsNullOrEmpty(stored)) return null;
+            string storedExe = ExeOf(stored);
+            bool ours = string.Equals(storedExe, exePath, StringComparison.OrdinalIgnoreCase);
+            if (!ours && fileExists(storedExe)) return null;
+            bool locked = IsLocked(stored) || !devTools;
+            string want = CommandFor(exePath, !locked);
+            return string.Equals(stored, want, StringComparison.Ordinal) ? null : want;
+        }
+
+        /// <summary>Run at every launch: fix this copy's startup entry if it is out of date.</summary>
+        public static void RepairIfStale()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                {
+                    if (k == null) return;
+                    string stored = k.GetValue(ValueName) as string;
+                    string fixedValue = Repair(stored, Application.ExecutablePath,
+                        StartupOptions.Current.DevTools, File.Exists);
+                    if (fixedValue == null) return;
+                    k.SetValue(ValueName, fixedValue);
+                    Paths.Log("startup entry updated to: " + fixedValue);
+                }
+            }
+            catch (Exception ex)
+            {
+                Paths.Log("could not check the startup entry: " + ex.Message);
+            }
+        }
+
+        /// <summary>The stored Run value, or null.</summary>
+        internal static string Stored()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, false))
+                {
+                    return k == null ? null : k.GetValue(ValueName) as string;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Write the entry for a given exe. Used by the installer.</summary>
+        internal static void SetFor(string exePath, bool devTools)
+        {
+            using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKey))
+            {
+                k.SetValue(ValueName, CommandFor(exePath, devTools));
+            }
         }
 
         public static bool IsEnabled()
@@ -675,6 +905,635 @@ namespace FrontDeskHost
         }
     }
 
+    /// <summary>
+    /// Install and uninstall, for one Windows user, with no admin rights.
+    ///
+    ///   RotmanFrontDesk.exe --install      (the zip's "Install Front Desk.cmd" runs this)
+    ///   RotmanFrontDesk.exe --uninstall    (what Settings > Apps runs)
+    ///   add --quiet for IT: no windows; with --install, --kiosk, --autostart and
+    ///   --no-desktop choose the options; with --uninstall, --delete-data removes
+    ///   the records too.
+    ///
+    /// Why it lives in the app rather than in a setup.exe: a self-extracting
+    /// setup is the shape SentinelOne and CrowdStrike delete on sight (see
+    /// docs\EDR_AND_SIGNING.md), and a second exe is a second binary to sign and
+    /// allowlist. This way the one signed exe does everything.
+    ///
+    /// It installs to %LOCALAPPDATA%\Programs\Rotman Front Desk -- the per-user
+    /// place Windows itself suggests -- because the app keeps its data beside
+    /// itself and Program Files is not writable without admin rights.
+    /// </summary>
+    internal static class Installer
+    {
+        public const string ExeName = "RotmanFrontDesk.exe";
+        public const string AppName = "Rotman Front Desk";
+        private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk";
+        private const string StagingName = ".setup-new";
+        private const string LeftoverPrefix = "RotmanFrontDesk-removed-";
+
+        public static string DefaultInstallDir()
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", AppName);
+        }
+
+        private static string StartMenuLink()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppName + ".lnk");
+        }
+
+        private static string DesktopLink()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");
+        }
+
+        /// <summary>The files without which the app cannot start, or null when all are there.</summary>
+        internal static string MissingFiles(string dir)
+        {
+            string[] need = { ExeName, "Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.WinForms.dll",
+                              "WebView2Loader.dll", Path.Combine("web", "index.html") };
+            List<string> missing = new List<string>();
+            foreach (string n in need)
+                if (!File.Exists(Path.Combine(dir, n))) missing.Add(n);
+            return missing.Count == 0 ? null : string.Join(", ", missing.ToArray());
+        }
+
+        internal static string Full(string path)
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        internal static bool SamePath(string a, string b)
+        {
+            return string.Equals(Full(a), Full(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>True when path is dir itself or anything under it.</summary>
+        internal static bool IsInside(string path, string dir)
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(dir)) return false;
+            try
+            {
+                string p = Full(path);
+                string d = Full(dir);
+                return string.Equals(p, d, StringComparison.OrdinalIgnoreCase) ||
+                       p.StartsWith(d + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // --- Install ---------------------------------------------------------
+
+        public static int Install(StartupOptions o)
+        {
+            string src = Full(AppDomain.CurrentDomain.BaseDirectory);
+            string dst = DefaultInstallDir();
+            string missing = MissingFiles(src);
+            if (missing != null)
+            {
+                return Problem(o, "Some of Front Desk's files are missing: " + missing + ".\r\n\r\n" +
+                    "If you opened this from inside the zip, close it, right-click the zip, choose " +
+                    "Extract All, and run Install from the folder that makes.");
+            }
+            if (!SamePath(src, dst) && (IsInside(src, dst) || IsInside(dst, src)))
+                return Problem(o, "This copy is in the way of the install folder. Move it somewhere else (Downloads is fine) and run Install again.");
+
+            // Defaults: what this user chose last time, if anything.
+            bool kiosk = !o.DevTools || ReadFlag("Kiosk", false);
+            bool desktop = !o.NoDesktopShortcut && ReadFlag("DesktopShortcut", true);
+            // Kept as it was unless asked: an update must not quietly drop the
+            // startup entry a desk relies on after a reboot.
+            string stored = Autostart.Stored();
+            bool autostart = o.AutostartOnInstall ||
+                (stored != null && (!o.Quiet || IsInside(Autostart.ExeOf(stored), dst)));
+            bool open = !o.Quiet;
+
+            if (!o.Quiet)
+            {
+                bool again = File.Exists(Path.Combine(dst, ExeName));
+                using (SetupForm f = new SetupForm(
+                    again ? "Update " + AppName : "Install " + AppName,
+                    again ? "Update Front Desk" : "Install Front Desk",
+                    (again ? "This replaces the app with this version. The desk's records and backups are kept." :
+                             "Front Desk will be installed for you only. No admin rights are needed.") +
+                    "\r\n\r\nFolder: " + dst,
+                    again ? "Update" : "Install"))
+                {
+                    CheckBox cDesk = f.AddOption("Put a shortcut on the desktop", desktop, null);
+                    CheckBox cAuto = f.AddOption("Start Front Desk when I sign in to Windows", autostart, null);
+                    CheckBox cKiosk = f.AddOption("This is a public tablet: lock it down", kiosk,
+                        "Full screen, no way to close it or reach Windows from the app. Staff still sign in by holding the logo.");
+                    CheckBox cOpen = f.AddOption("Open Front Desk when done", true, null);
+                    if (f.ShowDialog() != DialogResult.OK) return 1;
+                    desktop = cDesk.Checked;
+                    autostart = cAuto.Checked;
+                    kiosk = cKiosk.Checked;
+                    open = cOpen.Checked;
+                }
+            }
+
+            try
+            {
+                StopRunning(o.Quiet);
+                if (!SamePath(src, dst)) CopyApp(src, dst);
+                string exe = Path.Combine(dst, ExeName);
+                string args = kiosk ? "--no-devtools" : "";
+
+                MakeShortcut(StartMenuLink(), exe, args, dst);
+                if (desktop) MakeShortcut(DesktopLink(), exe, args, dst);
+                else TryDeleteFile(DesktopLink());
+
+                if (autostart) Autostart.SetFor(exe, !kiosk);
+                else
+                {
+                    RemoveRunIfInside(dst);
+                    RemoveRunIfInside(src);
+                }
+
+                WriteUninstallEntry(dst, exe, kiosk, desktop);
+
+                if (open)
+                    Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false, WorkingDirectory = dst });
+                else if (!o.Quiet)
+                    MessageBox.Show("Front Desk is installed. Find it in the Start menu.", AppName,
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                return Problem(o, "Front Desk could not be installed.\r\n\r\n" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Put the app from src into dst. dst's data folder is never touched; the
+        /// rest of the old app goes, so a file dropped from a newer version does
+        /// not linger. Copied to a staging folder first, so a full disk or a
+        /// locked file stops the install before anything old is removed.
+        ///
+        /// If dst has no database yet and src does -- the desk was being run from
+        /// the unzipped folder before it was installed -- the records come along.
+        /// </summary>
+        internal static void CopyApp(string src, string dst)
+        {
+            Directory.CreateDirectory(dst);
+            string stage = Path.Combine(dst, StagingName);
+            if (Directory.Exists(stage)) Directory.Delete(stage, true);
+            CopyTree(src, stage, Path.Combine(src, "data"), true);
+
+            foreach (string f in Directory.GetFiles(dst)) File.Delete(f);
+            foreach (string d in Directory.GetDirectories(dst))
+            {
+                string name = Path.GetFileName(d);
+                if (string.Equals(name, "data", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(name, StagingName, StringComparison.OrdinalIgnoreCase)) continue;
+                Directory.Delete(d, true);
+            }
+            foreach (string f in Directory.GetFiles(stage))
+                File.Move(f, Path.Combine(dst, Path.GetFileName(f)));
+            foreach (string d in Directory.GetDirectories(stage))
+                Directory.Move(d, Path.Combine(dst, Path.GetFileName(d)));
+            Directory.Delete(stage, true);
+
+            string srcData = Path.Combine(src, "data");
+            string dstData = Path.Combine(dst, "data");
+            if (!Directory.Exists(Path.Combine(dstData, "browser")) && Directory.Exists(srcData))
+                CopyTree(srcData, dstData, null, false);
+            Directory.CreateDirectory(Path.Combine(dstData, "backups"));
+        }
+
+        private static void CopyTree(string from, string to, string skip, bool overwrite)
+        {
+            Directory.CreateDirectory(to);
+            foreach (string f in Directory.GetFiles(from))
+            {
+                string target = Path.Combine(to, Path.GetFileName(f));
+                if (!overwrite && File.Exists(target)) continue;
+                File.Copy(f, target, overwrite);
+            }
+            foreach (string d in Directory.GetDirectories(from))
+            {
+                if (skip != null && SamePath(d, skip)) continue;
+                CopyTree(d, Path.Combine(to, Path.GetFileName(d)), skip, overwrite);
+            }
+        }
+
+        private static void WriteUninstallEntry(string dir, string exe, bool kiosk, bool desktop)
+        {
+            long bytes = 0;
+            try
+            {
+                foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                    if (!IsInside(f, Path.Combine(dir, "data"))) bytes += new FileInfo(f).Length;
+            }
+            catch
+            {
+            }
+            using (RegistryKey k = Registry.CurrentUser.CreateSubKey(UninstallKey))
+            {
+                k.SetValue("DisplayName", AppName);
+                k.SetValue("DisplayVersion", Build.Version);
+                k.SetValue("Publisher", "Rotman School of Management");
+                k.SetValue("DisplayIcon", exe + ",0");
+                k.SetValue("InstallLocation", dir);
+                k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture));
+                k.SetValue("UninstallString", "\"" + exe + "\" --uninstall");
+                k.SetValue("QuietUninstallString", "\"" + exe + "\" --uninstall --quiet");
+                k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+                k.SetValue("EstimatedSize", (int)Math.Max(1, bytes / 1024), RegistryValueKind.DWord);
+                // Remembered so an update offers the same choices.
+                k.SetValue("Kiosk", kiosk ? 1 : 0, RegistryValueKind.DWord);
+                k.SetValue("DesktopShortcut", desktop ? 1 : 0, RegistryValueKind.DWord);
+            }
+        }
+
+        private static bool ReadFlag(string name, bool fallback)
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(UninstallKey, false))
+                {
+                    if (k == null) return fallback;
+                    object v = k.GetValue(name);
+                    return v is int ? (int)v != 0 : fallback;
+                }
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        private static string InstalledDir()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(UninstallKey, false))
+                {
+                    string dir = k == null ? null : k.GetValue("InstallLocation") as string;
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) return dir;
+                }
+            }
+            catch
+            {
+            }
+            string fallback = DefaultInstallDir();
+            return File.Exists(Path.Combine(fallback, ExeName)) ? fallback : null;
+        }
+
+        // --- Uninstall -------------------------------------------------------
+
+        public static int Uninstall(StartupOptions o)
+        {
+            string dir = InstalledDir();
+            if (dir == null)
+                return Problem(o, "Front Desk is not installed for this Windows user, so there is nothing to remove.");
+
+            bool deleteData = o.DeleteData;
+            if (!o.Quiet)
+            {
+                using (SetupForm f = new SetupForm("Remove " + AppName, "Remove Front Desk?",
+                    "This removes the app, its shortcuts and its startup entry.", "Remove"))
+                {
+                    CheckBox cData = f.AddOption("Also delete the desk's records and backups", false,
+                        "Leave this off to keep them. Installing again picks them up.");
+                    if (f.ShowDialog() != DialogResult.OK) return 1;
+                    deleteData = cData.Checked;
+                }
+                if (deleteData && MessageBox.Show(
+                        "Delete every record and backup on this computer? This cannot be undone.",
+                        AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    return 1;
+            }
+
+            try
+            {
+                StopRunning(o.Quiet);
+                TryDeleteFile(StartMenuLink());
+                TryDeleteFile(DesktopLink());
+                RemoveRunIfInside(dir);
+                try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, false); }
+                catch { }
+
+                List<string> stuck = RemoveApp(dir, deleteData);
+                if (deleteData)
+                {
+                    // The fallback folder an unwritable copy once used.
+                    string legacy = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrontDesk");
+                    try { if (Directory.Exists(legacy)) Directory.Delete(legacy, true); }
+                    catch { stuck.Add(legacy); }
+                }
+
+                if (!o.Quiet)
+                {
+                    string msg = "Front Desk has been removed.";
+                    if (!deleteData && Directory.Exists(Path.Combine(dir, "data")))
+                        msg += "\r\n\r\nThe desk's records and backups are still in:\r\n" + Path.Combine(dir, "data") +
+                               "\r\n\r\nInstall again to pick them up, or delete that folder.";
+                    if (stuck.Count > 0)
+                        msg += "\r\n\r\nThese could not be removed and can be deleted by hand:\r\n" +
+                               string.Join("\r\n", stuck.ToArray());
+                    MessageBox.Show(msg, AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                return stuck.Count == 0 ? 0 : 3;
+            }
+            catch (Exception ex)
+            {
+                return Problem(o, "Front Desk could not be removed.\r\n\r\n" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Delete the app from dir; the data folder too only when asked. Returns
+        /// what could not be removed.
+        ///
+        /// The running exe cannot be deleted, but Windows does let it be renamed,
+        /// so it is moved into %TEMP% and cleaned up the next time any copy of
+        /// Front Desk starts. That avoids the usual trick of copying the
+        /// uninstaller to %TEMP% and running it from there -- an exe that copies
+        /// itself and launches the copy is exactly what endpoint agents look for.
+        /// </summary>
+        internal static List<string> RemoveApp(string dir, bool deleteData)
+        {
+            List<string> stuck = new List<string>();
+            try { Environment.CurrentDirectory = Path.GetTempPath(); }
+            catch { }
+            string self = Application.ExecutablePath;
+            foreach (string f in Directory.GetFiles(dir))
+            {
+                try
+                {
+                    if (SamePath(f, self))
+                        File.Move(f, Path.Combine(Path.GetTempPath(), LeftoverPrefix + Guid.NewGuid().ToString("N") + ".tmp"));
+                    else
+                        File.Delete(f);
+                }
+                catch
+                {
+                    stuck.Add(f);
+                }
+            }
+            foreach (string d in Directory.GetDirectories(dir))
+            {
+                if (!deleteData && string.Equals(Path.GetFileName(d), "data", StringComparison.OrdinalIgnoreCase)) continue;
+                try { Directory.Delete(d, true); }
+                catch { stuck.Add(d); }
+            }
+            try
+            {
+                if (Directory.GetFileSystemEntries(dir).Length == 0) Directory.Delete(dir);
+            }
+            catch
+            {
+            }
+            return stuck;
+        }
+
+        /// <summary>Delete exes an earlier uninstall moved aside. Best effort, every launch.</summary>
+        public static void CleanLeftovers()
+        {
+            try
+            {
+                foreach (string f in Directory.GetFiles(Path.GetTempPath(), LeftoverPrefix + "*.tmp"))
+                    TryDeleteFile(f);
+            }
+            catch
+            {
+            }
+        }
+
+        // --- Shared ----------------------------------------------------------
+
+        /// <summary>
+        /// Close a running copy so its files can be replaced. A copy from this
+        /// version closes itself when asked (even a locked kiosk). An older one
+        /// does not know how, so it is closed by force -- after asking, unless
+        /// this is a quiet install.
+        /// </summary>
+        private static void StopRunning(bool quiet)
+        {
+            List<Process> others = Others();
+            if (others.Count == 0) return;
+            try
+            {
+                EventWaitHandle ev;
+                if (EventWaitHandle.TryOpenExisting(MainForm.QuitEventName, out ev))
+                    using (ev) ev.Set();
+            }
+            catch
+            {
+            }
+            foreach (Process p in others)
+            {
+                try { p.WaitForExit(8000); }
+                catch { }
+            }
+            others = Others();
+            if (others.Count == 0) return;
+            if (!quiet && MessageBox.Show(
+                    "Front Desk is still open. Close it now so setup can continue?",
+                    AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                throw new InvalidOperationException("Close Front Desk, then try again.");
+            foreach (Process p in others)
+            {
+                try
+                {
+                    p.Kill();
+                    p.WaitForExit(5000);
+                }
+                catch
+                {
+                }
+            }
+            if (Others().Count > 0)
+                throw new InvalidOperationException("Front Desk is still running. Restart the computer, then try again.");
+        }
+
+        private static List<Process> Others()
+        {
+            List<Process> list = new List<Process>();
+            Process me = Process.GetCurrentProcess();
+            foreach (Process p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
+            {
+                try
+                {
+                    if (p.Id != me.Id && p.SessionId == me.SessionId && !p.HasExited) list.Add(p);
+                }
+                catch
+                {
+                }
+            }
+            return list;
+        }
+
+        private static void RemoveRunIfInside(string dir)
+        {
+            string stored = Autostart.Stored();
+            if (stored != null && IsInside(Autostart.ExeOf(stored), dir)) Autostart.Set(false);
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch { }
+        }
+
+        private static int Problem(StartupOptions o, string message)
+        {
+            if (!o.Quiet)
+                MessageBox.Show(message, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return 2;
+        }
+
+        private static void MakeShortcut(string linkPath, string target, string args, string workDir)
+        {
+            IShellLinkW link = (IShellLinkW)new ShellLinkObject();
+            try
+            {
+                link.SetPath(target);
+                link.SetArguments(args ?? "");
+                link.SetWorkingDirectory(workDir);
+                link.SetIconLocation(target, 0);
+                link.SetDescription("Equipment checkout and returns for the front desk");
+                Directory.CreateDirectory(Path.GetDirectoryName(linkPath));
+                ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(linkPath, true);
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(link);
+            }
+        }
+
+        [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+        private class ShellLinkObject
+        {
+        }
+
+        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+        private interface IShellLinkW
+        {
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int max, IntPtr findData, int flags);
+            void GetIDList(out IntPtr idl);
+            void SetIDList(IntPtr idl);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int max);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int max);
+            void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+            void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int max);
+            void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+            void GetHotkey(out short hotkey);
+            void SetHotkey(short hotkey);
+            void GetShowCmd(out int showCmd);
+            void SetShowCmd(int showCmd);
+            void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int max, out int index);
+            void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string rel, int reserved);
+            void Resolve(IntPtr hwnd, int flags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+        }
+    }
+
+    /// <summary>The small window setup shows: a heading, a line or two, some options, two buttons.</summary>
+    internal sealed class SetupForm : Form
+    {
+        private readonly FlowLayoutPanel _options;
+
+        public SetupForm(string title, string heading, string body, string okText)
+        {
+            Text = title;
+            Font = SystemFonts.MessageBoxFont;
+            AutoScaleMode = AutoScaleMode.Font;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            BackColor = Color.White;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch { }
+
+            FlowLayoutPanel page = new FlowLayoutPanel();
+            page.FlowDirection = FlowDirection.TopDown;
+            page.WrapContents = false;
+            page.AutoSize = true;
+            page.Padding = new Padding(24, 20, 24, 16);
+
+            Label h = new Label();
+            h.Text = heading;
+            h.AutoSize = true;
+            h.Font = new Font(Font.FontFamily, Font.SizeInPoints * 1.5f, FontStyle.Bold);
+            h.ForeColor = ColorTranslator.FromHtml("#E6007E");
+            h.Margin = new Padding(0, 0, 0, 10);
+            page.Controls.Add(h);
+
+            Label b = new Label();
+            b.Text = body;
+            b.AutoSize = true;
+            b.MaximumSize = new Size(460, 0);
+            b.Margin = new Padding(0, 0, 0, 14);
+            page.Controls.Add(b);
+
+            _options = new FlowLayoutPanel();
+            _options.FlowDirection = FlowDirection.TopDown;
+            _options.WrapContents = false;
+            _options.AutoSize = true;
+            _options.Margin = new Padding(0, 0, 0, 16);
+            page.Controls.Add(_options);
+
+            FlowLayoutPanel buttons = new FlowLayoutPanel();
+            buttons.FlowDirection = FlowDirection.RightToLeft;
+            buttons.AutoSize = true;
+            buttons.Anchor = AnchorStyles.Right;
+            buttons.MinimumSize = new Size(460, 0);
+            Button ok = new Button();
+            ok.Text = okText;
+            ok.DialogResult = DialogResult.OK;
+            ok.AutoSize = true;
+            ok.MinimumSize = new Size(96, 30);
+            Button cancel = new Button();
+            cancel.Text = "Cancel";
+            cancel.DialogResult = DialogResult.Cancel;
+            cancel.AutoSize = true;
+            cancel.MinimumSize = new Size(96, 30);
+            buttons.Controls.Add(ok);
+            buttons.Controls.Add(cancel);
+            page.Controls.Add(buttons);
+
+            Controls.Add(page);
+            AcceptButton = ok;
+            CancelButton = cancel;
+        }
+
+        public CheckBox AddOption(string text, bool on, string hint)
+        {
+            CheckBox c = new CheckBox();
+            c.Text = text;
+            c.Checked = on;
+            c.AutoSize = true;
+            c.Margin = new Padding(0, 4, 0, hint == null ? 4 : 0);
+            _options.Controls.Add(c);
+            if (hint != null)
+            {
+                Label l = new Label();
+                l.Text = hint;
+                l.AutoSize = true;
+                l.MaximumSize = new Size(440, 0);
+                l.ForeColor = Color.DimGray;
+                l.Margin = new Padding(18, 0, 0, 6);
+                _options.Controls.Add(l);
+            }
+            return c;
+        }
+    }
+
     public class MainForm : Form
     {
         [DllImport("user32.dll")]
@@ -686,6 +1545,16 @@ namespace FrontDeskHost
         private const int SW_RESTORE = 9;
 
         public static string RuntimeVersion;
+
+        /// <summary>Setup sets this to ask a running copy to close, so it can be updated or removed.</summary>
+        public const string QuitEventName = @"Local\RotmanFrontDesk.Quit";
+
+        private EventWaitHandle _quitEvent;
+        private RegisteredWaitHandle _quitWait;
+        private bool _quitting;
+        private bool _asking;
+        private bool _gaveUp;
+        private readonly List<DateTime> _recoveries = new List<DateTime>();
 
         private WebView2 _web;
         private NotifyIcon _tray;
@@ -720,6 +1589,33 @@ namespace FrontDeskHost
             Controls.Add(_web);
 
             BuildTray();
+            ListenForQuit();
+        }
+
+        private void ListenForQuit()
+        {
+            try
+            {
+                _quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName);
+                _quitWait = ThreadPool.RegisterWaitForSingleObject(_quitEvent, delegate(object state, bool timedOut)
+                {
+                    try { BeginInvoke((Action)QuitForSetup); }
+                    catch { }
+                }, null, Timeout.Infinite, true);
+            }
+            catch (Exception ex)
+            {
+                Paths.Log("could not listen for setup: " + ex.Message);
+            }
+        }
+
+        /// <summary>Setup is replacing or removing the app. Close, even on a kiosk.</summary>
+        private void QuitForSetup()
+        {
+            Paths.Log("closing so setup can update or remove the app");
+            _quitting = true;
+            if (_tray != null) _tray.Visible = false;
+            Close();
         }
 
         protected override async void OnLoad(EventArgs e)
@@ -958,24 +1854,133 @@ namespace FrontDeskHost
             e.Handled = true;
         }
 
+        internal enum Recovery { Ignore, Reload, AskReload, Recreate }
+
+        /// <summary>
+        /// What to do when a part of the browser stops.
+        ///
+        /// It used to be one "Reload?" box for everything. That was wrong both
+        /// ways: a GPU or helper process that WebView2 restarts on its own put a
+        /// pointless question in front of the desk, and when the browser itself
+        /// had gone, Reload threw -- there was nothing left to reload -- and the
+        /// window stayed blank until someone restarted the app.
+        /// </summary>
+        internal static Recovery RecoveryFor(CoreWebView2ProcessFailedKind kind, bool kiosk)
+        {
+            switch (kind)
+            {
+                case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                    return Recovery.Recreate;
+                case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                    return Recovery.Reload;
+                case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                    // Staff can choose to wait; a public tablet has nobody to ask.
+                    return kiosk ? Recovery.Reload : Recovery.AskReload;
+                default:
+                    // Frames, GPU, utility and helper processes: WebView2 brings
+                    // these back by itself.
+                    return Recovery.Ignore;
+            }
+        }
+
         private void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
         {
-            Paths.Log("webview process failed: " + e.ProcessFailedKind);
-            OnUi(delegate
+            CoreWebView2ProcessFailedKind kind = e.ProcessFailedKind;
+            Recovery r = RecoveryFor(kind, _startup.Kiosk);
+            Paths.Log("webview process failed: " + kind + " -> " + r);
+            if (r == Recovery.Ignore) return;
+            OnUi(delegate { Recover(r); });
+        }
+
+        /// <summary>
+        /// More than three recoveries in two minutes means something is really
+        /// wrong; reloading for ever would only hide it.
+        /// </summary>
+        private bool TooManyRecoveries()
+        {
+            DateTime now = DateTime.UtcNow;
+            _recoveries.RemoveAll(delegate(DateTime t) { return (now - t).TotalMinutes > 2; });
+            _recoveries.Add(now);
+            return _recoveries.Count > 3;
+        }
+
+        private async void Recover(Recovery r)
+        {
+            if (_asking || _gaveUp || _quitting) return;
+            if (r == Recovery.AskReload)
             {
-                DialogResult r = MessageBox.Show(
-                    "The page stopped responding (" + e.ProcessFailedKind + ").\r\n\r\nReload it?",
+                _asking = true;
+                DialogResult d = MessageBox.Show(this,
+                    "The page is not responding.\r\n\r\nReload it now? Choose No to give it a little longer.",
                     "Front Desk", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (r == DialogResult.Yes && _web.CoreWebView2 != null)
+                _asking = false;
+                if (d != DialogResult.Yes) return;
+                r = Recovery.Reload;
+            }
+            if (TooManyRecoveries())
+            {
+                _gaveUp = true;
+                Paths.Log("the page keeps failing; stopped recovering it");
+                MessageBox.Show(this,
+                    "Front Desk keeps stopping. Restart the computer. If it happens again, " +
+                    "send the log to whoever looks after this desk:\r\n\r\n" + Paths.LogFile,
+                    "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            try
+            {
+                if (r == Recovery.Reload && _web.CoreWebView2 != null)
+                {
                     _web.CoreWebView2.Reload();
-            });
+                    return;
+                }
+                await RecreateWebViewAsync();
+            }
+            catch (Exception ex)
+            {
+                Paths.Log("recovery failed: " + ex);
+            }
+        }
+
+        /// <summary>
+        /// The browser process is gone, and with it the control's CoreWebView2.
+        /// The only way back is a new control on a new environment; the data
+        /// folder is the same, so the desk comes back with its records.
+        /// </summary>
+        private async System.Threading.Tasks.Task RecreateWebViewAsync()
+        {
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    // Give the old browser time to let go of the data folder.
+                    await System.Threading.Tasks.Task.Delay(1000 * attempt);
+                    WebView2 old = _web;
+                    _web = new WebView2();
+                    _web.Dock = DockStyle.Fill;
+                    Controls.Add(_web);
+                    Controls.Remove(old);
+                    try { old.Dispose(); }
+                    catch { }
+                    await InitWebViewAsync();
+                    Paths.Log("browser restarted (attempt " + attempt + ")");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Paths.Log("browser restart attempt " + attempt + " failed: " + ex.Message);
+                }
+            }
+            MessageBox.Show(this,
+                "Front Desk could not restart its page. Restart the computer, or close Front Desk and open it again.",
+                "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
             try
             {
-                Paths.Log("page: " + e.TryGetWebMessageAsString());
+                Paths.Log("page: " + Paths.OneLine(e.TryGetWebMessageAsString(), 2000));
             }
             catch
             {
@@ -1262,7 +2267,7 @@ namespace FrontDeskHost
             // Alt+F4 at the public tablet used to quit the desk. Windows shutting
             // down, a sign-out or Task Manager (which needs Ctrl+Alt+Del) still
             // close it; a person standing at the screen does not.
-            if (_startup.Kiosk && e.CloseReason == CloseReason.UserClosing)
+            if (_startup.Kiosk && e.CloseReason == CloseReason.UserClosing && !_quitting)
             {
                 e.Cancel = true;
                 return;
@@ -1285,6 +2290,8 @@ namespace FrontDeskHost
                     _tray.Dispose();
                 }
                 if (_web != null) _web.Dispose();
+                if (_quitWait != null) _quitWait.Unregister(null);
+                if (_quitEvent != null) _quitEvent.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -1386,6 +2393,40 @@ namespace FrontDeskHost
         [STAThread]
         private static void Main(string[] args)
         {
+            StartupOptions startup = StartupOptions.Current;
+
+            // Setup runs instead of the app, before the single-instance check:
+            // it is often run while the app is open, to update it.
+            if (startup.Install || startup.Uninstall)
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Environment.ExitCode = startup.Install ? Installer.Install(startup) : Installer.Uninstall(startup);
+                return;
+            }
+
+            // Double-clicking the exe inside a zip extracts that one file and
+            // runs it alone. Say what to do, instead of failing to load WebView2.
+            string missing = Installer.MissingFiles(AppDomain.CurrentDomain.BaseDirectory);
+            if (missing != null)
+            {
+                Application.EnableVisualStyles();
+                MessageBox.Show(
+                    "Front Desk is missing some of its files (" + missing + ").\r\n\r\n" +
+                    "If you opened it from inside the zip, close it, right-click the zip, choose Extract All, " +
+                    "and then run \"Install Front Desk\" from the folder that makes.",
+                    "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            RunApp(startup);
+        }
+
+        // Kept out of Main so that setup, and the missing-files message, never
+        // need the WebView2 assemblies to be loadable.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void RunApp(StartupOptions startup)
+        {
             bool createdNew;
             _instance = new Mutex(true, @"Local\RotmanFrontDesk.SingleInstance", out createdNew);
             if (!createdNew)
@@ -1404,9 +2445,9 @@ namespace FrontDeskHost
             // second copy of the defaults, and the two drifted: the Run value
             // always said "--minimized" and nothing else, so a --no-devtools
             // kiosk came back from a reboot with DevTools enabled.
-            StartupOptions startup = StartupOptions.Current;
-
             Paths.Resolve();
+            Installer.CleanLeftovers();
+            Autostart.RepairIfStale();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 

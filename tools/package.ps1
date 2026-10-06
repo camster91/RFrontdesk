@@ -10,10 +10,12 @@
 # to carry, and what comes out of it is a folder, which is the shape that is
 # allowed through.
 #
-# Why no installer: the app writes its data beside itself, so installing it to
-# Program Files would break it -- that folder is not writable without elevation,
-# and the whole point of this app is that it needs none. Unzipping wherever it
-# is going to live *is* the install, and it is one step.
+# The install is inside the app: "Install Front Desk.cmd" in the zip runs
+# RotmanFrontDesk.exe --install, which copies the folder to the user's own
+# %LOCALAPPDATA%\Programs, adds a Start menu shortcut and an entry in Settings >
+# Apps to remove it. No admin rights, and no second exe to sign. Not Program
+# Files: the app writes its data beside itself, and that folder is not writable
+# without elevation.
 #
 # The zip contains a top-level "Rotman Front Desk" folder, so extracting it on
 # Windows produces one tidy folder rather than scattering seven files into
@@ -61,6 +63,22 @@ Say "packing $product $fileVersion"
 $hash = (Get-FileHash -Path $exe -Algorithm SHA256).Hash
 Say "exe sha256 $hash"
 
+# Read off the exe, so For IT.txt says what is true of this build. It used to
+# say "Signed: no" whatever the build was.
+$sig = Get-AuthenticodeSignature $exe
+# Signed means a signature is there. Whether it shows as Valid depends on the
+# machine trusting the root: the GitHub build machine does not have the
+# University of Toronto root, the desks do.
+$signed = [bool]$sig.SignerCertificate
+if ($signed) {
+    $signedLine = "yes, by $($sig.SignerCertificate.Subject)"
+    if ($sig.TimeStamperCertificate) { $signedLine += ", timestamped" }
+    if ($sig.Status -ne 'Valid') { $signedLine += " (shown as $($sig.Status) on the build machine, which does not trust the root)" }
+} else {
+    $signedLine = "no ($($sig.Status))"
+}
+Say "signed: $signedLine"
+
 # --- Stage -----------------------------------------------------------------
 # Built in a temp folder rather than in the project, so the project never holds
 # a second copy of the app that can drift from dist\.
@@ -92,95 +110,142 @@ try {
 $product
 $('=' * $product.Length)
 
-Equipment checkout and returns for the front desk. There is nothing to install
-and no admin rights are needed: everything the app uses is in this folder.
+Equipment checkout and returns for the front desk.
+
+INSTALL
+-------
+1. Right-click the zip and choose Extract All. (Running it from inside the
+   zip does not work.)
+2. In the folder that makes, double-click "Install Front Desk".
+3. Pick your options and click Install. No admin rights are needed.
+   On a public tablet, tick "This is a public tablet: lock it down".
+
+It is installed for you only, with a Start menu shortcut. To update, install a
+newer zip the same way: the records are kept.
 
 FIRST RUN
 ---------
-1. Put this folder somewhere it can stay -- the Desktop is fine, a USB stick
-   works too. Do not use Program Files: the app keeps its records in a data
-   folder beside the exe, and Program Files is not writable without admin
-   rights, so it would not be able to save anything.
-2. Double-click RotmanFrontDesk.exe.
-3. You get a welcome screen. The staff screens are behind the Rotman logo:
-   press and hold it for about two seconds.
-4. The factory PIN is 1234. CHANGE IT the first time you log in --
-   Admin > Settings > PIN.
+- The staff screens are behind the Rotman logo: press and hold it for about
+  two seconds.
+- The PIN starts as 1234. Change it the first time you sign in:
+  Settings > PIN.
+
+UNINSTALL
+---------
+Windows Settings > Apps > Installed apps > Rotman Front Desk > Uninstall.
+The desk's records are kept unless you tick the box to delete them too.
+
+WITHOUT INSTALLING
+------------------
+You can also run RotmanFrontDesk.exe straight from this folder, for example
+from a USB stick. It keeps its records in the data folder beside it. Do not
+put it in Program Files: it could not save anything there.
 
 WHAT IT SAVES
 -------------
-Everything lives in the data folder beside the app: the records, the backups and
-the log. To move the desk to another machine, copy the whole folder -- that is
-the entire migration.
-
-A backup is written once a day, on the first launch of the day, and the newest
-30 are kept. Backups contain borrower names and phone numbers in readable form,
-so treat the backup folder as you would any list of names and numbers.
-
-ON A TABLET (KIOSK)
--------------------
-A borrower sees only the welcome screen: they can borrow and ask to return, and
-nothing else. To lock a public install down, start the app with the flag
---no-devtools. The simplest way is a shortcut: right-click RotmanFrontDesk.exe,
-Send to > Desktop (create shortcut), then add --no-devtools to the end of the
-shortcut's Target. Staff still get in with the logo hold.
+Everything lives in the data folder beside the app: the records, the backups
+and the log. A backup is written once a day and the newest 30 are kept.
+Backups contain borrower names and phone numbers in readable form, so treat
+the backup folder as you would any list of names and numbers.
 
 IF IT WILL NOT START
 --------------------
-It needs the Microsoft Edge WebView2 Runtime, which is present on nearly every
-Windows 10 and 11 machine. If it is missing, the app says so and offers to open
-the download page. Nothing else is required.
+It needs the Microsoft Edge WebView2 Runtime, which is on nearly every
+Windows 10 and 11 machine. If it is missing, the app says so and offers to
+open the download page.
 "@
     Set-Content -Path (Join-Path $root 'START HERE.txt') -Encoding ASCII -Value $startHere
 
     # Whoever deploys this on a managed machine will meet the endpoint agent, and
     # it is better that they arrive with the answer than that they discover it.
+    $signedIntro = if ($signed) {
+        "This folder is a signed in-house application ($signedLine)."
+    } else {
+        "This folder is an UNSIGNED in-house application. On a managed machine the`r`nendpoint agent will very likely take an interest in it; see WHAT TO DO below."
+    }
     $forIt = @"
-FOR IT -- ENDPOINT SECURITY
-===========================
+FOR IT
+======
 
-This folder is an unsigned in-house application. On a managed machine the
-endpoint agent will very likely take an interest in it. Two things resolve that,
-and the full write-up -- including what was measured rather than assumed -- is
-docs\EDR_AND_SIGNING.md in the project folder this was built from.
+$signedIntro
+
+The full write-up on endpoint security is docs\EDR_AND_SIGNING.md in the
+project this was built from.
 
 WHAT THIS IS
 ------------
 RotmanFrontDesk.exe is a 64-bit WinForms window hosting a WebView2 control that
 loads the HTML, CSS and JavaScript in web\. It needs the Microsoft Edge WebView2
-Runtime, which is already on standard Windows 10 and 11 images.
+Runtime, which is already on standard Windows 10 and 11 images. It opens no
+network listener and requests asInvoker, so it never asks for elevation.
 
-It installs nothing. It writes no registry keys except one HKCU\...\Run entry,
-and only if a user turns on "start with Windows" from the tray menu. It opens no
-network listener. It requests asInvoker, so it never prompts for elevation. Its
-data -- an IndexedDB database, backups and a log -- lives in data\ beside the exe.
+INSTALLING
+----------
+Install and uninstall are built into the same exe; there is no separate setup
+program. Everything is per-user, with no admin rights:
+
+  %LOCALAPPDATA%\Programs\Rotman Front Desk\   the app, and its data\ folder
+  Start menu shortcut (and a desktop one, unless turned off)
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RotmanFrontDesk
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Run  only if "start with
+                                                      Windows" is chosen
+
+Silent install, from the unzipped folder:
+  RotmanFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]
+
+Silent uninstall (keeps the records unless --delete-data is added):
+  "%LOCALAPPDATA%\Programs\Rotman Front Desk\RotmanFrontDesk.exe" --uninstall --quiet
+
+Exit codes: 0 done, 1 cancelled, 2 failed, 3 removed but some files were in use.
+
+--kiosk locks a public tablet: full screen, no way out of the app, no DevTools.
 
 This is deliberately a FOLDER build, not a single-file exe: a self-extracting
 single-file build is the shape SentinelOne and CrowdStrike delete on execution,
 while this shape is allowed through.
 
-WHAT TO DO -- either one
-------------------------
+WHAT TO DO IF IT IS FLAGGED -- either one
+-----------------------------------------
 A. Sign it. A code-signing certificate from the University of Toronto Certificate
    Authority is enough, because that root is already trusted on domain machines.
    Ask for: Digital Signature key usage, Extended Key Usage Code Signing
    (1.3.6.1.5.5.7.3.3), delivered as a .pfx including the private key, SHA-256.
-   The build signs and verifies its own output, and needs no Windows SDK.
+   The GitHub build signs every release with it once it is added as a secret.
 
 B. Allowlist it in the SentinelOne console as a false positive, and attach the
-   exe. Prefer the console route over a per-hash entry: the in-box compiler
-   cannot build reproducibly, so every rebuild is a different binary and a hash
-   entry is void the next time anyone rebuilds. If a specific hash has to be
-   allowlisted, use the one below -- but freeze that build.
+   exe. Prefer the console route over a per-hash entry: every build is a
+   different binary, so a hash entry is void the next time it is rebuilt. If a
+   specific hash has to be allowlisted, use the one below.
 
 THE BINARY IN THIS ZIP
 ----------------------
 File    : RotmanFrontDesk.exe
 Version : $fileVersion
 SHA-256 : $hash
-Signed  : no
+Signed  : $signedLine
+
+Third-party licences are in the licenses\ folder.
 "@
     Set-Content -Path (Join-Path $root 'For IT.txt') -Encoding ASCII -Value $forIt
+
+    # The one thing a person double-clicks to install. A .cmd rather than a
+    # script, so no execution policy gets in the way; all it does is start the
+    # app's own installer, after checking the zip was extracted first.
+    Set-Content -Path (Join-Path $root 'Install Front Desk.cmd') -Encoding ASCII -Value @(
+        '@echo off',
+        'rem Installs Rotman Front Desk for this Windows user. No admin rights needed.',
+        'if not exist "%~dp0RotmanFrontDesk.exe" goto notextracted',
+        'if not exist "%~dp0Microsoft.Web.WebView2.Core.dll" goto notextracted',
+        'start "" "%~dp0RotmanFrontDesk.exe" --install',
+        'exit /b 0',
+        ':notextracted',
+        'echo.',
+        'echo   Extract the zip first: close this, right-click the zip, choose Extract All,',
+        'echo   then run "Install Front Desk" from the folder that makes.',
+        'echo.',
+        'pause',
+        'exit /b 1'
+    )
 
     # --- Zip ---------------------------------------------------------------
     New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -202,6 +267,12 @@ Signed  : no
 
         $unpackedExe = Join-Path $unpacked 'RotmanFrontDesk.exe'
         if (-not (Test-Path $unpackedExe)) { Fail "No exe in the unpacked folder." }
+        foreach ($need in @('Install Front Desk.cmd', 'START HERE.txt', 'For IT.txt',
+                            'licenses\WebView2 LICENSE.txt', 'licenses\WebView2 NOTICE.txt')) {
+            if (-not (Test-Path (Join-Path $unpacked $need))) { Fail "The zip is missing $need." }
+        }
+        $unpackedSig = Get-AuthenticodeSignature $unpackedExe
+        if ($signed -and $unpackedSig.Status -ne $sig.Status) { Fail "The exe's signature did not survive the zip: $($unpackedSig.Status)" }
 
         # Byte-for-byte, because the exe is the thing that gets allowlisted and
         # the hash in For IT.txt has to describe it.

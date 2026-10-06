@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 713 checks, all green) —
+covered by `node tools/test-all.cjs` (**thirteen** suites, 760 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -2029,19 +2029,8 @@ Screens:
   when a search matches nothing; Settings → Import replaces everything without
   the confirmation the host's Restore asks for.
 
-Host, keyboard, packaging:
-
-- A startup entry written by an older build is never corrected, while Settings
-  shows the command a new one would use.
-- One failed write probe sends the host to `%LOCALAPPDATA%` and an empty database
-  for that launch.
-- Rotation deletes any `.json` in the backups folder, including copies saved
-  there with Export a copy.
-- The zip does not carry WebView2's `LICENSE.txt`/`NOTICE.txt`, and `For IT.txt`
-  says "unsigned" even for a signed build.
-- Every `ProcessFailed` kind asks "Reload?", and for `BrowserProcessExited` the
-  reload throws and leaves the window dead; the log is never rotated and takes
-  newlines from the page.
+Host, keyboard, packaging: all five fixed — see *Install, uninstall and a
+GitHub build* below.
 
 ### Fixed when the app became Windows-only (2026-10-06)
 
@@ -2063,8 +2052,49 @@ Windows kiosk was locked down instead:
 `host/FrontDesk.cs` and `tools/HostTests.cs` were compiled with Mono's `mcs`
 under `-langversion:5` against the WebView2 1.0.4191.47 reference assemblies,
 which also compiled Phase 13's backup change for the first time, and the host
-suite's three modes ran under Mono: 44 checks, none failed. The Windows build
-itself (`csc` from .NET Framework) has still to be run.
+suite's three modes ran under Mono: 44 checks, none failed.
+
+### Install, uninstall and a GitHub build (2026-10-06)
+
+The five host and packaging findings above, fixed:
+
+- **The startup entry is corrected at launch** (`Autostart.RepairIfStale`) when
+  it is this copy's entry with old flags, or points at an exe that is gone. It
+  never takes over another copy's working entry, and never drops the lock: a
+  locked entry stays locked even if this launch is not.
+- **The data folder beside the app wins whenever it already has a database**
+  (`Paths.ChooseData`), so one failed write check no longer opens an empty
+  desk; and a probe that was written but could not be deleted counts as
+  writable.
+- **Rotation only deletes the app's own backups**
+  (`frontdesk-backup-YYYY-MM-DD[-HHMMSS].json`). Anything else in the folder
+  still shows in the restore list and is never deleted or counted.
+- **The zip carries WebView2's licence files** under `licenses`, and `For IT.txt`
+  reads the exe's real signature instead of always saying "unsigned".
+- **A browser crash is recovered by kind** (`MainForm.RecoveryFor`): a crashed
+  page reloads; a hung one asks staff (reloads on a kiosk); a dead browser
+  process gets a new WebView2 control on the same data folder instead of a
+  Reload that threw; GPU and helper restarts are only logged. Four recoveries in
+  two minutes stop and say so. The log rolls over to `frontdesk.log.1` past 1 MB,
+  is read from its end, and page messages are one line, capped at 2,000
+  characters.
+
+New:
+
+- **Install and uninstall, built into the exe** (`Installer`): per user into
+  `%LOCALAPPDATA%\Programs\Rotman Front Desk`, Start menu and desktop
+  shortcuts, an Apps entry, options for a public tablet and start-with-Windows,
+  silent switches for IT. Updating keeps `data`; uninstalling keeps it unless
+  asked. Running setup closes a running copy through a named event, which even a
+  locked kiosk obeys. Running the exe from inside a zip now says to extract it
+  instead of failing to load WebView2.
+- **`.github/workflows/build.yml`** builds, tests, packages and (with the two
+  signing secrets) signs on `windows-latest`. Tags make draft releases only.
+
+Checked here with Mono `mcs -langversion:5` and the WebView2 reference
+assemblies: the host compiles, and the host suite's four modes ran 91 checks,
+none failed (parse 68, plain 3, kiosk 5, files 15). The PowerShell scripts were
+parse-checked with PowerShell 7. The first real Windows build is the GitHub run.
 
 ---
 

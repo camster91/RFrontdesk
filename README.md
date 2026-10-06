@@ -2,15 +2,23 @@
 
 Equipment checkout and returns for the front desk.
 
-A Windows app with no install and no admin rights: copy the folder, run
-`RotmanFrontDesk.exe`. All of its data lives in the same folder, so copying that
-folder moves the whole desk — records, backups and log.
+A Windows app that needs no admin rights. All of its data lives in a folder
+beside the exe, so copying that folder moves the whole desk — records, backups
+and log.
 
-The build that goes to a desk is **`release\Rotman-Front-Desk-1.0.0.zip`** —
-unzip it wherever the app is going to live and run the exe inside. There is
-nothing to install: the zip is the delivery, and unpacking it is the install.
-It carries `START HERE.txt` for whoever sets up the desk and `For IT.txt` for
-whoever has to let it through the endpoint agent.
+**Getting it.** GitHub builds it: open the repo's **Actions** tab, pick the
+latest *Build Windows app* run, and download **Rotman-Front-Desk** under
+Artifacts. A version tag (`v1.2.3`) also makes a draft release with the zip
+attached. Nobody needs a build computer.
+
+**Installing it.** Extract the zip, double-click **Install Front Desk**, click
+Install. It goes into your own `%LOCALAPPDATA%\Programs\Rotman Front Desk`, with
+a Start menu shortcut, and shows up in Windows Settings → Apps so it can be
+removed like any other app (the records are kept unless you tick the box). To
+update, install a newer zip the same way. Or skip the installer and run
+`RotmanFrontDesk.exe` straight from the extracted folder — that still works.
+The zip carries `START HERE.txt` for whoever sets up the desk and `For IT.txt`
+(silent install switches, what it writes where) for IT.
 
 It has **two surfaces**. Staff sign in with a PIN and get loans, items, people and
 reports. The public surface (`the kiosk`) is what a borrower sees on an unattended
@@ -239,7 +247,9 @@ routes refuse a kiosk visitor. Staff entry from the kiosk is the logo hold.
 
 ### If the tablet is public
 
-Launch the app with `--no-devtools`. That locks it down on that machine:
+Tick **This is a public tablet: lock it down** when installing, or launch the
+app with `--kiosk` (the same as `--no-devtools`). That locks it down on that
+machine:
 
 - **It fills the screen and stays there.** No window frame, no close or minimise
   buttons, the taskbar covered, and F11, Escape and Alt+F4 do nothing. Signing
@@ -373,6 +383,14 @@ an update would delete the desk's records, backups and log.
 `docs/EDR_AND_SIGNING.md` before rebuilding anything that has been allowlisted:
 **this compiler cannot build reproducibly, so every rebuild is a different binary.**
 
+**Normally GitHub does all of this.** `.github/workflows/build.yml` runs on a
+GitHub Windows machine for every pull request, every push to `main`, every
+`v*` tag and on demand (Actions → *Build Windows app* → Run workflow): fetch
+WebView2, build, run every test suite, package, and attach the zip to the run.
+It signs the exe when the repo has two secrets, `SIGNING_PFX_BASE64` and
+`SIGNING_PFX_PASSWORD` — see *Signing on GitHub* in `docs/EDR_AND_SIGNING.md`.
+It deploys nothing: a tag makes a **draft** release that a person publishes.
+
 ### Packaging
 
 ```powershell
@@ -380,8 +398,9 @@ pwsh -File tools/package.ps1
 ```
 
 Produces `release\Rotman-Front-Desk-<version>.zip`: a top-level `Rotman Front
-Desk` folder holding the app, an empty `data` folder, `START HERE.txt` and
-`For IT.txt`. It **verifies what it made by unpacking it again** — the exe has to
+Desk` folder holding the app, an empty `data` folder, `Install Front Desk.cmd`,
+`START HERE.txt`, `For IT.txt` (with the build's real signature status) and
+WebView2's licence files under `licenses`. It **verifies what it made by unpacking it again** — the exe has to
 come back byte-for-byte with its version resource and icon intact, and `data` has
 to be a clean install, because `dist` on this machine is a live install and
 packaging it with a desk's records in it would ship borrower names and phone
@@ -394,6 +413,18 @@ deliverable that cannot work on an arbitrary machine. There is no MSI installer
 either, and that is also deliberate: the app writes its data beside itself, and
 `Program Files` is not writable without elevation, so an install there would
 break the one property the app depends on.
+
+**The installer is the app itself.** `RotmanFrontDesk.exe --install` copies the
+folder to `%LOCALAPPDATA%\Programs\Rotman Front Desk` (per user, no admin), adds
+the shortcuts and an entry under `HKCU\...\Uninstall`, and `--uninstall`
+reverses it. `Install Front Desk.cmd` in the zip only checks the zip was
+extracted and starts `--install`. That keeps it to the one signed exe — no
+separate setup program to sign, and no self-extracting shape for an endpoint
+agent to delete. An update closes a running copy first (even a locked kiosk,
+which listens for setup's request) and never touches `data`. Uninstalling moves
+the running exe into `%TEMP%` (Windows allows renaming a running exe, not
+deleting it) and the next launch of any copy deletes it, instead of the usual
+copy-yourself-to-`%TEMP%`-and-run trick that endpoint agents watch for.
 
 ### The icon
 
@@ -412,10 +443,11 @@ the dark header, and it would be a few unreadable pixels inside a square tile.
 ### Tests
 
 ```powershell
+npm ci            # once: the test tools (puppeteer, driving the Edge already installed)
 node tools/test-all.cjs
 ```
 
-Thirteen suites, 713 checks (11 host bridge, 44 host flags and navigation, 11
+Thirteen suites, 760 checks (11 host bridge, 91 host flags, setup and recovery, 11
 toast stack, 8 screen router, 18 report aggregation, 34 keyboard touch, 172 browser
 UI, 57 kiosk, 153 layout at real widths, 59 backup round trip, 104 catalog at
 scale, 23 sessions, lock and keyboard, 19 records). Four lift their section out of
