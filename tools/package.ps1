@@ -69,7 +69,7 @@ Say "exe sha256 $hash"
 $sig = Get-AuthenticodeSignature $exe
 # Signed means a signature is there; Valid also needs the machine to trust its
 # root. (An Azure Artifact Signing certificate is trusted everywhere; one from
-# the University's own CA only on its domain machines.)
+# an organisation's own CA only on its own domain machines.)
 $signed = [bool]$sig.SignerCertificate
 if ($signed) {
     $signedLine = "yes, by $($sig.SignerCertificate.Subject)"

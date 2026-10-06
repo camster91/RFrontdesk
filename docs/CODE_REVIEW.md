@@ -2203,7 +2203,7 @@ changed.
 
 - **Typed item and category names are sentence-cased.** `sentenceCase`
   (`app.js:1837`) lowercases everything after the first letter, so "HDMI dongle"
-  is stored as "Hdmi Dongle" and "AV Equipment" as "Av Equipment". This is
+  is stored as "Hdmi Dongle" and "TV Equipment" as "Tv Equipment". This is
   pre-existing behaviour and it is applied to the catalog, not to display strings,
   so every screen and every report shows the mangled form. It is pinned by a check
   in `tools/test-ui.cjs` so a change is visible. Fixing it means deciding whether

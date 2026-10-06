@@ -19,7 +19,7 @@
 # The wordmark in web/index.html (window.__LOGO) is deliberately NOT
 # the icon: it is a 190x69 horizontal wordmark drawn in white for the dark
 # header. Squeezed into a square it would be a few pixels of unreadable text,
-# and an official university mark inside a rounded app tile is a branding
+# and an official logo inside a rounded app tile is a branding
 # decision rather than a technical one.
 #
 # The entries are written as classic 32-bit DIBs with an AND mask rather than

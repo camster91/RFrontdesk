@@ -102,8 +102,8 @@ const SEED = `(() => new Promise((resolve, reject) => {
       "HDMI 2.1 8K Cable 3m - braided, gold-plated, for the boardroom display and lectern setup",
       "Room 1050 master key (blue fob, do not duplicate - return to front desk immediately)"
     ];
-    const CATS = ["Presentation & Audio-Visual Equipment", "Power & Charging", "Keys & Access", "Other"];
-    const LOCS = ["Cabinet 3, second shelf, left-hand side near the window", "Front desk drawer (bottom right)", "AV closet, shelf B"];
+    const CATS = ["Presentation Equipment", "Power & Charging", "Keys & Access", "Other"];
+    const LOCS = ["Cabinet 3, second shelf, left-hand side near the window", "Front desk drawer (bottom right)", "Supply closet, shelf B"];
     const PEOPLE = [
       "Alexandria Konstantinopoulos-Wren", "Bartholomew Fitzgerald-Smythe", "Priya Ranganathan-Nakamura",
       "Zbigniew Wisniewski-Okonkwo", "Maria-Jose de la Cruz Villanueva", "Oluwaseun Adedayo-Babatunde"
@@ -140,7 +140,7 @@ const SEED = `(() => new Promise((resolve, reject) => {
         phoneFormatted: "(416) 555-" + String(1000 + i),
         name: nm,
         nameLower: nm.toLowerCase(),
-        contact2: i % 3 === 0 ? "a.very.long.email.address@example-university.org" : "",
+        contact2: i % 3 === 0 ? "a.very.long.email.address@example-organization.org" : "",
         timesCheckedOut: i * 2,
         lastSeenAt: Date.now() - i * 3600000,
         notes: i % 4 === 0 ? "Faculty - prefers email. Keeps the clicker over the weekend when teaching." : "",
