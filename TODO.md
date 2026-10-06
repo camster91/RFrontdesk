@@ -25,9 +25,11 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
 - [x] **Leftover subdomains** `admin.`, `ai.` and `app.rotmanav.ca` go to the homepage.
 - [x] **The web version is retired.** desk.rotmanav.ca, its routes and its sign-in
       are gone, and the homepage no longer lists Front Desk.
-- [x] **Code signing.** The GitHub build signs every build on `main` with Azure
-      Artifact Signing, through the shared workflow in Rclicker (#14). See
-      `docs/code-signing.md`.
+- [ ] **Code signing: merge camster91/Rclicker#21.** The build here is ready
+      (#14), but Rclicker's shared signing workflow on `main` is still the old
+      one, which looks for `AZURE_*` settings this repo no longer has, so builds
+      come out unsigned. Once #21 is merged, the next build on `main` is signed.
+      See `docs/code-signing.md`.
 
 ## Remaining fixes (lower priority)
 
