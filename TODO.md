@@ -32,9 +32,9 @@ What is left before and after shipping. Tick items off as they are done.
 - [x] **Fix the rotmanav.ca homepage.** Done: since 2026-10-02 the `rotmanav-hub`
       Worker serves a "Rotman AV" page there with links to Cast, Clicker, Front
       Desk and Mics.
-- [ ] **Tidy the leftover subdomains.** `admin.`, `ai.` and `app.rotmanav.ca` still
-      point at Cloudflare's own addresses with nothing behind them, so they show
-      the "DNS points to prohibited IP" error. Remove them, or point them at the hub.
+- [x] **Tidy the leftover subdomains.** Done 2026-10-06: `admin.`, `ai.` and
+      `app.rotmanav.ca` now route to the `rotmanav-hub` Worker, which sends them on
+      to rotmanav.ca.
 - [ ] **Get a code-signing certificate** for the Windows build, so endpoint
       security tools trust it. See `docs/EDR_AND_SIGNING.md`.
 
