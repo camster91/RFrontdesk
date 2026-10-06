@@ -351,7 +351,7 @@ console.log("\nReport aggregation\n");
     // Outside the period on purpose.
     loan({ id: 4, itemId: 10, borrowerId: 100, out: at(500), ret: at(499) })
   ];
-  const items = [item(10, "Dongle", "AV"), item(11, "Clicker, wireless", "AV"), item(12, "Room key")];
+  const items = [item(10, "Dongle", "Tech"), item(11, "Clicker, wireless", "Tech"), item(12, "Room key")];
   const borrowers = [
     { id: 100, name: "Ada", phone: "4165550100" },
     { id: 101, name: "Grace", phone: "4165550101" }

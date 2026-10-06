@@ -11,7 +11,7 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 ## Getting and installing it
 
 1. **Download.** GitHub builds it: **Actions → Build →** the latest run on `main` **→ Artifacts → rfrontdesk**. On `main` the exe is signed (see [docs/code-signing.md](docs/code-signing.md)).
-2. **Install.** Extract the zip, double-click **Install Front Desk**, click Install. It installs for you only, into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
+2. **Install.** Extract the zip, double-click **RFrontDesk.exe**, choose **Install**. It installs for you only, into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
 3. **Update.** Install a newer zip the same way. The records are kept.
 4. **Uninstall.** Windows **Settings → Apps → RFrontDesk → Uninstall**. The records are kept unless you tick the box to delete them.
 

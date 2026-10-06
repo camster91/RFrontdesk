@@ -191,6 +191,23 @@ namespace FrontDeskHost
             Check("a locked launch locks its own entry",
                 fixedByKiosk != null && Autostart.IsLocked(fixedByKiosk), fixedByKiosk);
 
+            // The install offer, which replaced the zip's install script.
+            string unzipped = @"C:\Users\desk\Downloads\RFrontDesk";
+            string installed = @"C:\Users\desk\AppData\Local\Programs\RFrontDesk";
+            Func<string, bool> nothing = delegate(string f) { return false; };
+            Check("a fresh unzipped copy offers to install",
+                Installer.ShouldOffer(unzipped, installed, nothing, false), null);
+            Check("the installed copy never offers",
+                !Installer.ShouldOffer(installed + Path.DirectorySeparatorChar, installed, nothing, false), null);
+            Check("a start-with-Windows launch never offers",
+                !Installer.ShouldOffer(unzipped, installed, nothing, true), null);
+            Check("a copy that already holds records never offers",
+                !Installer.ShouldOffer(unzipped, installed,
+                    delegate(string f) { return f.EndsWith(Path.Combine("data", "browser"), StringComparison.Ordinal); }, false), null);
+            Check("\"Run from this folder\" is remembered",
+                !Installer.ShouldOffer(unzipped, installed,
+                    delegate(string f) { return f.EndsWith(Installer.RunHereMarker, StringComparison.Ordinal); }, false), null);
+
             // The data folder.
             bool portable;
             string root = @"C:\fd";

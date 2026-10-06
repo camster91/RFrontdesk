@@ -9256,6 +9256,12 @@ async function _renderHostSettings(container) {
   } catch (err) {
     listError = err.message;
   }
+  // Read fresh, not from the GetInfo cache: the toggle and the fix change it.
+  let autostartStale = false;
+  try {
+    autostartStale = !!(await hostCall("GetAutostart")).stale;
+  } catch (_) {
+  }
   if (!document.contains(container)) return;
   const escape = escapeHtml3;
   const rows = backups.slice(0, 6).map((b) => `
@@ -9302,6 +9308,13 @@ async function _renderHostSettings(container) {
       <div class="loan-meta">Starts minimised to the notification area, so the desk is ready before anyone arrives.${
         info?.autostart ? ` Windows will run it as: <span class="path-value" style="display:inline;">${escape(info?.autostartArgs || "no options")}</span>` : ""
       }</div>
+      ${autostartStale ? `
+      <div class="path-row" data-autostart-stale>
+        <div class="path-row-main">
+          <div class="loan-meta" style="color:var(--error);">The Windows startup entry is out of date: it points at an old copy or old options. It is only changed when you ask.</div>
+        </div>
+        <button class="btn btn-secondary" data-action="repair-autostart">Fix it</button>
+      </div>` : ""}
     </div>
 
     <div class="setting-group" style="margin-top:24px;">
@@ -9336,12 +9349,30 @@ async function _renderHostSettings(container) {
       await renderSettings();
     }
   };
+  const repairAutostart = container.querySelector('[data-action="repair-autostart"]');
+  if (repairAutostart) repairAutostart.onclick = async () => {
+    repairAutostart.disabled = true;
+    try {
+      const res = await hostCall("RepairAutostart");
+      _hostInfoCache = null;
+      showToast(res.stale ? "The startup entry could not be fixed" : "Startup entry fixed", {
+        type: res.stale ? "error" : "success"
+      });
+    } catch (err) {
+      showToast("Could not fix the startup entry: " + err.message, {
+        type: "error"
+      });
+    } finally {
+      await renderSettings();
+    }
+  };
   const autostart = container.querySelector('[data-action="autostart"]');
   autostart.onchange = async () => {
     const wanted = autostart.checked;
     try {
       await hostCall("SetAutostart", wanted);
       if (_hostInfoCache) _hostInfoCache.autostart = wanted;
+      container.querySelector("[data-autostart-stale]")?.remove();
       showToast(wanted ? "Front Desk will start with Windows" : "Front Desk will no longer start with Windows", {
         type: "success"
       });
