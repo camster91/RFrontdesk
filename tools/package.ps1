@@ -210,8 +210,8 @@ A. Sign it. A code-signing certificate from the University of Toronto Certificat
    Authority is enough, because that root is already trusted on domain machines.
    Ask for: Digital Signature key usage, Extended Key Usage Code Signing
    (1.3.6.1.5.5.7.3.3), delivered as a .pfx including the private key, SHA-256.
-   (The GitHub build signs with Azure Artifact Signing instead, once it is set
-   up: see docs\code-signing.md.)
+   (The GitHub build already signs builds from main with Azure Artifact
+   Signing: see docs\code-signing.md.)
 
 B. Allowlist it in the SentinelOne console as a false positive, and attach the
    exe. Prefer the console route over a per-hash entry: every build is a

@@ -2088,8 +2088,8 @@ New:
   asked. Running setup closes a running copy through a named event, which even a
   locked kiosk obeys. Running the exe from inside a zip now says to extract it
   instead of failing to load WebView2.
-- **The GitHub build** (`.github/workflows/build.yml`, from #11, which signs on
-  `main` with Azure Artifact Signing) now also runs every test suite, and
+- **The GitHub build** (`.github/workflows/build.yml`, from #11 and #14, which
+  signs on `main` with Azure Artifact Signing) now also runs every test suite, and
   installs, updates and uninstalls the packaged zip on `windows-latest`.
 
 Checked here with Mono `mcs -langversion:5` and the WebView2 reference
