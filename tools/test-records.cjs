@@ -23,7 +23,12 @@ const PIN = "1234";
 const EXPOSE = [
   "openDB", "get", "put", "runTx", "createItem", "upsertBorrower", "createLoan", "mergeItems",
   "unmergeItem", "importAll", "exportAll", "listItems", "listBorrowers", "getOpenLoanForItem",
-  "requestLoanReturn"
+  "requestLoanReturn",
+  // The remaining-fixes round: lost writes, duplicate dismissals, All loans,
+  // and the staff edit / search / merge screens.
+  "updateSettings", "getSettings", "addItemAlias", "findUnreviewedDuplicates", "setDedupAcknowledged",
+  "_dedupGroupKey", "_dedupKeyFor", "_dedupSignature", "_renderAllLoansList", "_editItem",
+  "_editBorrower", "_renderPeopleList", "_mergeBorrower"
 ];
 
 const TYPES = {
@@ -326,6 +331,154 @@ function startServer() {
       greeting: (document.getElementById("kiosk-greeting-name") || {}).textContent || ""
     }));
     check("eleven digits at the kiosk are refused, not shortened to someone's number", where.screen === "screen-kiosk-borrow-phone" && !/Shifted Owner/.test(where.greeting), JSON.stringify(where));
+
+    // ── the remaining fixes ────────────────────────────────────────────────
+    // Two settings writes at once: both land. Read and write were separate
+    // transactions, so the second write put back a copy without the first.
+    const both = await page.evaluate(async () => {
+      const t = window.__t;
+      await Promise.all([t.updateSettings({ testA: 1 }), t.updateSettings({ testB: 2 })]);
+      const s = await t.getSettings();
+      return { a: s.testA, b: s.testB };
+    });
+    check("two settings changes at once both survive", both.a === 1 && both.b === 2, JSON.stringify(both));
+
+    // An alias added from a stale copy of the item does not undo what changed
+    // since: it used to put the caller's copy back whole.
+    const alias = await page.evaluate(async () => {
+      const t = window.__t;
+      const item = await t.createItem({ name: "Alias Target" });
+      const stale = Object.assign({}, item);
+      await t.put("items", Object.assign({}, item, { timesCheckedOut: 5 }));
+      await t.addItemAlias(stale, "Alias Targ Typo");
+      const now = await t.get("items", item.id);
+      return { times: now.timesCheckedOut, aliases: (now.aliases || []).map((a) => a.label) };
+    });
+    check("adding an alias keeps the item's newer counters", alias.times === 5 && alias.aliases.includes("Alias Targ Typo"), JSON.stringify(alias));
+
+    // A dismissed group of similar names stays dismissed when a checkout
+    // changes which member is busiest (it was keyed on the busiest member's name).
+    const dedup = await page.evaluate(async () => {
+      const t = window.__t;
+      const a = await t.createItem({ name: "Room 115" });
+      const b = await t.createItem({ name: "115" });
+      await t.put("items", Object.assign({}, await t.get("items", a.id), { timesCheckedOut: 9 }));
+      const groupOf = async () => {
+        const r = await t.findUnreviewedDuplicates();
+        return [...r.groups, ...r.nearGroups].find((g) => g.some((m) => m.id === a.id) && g.some((m) => m.id === b.id));
+      };
+      const before = await groupOf();
+      if (!before) return { found: false };
+      const near = !before.every((m) => m.name === before[0].name);
+      await t.setDedupAcknowledged(t._dedupGroupKey(before, near), t._dedupSignature(before));
+      const hidden = !(await groupOf());
+      // Now the other one gets busier, which reorders the group.
+      await t.put("items", Object.assign({}, await t.get("items", b.id), { timesCheckedOut: 50 }));
+      const stillHidden = !(await groupOf());
+      // An acknowledgement written the old way (under the then-busiest name)
+      // is honoured too.
+      await t.updateSettings({ dedupAcknowledged: { [t._dedupKeyFor(a, near)]: t._dedupSignature(before) } });
+      const oldStyle = !(await groupOf());
+      return { found: true, hidden, stillHidden, oldStyle };
+    });
+    check("a near-duplicate pair is offered for review", dedup.found, JSON.stringify(dedup));
+    check("dismissing it hides it", dedup.hidden, JSON.stringify(dedup));
+    check("and it stays hidden after a checkout reorders it", dedup.stillHidden, JSON.stringify(dedup));
+    check("an older dismissal is honoured too", dedup.oldStyle, JSON.stringify(dedup));
+
+    // All loans: the date range is applied before anything is cut, so old
+    // loans are found on a busy desk. It used to look in the newest 1,000 only.
+    const range = await page.evaluate(async () => {
+      const t = window.__t;
+      const old = new Date(2020, 5, 15, 12).getTime();
+      await t.runTx(["loans"], "readwrite", async (s) => {
+        const st = s.get("loans");
+        for (let i = 0; i < 1005; i++) {
+          const when = i < 5 ? old + i * 60000 : Date.now() - i * 60000;
+          st.put({ id: 800000 + i, itemId: 1, borrowerId: 1, itemNameSnapshot: "Bulk", borrowerNameSnapshot: "Bulk", checkedOutAt: when, dueAt: when + 3600000, returnedAt: when + 1800000, isOpen: "closed" });
+        }
+      });
+      const panel = document.createElement("div");
+      panel.className = "admin-list";
+      panel.innerHTML = '<input type="date" data-filter="from" value="2020-06-01"><input type="date" data-filter="to" value="2020-06-30"><div class="c"></div>';
+      document.body.appendChild(panel);
+      const content = panel.querySelector(".c");
+      await t._renderAllLoansList(content);
+      const rows = content.children.length;
+      const text = content.textContent;
+      panel.remove();
+      return { rows, empty: /No loans in this range/.test(text) };
+    });
+    check("All loans finds a June 2020 range behind 1,000 newer loans", range.rows === 5 && !range.empty, JSON.stringify(range));
+
+    // The edit dialogs refuse a blank name and keep the old one.
+    const dialogSave = async (fn, id, field) => {
+      await page.evaluate((fnName, recId) => {
+        window.__editDone = (async () => {
+          const t = window.__t;
+          const rec = await t.get(fnName === "_editItem" ? "items" : "borrowers", recId);
+          await t[fnName](rec);
+        })();
+      }, fn, id);
+      await page.waitForSelector(`#dialog [data-f="${field}"]`, { timeout: 8000 });
+      await page.evaluate(() => {
+        const n = document.querySelector('#dialog [data-f="name"]');
+        n.value = "   ";
+        const save = Array.from(document.querySelectorAll("#dialog .dialog-actions .btn")).find((b) => /^save$/i.test(b.textContent.trim()));
+        save.click();
+      });
+      await page.evaluate(() => window.__editDone);
+    };
+    const named = await page.evaluate(async () => {
+      const t = window.__t;
+      const item = await t.createItem({ name: "Keep My Name" });
+      const person = await t.upsertBorrower({ phone: "4165550999", name: "Kept Person" });
+      return { itemId: item.id, personId: person.id };
+    });
+    await dialogSave("_editItem", named.itemId, "name");
+    await dialogSave("_editBorrower", named.personId, "phone");
+    const afterEdits = await page.evaluate(async (ids) => {
+      const t = window.__t;
+      return { item: (await t.get("items", ids.itemId)).name, person: (await t.get("borrowers", ids.personId)).name };
+    }, named);
+    check("saving an item with a blank name keeps the old name", afterEdits.item === "Keep My Name", JSON.stringify(afterEdits));
+    check("saving a person with a blank name keeps the old name", afterEdits.person === "Kept Person", JSON.stringify(afterEdits));
+
+    // People: a search that finds nobody says so, instead of "No people yet".
+    const peopleMsg = await page.evaluate(async () => {
+      const div = document.createElement("div");
+      await window.__t._renderPeopleList(div, "zzqxj", "name");
+      return div.textContent.trim();
+    });
+    check("a People search that finds nobody says nobody matches", /Nobody matches/.test(peopleMsg) && !/No people yet/.test(peopleMsg), peopleMsg);
+
+    // Merge with…: everyone (not the first ten), searchable, no archived people.
+    const merge = await page.evaluate(async () => {
+      const t = window.__t;
+      const keep = await t.upsertBorrower({ phone: "4165551000", name: "Aaron Keeper" });
+      for (let i = 0; i < 14; i++) await t.upsertBorrower({ phone: `41655510${String(10 + i)}`, name: `Merge Candidate ${i}` });
+      const zed = await t.upsertBorrower({ phone: "4165551099", name: "Zed Duplicate" });
+      const gone = await t.upsertBorrower({ phone: "4165551098", name: "Archived Ann" });
+      await t.put("borrowers", Object.assign({}, gone, { isArchived: true }));
+      window.__mergeDone = t._mergeBorrower(keep);
+      return { zedId: zed.id, goneId: gone.id };
+    });
+    await page.waitForSelector("#dialog [data-merge-with]", { timeout: 8000 });
+    const mergeList = await page.evaluate(async (ids) => {
+      const listed = () => Array.from(document.querySelectorAll("#dialog [data-merge-with]")).map((b) => Number(b.dataset.mergeWith));
+      const first = listed();
+      const q = document.querySelector('#dialog [data-f="q"]');
+      q.value = "zed";
+      q.dispatchEvent(new Event("input", { bubbles: true }));
+      const searched = listed();
+      const cancel = Array.from(document.querySelectorAll("#dialog .dialog-actions .btn")).find((b) => /cancel/i.test(b.textContent));
+      cancel.click();
+      await window.__mergeDone;
+      return { count: first.length, archivedListed: first.includes(ids.goneId), searched, zedId: ids.zedId };
+    }, merge);
+    check("Merge with… lists more than ten people", mergeList.count > 10, JSON.stringify(mergeList));
+    check("and leaves archived people out", !mergeList.archivedListed, JSON.stringify(mergeList));
+    check("and searching finds the one you want", mergeList.searched.length === 1 && mergeList.searched[0] === mergeList.zedId, JSON.stringify(mergeList));
 
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));

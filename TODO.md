@@ -24,18 +24,18 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
       Signing through the shared Rclicker workflow; the first signed build is
       run 37467605234. See `docs/code-signing.md`.
 
-## Remaining fixes (lower priority)
+## Remaining fixes
 
-Details in `docs/CODE_REVIEW.md`, under "Found, not fixed".
+All done. Details in `docs/CODE_REVIEW.md`, under "The last seven".
 
 **App**
-- [ ] A dismissed duplicate group comes back after one checkout.
-- [ ] Two places can lose a setting or alias if two writes happen at once.
-- [ ] All loans: the date filter misses older loans on a busy desk (1,000 cap).
-- [ ] People → "Merge with…" only offers the first ten people.
-- [ ] Editing an item or person allows an empty name.
-- [ ] People says "No people yet" when a search just finds nothing.
-- [ ] Settings → Import replaces everything without asking first.
+- [x] A dismissed duplicate group comes back after one checkout.
+- [x] Two places can lose a setting or alias if two writes happen at once.
+- [x] All loans: the date filter misses older loans on a busy desk (1,000 cap).
+- [x] People → "Merge with…" only offers the first ten people.
+- [x] Editing an item or person allows an empty name.
+- [x] People says "No people yet" when a search just finds nothing.
+- [x] Settings → Import replaces everything without asking first.
 
 **Windows app and packaging** — all done
 - [x] An old startup entry is never updated to the current command.

@@ -13,7 +13,7 @@ file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
 **Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 766 checks, all green) —
+covered by `node tools/test-all.cjs` (**thirteen** suites, 780 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -2008,29 +2008,11 @@ code before it.
 | R7 | The on-screen keys ignored `maxlength` (12 digits into the 8-digit PIN field). | Enforced. The two kiosk phone fields allow 16, so a leading 1 still fits. |
 | R8 | The kiosk kept the last ten digits of whatever was typed, so a double-tapped digit became someone else's valid number. | Exactly ten digits (after a leading 1) or it is refused; the return field's formatter keeps the first ten, not the last. |
 
-### Found, not fixed
+### Found, not fixed -- now fixed
 
-Each was reproduced or traced in the source by the read that found it.
+All seven are fixed; see *The last seven* below. Host, keyboard and packaging:
+all five fixed -- see *Install, uninstall and a GitHub build* below.
 
-Data layer:
-
-- A dismissed near-duplicate group comes back after one checkout: its key is
-  `group[0]`, the busiest member, which changes with use.
-- `addItemAlias` and `updateSettings` read and write in separate transactions,
-  so a concurrent write is lost (in the worst case a PIN change undone by a
-  background `lastDedupAt` write).
-
-Screens:
-
-- The All Loans date filter runs after a 1,000-loan cap, so older ranges show
-  nothing on a busy desk while the export (capped at 100,000) has them.
-- "Merge with…" on a person offers the first ten people, archived ones included.
-- `_editItem`/`_editBorrower` save an empty name; People says "No people yet"
-  when a search matches nothing; Settings → Import replaces everything without
-  the confirmation the host's Restore asks for.
-
-Host, keyboard, packaging: all five fixed — see *Install, uninstall and a
-GitHub build* below.
 
 ### Fixed when the app became Windows-only (2026-10-06)
 
@@ -2130,6 +2112,32 @@ borrower would, found five places where the app was worse than the paper:
 
 What paper did that the app still does not: a signature. The phone number is
 the identity, as before.
+
+### The last seven (2026-10-06)
+
+The seven left in *Found, not fixed*, each with a check in
+`tools/test-records.cjs` (or `test-restore.cjs` for Import), and the two
+data-layer ones confirmed to fail against the old code:
+
+- **A dismissed duplicate group stays dismissed.** The dismissal was looked up
+  under the busiest member's name, which a checkout can change. It now counts
+  if the exact set of items was dismissed under any member's name, and new
+  dismissals are stored under the alphabetically first name, which does not
+  move.
+- **Settings and aliases no longer lose a write.** `updateSettings` and
+  `addItemAlias` read and wrote in two transactions, so a write landing in
+  between was undone. Each is one transaction now, applied to the record as it
+  is at that moment.
+- **All loans finds old ranges.** The date range is applied to every loan and
+  then the first 200 are shown; the 1,000 cap that came first is gone.
+- **Merge with… lists everyone**, sorted, with a search box, and leaves
+  archived people out. It offered the first ten the store returned.
+- **A blank name is refused** when editing an item or a person; the old name is
+  kept and the desk is told.
+- **People says "Nobody matches"** for a search that finds no one, and a phone
+  number typed with dashes matches.
+- **Settings → Import asks first**, naming the file and how much is in it, as
+  Restore always has. A file that is not a backup is refused without asking.
 
 ---
 
