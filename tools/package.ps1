@@ -10,10 +10,11 @@
 # to carry, and what comes out of it is a folder, which is the shape that is
 # allowed through.
 #
-# The install is inside the app: "Install Front Desk.cmd" in the zip runs
-# RFrontDesk.exe --install, which copies the folder to the user's own
+# The install is inside the app: opening RFrontDesk.exe from the unzipped folder
+# offers to install it, which copies the folder to the user's own
 # %LOCALAPPDATA%\Programs, adds a Start menu shortcut and an entry in Settings >
-# Apps to remove it. No admin rights, and no second exe to sign. Not Program
+# Apps to remove it. No admin rights, no second exe to sign, and no script: a
+# .cmd that starts an exe is one more thing an endpoint agent scores. Not Program
 # Files: the app writes its data beside itself, and that folder is not writable
 # without elevation.
 #
@@ -116,7 +117,7 @@ INSTALL
 -------
 1. Right-click the zip and choose Extract All. (Running it from inside the
    zip does not work.)
-2. In the folder that makes, double-click "Install Front Desk".
+2. In the folder that makes, double-click RFrontDesk.exe and choose Install.
 3. Pick your options and click Install. No admin rights are needed.
    On a public tablet, tick "This is a public tablet: lock it down".
 
@@ -138,7 +139,7 @@ The desk's records are kept unless you tick the box to delete them too.
 WITHOUT INSTALLING
 ------------------
 You can also run RFrontDesk.exe straight from this folder, for example
-from a USB stick. It keeps its records in the data folder beside it. Do not
+from a USB stick: choose "Run from this folder" when it offers to install. It keeps its records in the data folder beside it. Do not
 put it in Program Files: it could not save anything there.
 
 WHAT IT SAVES
@@ -182,7 +183,7 @@ network listener and requests asInvoker, so it never asks for elevation.
 INSTALLING
 ----------
 Install and uninstall are built into the same exe; there is no separate setup
-program. Everything is per-user, with no admin rights:
+program and no script. Everything is per-user, with no admin rights:
 
   %LOCALAPPDATA%\Programs\RFrontDesk\   the app, and its data\ folder
   Start menu shortcut (and a desktop one, unless turned off)
@@ -197,6 +198,11 @@ Silent uninstall (keeps the records unless --delete-data is added):
   "%LOCALAPPDATA%\Programs\RFrontDesk\RFrontDesk.exe" --uninstall --quiet
 
 Exit codes: 0 done, 1 cancelled, 2 failed, 3 removed but some files were in use.
+
+Uninstall leaves one file: RFrontDesk.exe itself, since a running exe cannot
+delete itself. It does not copy itself to Temp or schedule a delete to get
+around that; the file is safe to delete by hand. The app only touches the Run
+key when someone asks it to (at install, or in its Settings).
 
 --kiosk locks a public tablet: full screen, no way out of the app, no DevTools.
 
@@ -229,25 +235,6 @@ Third-party licences are in the licenses\ folder.
 "@
     Set-Content -Path (Join-Path $root 'For IT.txt') -Encoding ASCII -Value $forIt
 
-    # The one thing a person double-clicks to install. A .cmd rather than a
-    # script, so no execution policy gets in the way; all it does is start the
-    # app's own installer, after checking the zip was extracted first.
-    Set-Content -Path (Join-Path $root 'Install Front Desk.cmd') -Encoding ASCII -Value @(
-        '@echo off',
-        'rem Installs RFrontDesk for this Windows user. No admin rights needed.',
-        'if not exist "%~dp0RFrontDesk.exe" goto notextracted',
-        'if not exist "%~dp0Microsoft.Web.WebView2.Core.dll" goto notextracted',
-        'start "" "%~dp0RFrontDesk.exe" --install',
-        'exit /b 0',
-        ':notextracted',
-        'echo.',
-        'echo   Extract the zip first: close this, right-click the zip, choose Extract All,',
-        'echo   then run "Install Front Desk" from the folder that makes.',
-        'echo.',
-        'pause',
-        'exit /b 1'
-    )
-
     # --- Zip ---------------------------------------------------------------
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $zip = Join-Path $OutDir ("RFrontDesk-$version.zip")
@@ -268,7 +255,7 @@ Third-party licences are in the licenses\ folder.
 
         $unpackedExe = Join-Path $unpacked 'RFrontDesk.exe'
         if (-not (Test-Path $unpackedExe)) { Fail "No exe in the unpacked folder." }
-        foreach ($need in @('Install Front Desk.cmd', 'START HERE.txt', 'For IT.txt',
+        foreach ($need in @('START HERE.txt', 'For IT.txt',
                             'licenses\WebView2 LICENSE.txt', 'licenses\WebView2 NOTICE.txt')) {
             if (-not (Test-Path (Join-Path $unpacked $need))) { Fail "The zip is missing $need." }
         }

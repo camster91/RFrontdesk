@@ -2040,8 +2040,10 @@ suite's three modes ran under Mono: 44 checks, none failed.
 
 The five host and packaging findings above, fixed:
 
-- **The startup entry is corrected at launch** (`Autostart.RepairIfStale`) when
-  it is this copy's entry with old flags, or points at an exe that is gone. It
+- **The startup entry is corrected** (`Autostart.Repair`) when
+  it is this copy's entry with old flags, or points at an exe that is gone.
+  (Since the EDR review this only happens when someone presses *Fix it* in
+  Settings, never silently at launch.) It
   never takes over another copy's working entry, and never drops the lock: a
   locked entry stays locked even if this launch is not.
 - **The data folder beside the app wins whenever it already has a database**

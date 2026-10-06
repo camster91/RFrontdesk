@@ -520,7 +520,32 @@ namespace FrontDeskHost
         {
             try
             {
-                return "{\"ok\":true,\"enabled\":" + Json.Bool(Autostart.IsEnabled()) + "}";
+                return AutostartState();
+            }
+            catch (Exception ex)
+            {
+                return Error(ex);
+            }
+        }
+
+        /// <summary>
+        /// On, and whether the entry is stale (old flags, or an exe that is gone).
+        /// Read fresh each time rather than cached with GetInfo: the toggle and
+        /// the fix both change it.
+        /// </summary>
+        private static string AutostartState()
+        {
+            return "{\"ok\":true,\"enabled\":" + Json.Bool(Autostart.IsEnabled()) +
+                ",\"stale\":" + Json.Bool(Autostart.StaleFix() != null) + "}";
+        }
+
+        /// <summary>Settings' "Fix it" for a stale startup entry. Never run on its own.</summary>
+        public string RepairAutostart()
+        {
+            try
+            {
+                Autostart.RepairNow();
+                return AutostartState();
             }
             catch (Exception ex)
             {
@@ -533,7 +558,7 @@ namespace FrontDeskHost
             try
             {
                 Autostart.Set(enabled);
-                return "{\"ok\":true,\"enabled\":" + Json.Bool(Autostart.IsEnabled()) + "}";
+                return AutostartState();
             }
             catch (Exception ex)
             {
@@ -803,10 +828,10 @@ namespace FrontDeskHost
         ///
         /// The entry used to be written once and never looked at again, so moving
         /// the folder, or installing over an old copy, left Windows starting an
-        /// exe that was gone. It is now corrected at launch -- but only when it is
-        /// this copy's entry (same exe) or points at nothing: a second copy run
-        /// from a USB stick must not take the startup entry over from the
-        /// installed one. And a correction never drops the lock: if the stored
+        /// exe that was gone. Settings now shows that and offers to correct it --
+        /// but only when it is this copy's entry (same exe) or points at
+        /// nothing: a second copy run from a USB stick must not take the startup
+        /// entry over from the installed one. And a correction never drops the lock: if the stored
         /// entry is locked, the new one is too, even when this launch is not.
         /// </summary>
         internal static string Repair(string stored, string exePath, bool devTools, Func<string, bool> fileExists)
@@ -820,26 +845,36 @@ namespace FrontDeskHost
             return string.Equals(stored, want, StringComparison.Ordinal) ? null : want;
         }
 
-        /// <summary>Run at every launch: fix this copy's startup entry if it is out of date.</summary>
-        public static void RepairIfStale()
+        /// <summary>What this copy's startup entry should be changed to, or null if it is fine.</summary>
+        public static string StaleFix()
         {
             try
             {
-                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
-                {
-                    if (k == null) return;
-                    string stored = k.GetValue(ValueName) as string;
-                    string fixedValue = Repair(stored, Application.ExecutablePath,
-                        StartupOptions.Current.DevTools, File.Exists);
-                    if (fixedValue == null) return;
-                    k.SetValue(ValueName, fixedValue);
-                    Paths.Log("startup entry updated to: " + fixedValue);
-                }
+                return Repair(Stored(), Application.ExecutablePath, StartupOptions.Current.DevTools, File.Exists);
             }
             catch (Exception ex)
             {
                 Paths.Log("could not check the startup entry: " + ex.Message);
+                return null;
             }
+        }
+
+        /// <summary>
+        /// Writes the corrected startup entry. Only ever called because someone
+        /// pressed "Fix it" in Settings: rewriting a run-at-sign-in entry with
+        /// nobody asking is what persistence looks like to an endpoint agent.
+        /// </summary>
+        public static bool RepairNow()
+        {
+            string fix = StaleFix();
+            if (fix == null) return false;
+            using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+            {
+                if (k == null) return false;
+                k.SetValue(ValueName, fix);
+            }
+            Paths.Log("startup entry updated to: " + fix);
+            return true;
         }
 
         /// <summary>The stored Run value, or null.</summary>
@@ -908,7 +943,7 @@ namespace FrontDeskHost
     /// <summary>
     /// Install and uninstall, for one Windows user, with no admin rights.
     ///
-    ///   RFrontDesk.exe --install      (the zip's "Install Front Desk.cmd" runs this)
+    ///   RFrontDesk.exe --install      (also offered the first time an unzipped copy is opened)
     ///   RFrontDesk.exe --uninstall    (what Settings > Apps runs)
     ///   add --quiet for IT: no windows; with --install, --kiosk, --autostart and
     ///   --no-desktop choose the options; with --uninstall, --delete-data removes
@@ -1137,7 +1172,7 @@ namespace FrontDeskHost
             {
                 k.SetValue("DisplayName", AppName);
                 k.SetValue("DisplayVersion", Build.Version);
-                k.SetValue("Publisher", "RFrontDesk");
+                k.SetValue("Publisher", "Cameron Ashley");
                 k.SetValue("DisplayIcon", exe + ",0");
                 k.SetValue("InstallLocation", dir);
                 k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture));
@@ -1186,6 +1221,66 @@ namespace FrontDeskHost
             return File.Exists(Path.Combine(fallback, ExeName)) ? fallback : null;
         }
 
+        // --- The first-run offer ---------------------------------------------
+
+        /// <summary>Written into data\ when someone chooses to run from the unzipped folder.</summary>
+        public const string RunHereMarker = "run-from-here.txt";
+
+        internal static bool Exists(string path)
+        {
+            return File.Exists(path) || Directory.Exists(path);
+        }
+
+        /// <summary>
+        /// Whether to offer to install: an unzipped copy that is not the installed
+        /// one, has never been used (no database yet), and has not been told to
+        /// run from where it is. Never on a start-with-Windows launch.
+        /// </summary>
+        internal static bool ShouldOffer(string baseDir, string installDir, Func<string, bool> exists, bool minimized)
+        {
+            if (minimized) return false;
+            if (SamePath(baseDir, installDir)) return false;
+            string data = Path.Combine(baseDir, "data");
+            if (exists(Path.Combine(data, "browser"))) return false;
+            if (exists(Path.Combine(data, RunHereMarker))) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Ask, once. True when setup ran instead of the app; false to carry on
+        /// and run from this folder (remembered, so the question is not repeated).
+        /// </summary>
+        public static bool OfferInstall(StartupOptions o)
+        {
+            DialogResult answer;
+            using (SetupForm f = new SetupForm(AppName, "Install RFrontDesk?",
+                "Installing puts it in the Start menu and in Settings > Apps, so it is easy to find, " +
+                "update and remove. It is for you only, and no admin rights are needed.\r\n\r\n" +
+                "Or run it straight from this folder, for example on a USB stick. It then keeps its " +
+                "records in this folder.",
+                "Install", "Run from this folder"))
+            {
+                answer = f.ShowDialog();
+            }
+            if (answer == DialogResult.OK)
+            {
+                Environment.ExitCode = Install(o);
+                return true;
+            }
+            try
+            {
+                string data = Path.Combine(Full(AppDomain.CurrentDomain.BaseDirectory), "data");
+                Directory.CreateDirectory(data);
+                File.WriteAllText(Path.Combine(data, RunHereMarker),
+                    "RFrontDesk was told to run from this folder rather than be installed.\r\n" +
+                    "Delete this file to be asked again.\r\n");
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
         // --- Uninstall -------------------------------------------------------
 
         public static int Uninstall(StartupOptions o)
@@ -1221,7 +1316,8 @@ namespace FrontDeskHost
                 try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, false); }
                 catch { }
 
-                List<string> stuck = RemoveApp(dir, deleteData);
+                bool leftSelf;
+                List<string> stuck = RemoveApp(dir, deleteData, out leftSelf);
                 if (deleteData)
                 {
                     // The fallback folder an unwritable copy once used.
@@ -1237,6 +1333,9 @@ namespace FrontDeskHost
                     if (!deleteData && Directory.Exists(Path.Combine(dir, "data")))
                         msg += "\r\n\r\nThe desk's records and backups are still in:\r\n" + Path.Combine(dir, "data") +
                                "\r\n\r\nInstall again to pick them up, or delete that folder.";
+                    if (leftSelf)
+                        msg += "\r\n\r\nOne file is left, because it is the one doing the removing:\r\n" +
+                               Path.Combine(dir, ExeName) + "\r\nIt is safe to delete it now.";
                     if (stuck.Count > 0)
                         msg += "\r\n\r\nThese could not be removed and can be deleted by hand:\r\n" +
                                string.Join("\r\n", stuck.ToArray());
@@ -1252,28 +1351,33 @@ namespace FrontDeskHost
 
         /// <summary>
         /// Delete the app from dir; the data folder too only when asked. Returns
-        /// what could not be removed.
+        /// what could not be removed; leftSelf says the running exe was left.
         ///
-        /// The running exe cannot be deleted, but Windows does let it be renamed,
-        /// so it is moved into %TEMP% and cleaned up the next time any copy of
-        /// Front Desk starts. That avoids the usual trick of copying the
-        /// uninstaller to %TEMP% and running it from there -- an exe that copies
-        /// itself and launches the copy is exactly what endpoint agents look for.
+        /// The running exe cannot delete itself, and it does not try to. It used
+        /// to rename itself into %TEMP% as a .tmp file -- which works, but an exe
+        /// that moves its own running image into Temp is what malware covering
+        /// its tracks looks like, and CrowdStrike and SentinelOne watch for it.
+        /// So the one file stays, and the person is told it is safe to delete.
+        /// (Copying the uninstaller to %TEMP% and running the copy, the other
+        /// usual trick, is flagged for the same reason.)
         /// </summary>
-        internal static List<string> RemoveApp(string dir, bool deleteData)
+        internal static List<string> RemoveApp(string dir, bool deleteData, out bool leftSelf)
         {
             List<string> stuck = new List<string>();
+            leftSelf = false;
             try { Environment.CurrentDirectory = Path.GetTempPath(); }
             catch { }
             string self = Application.ExecutablePath;
             foreach (string f in Directory.GetFiles(dir))
             {
+                if (SamePath(f, self))
+                {
+                    leftSelf = true;
+                    continue;
+                }
                 try
                 {
-                    if (SamePath(f, self))
-                        File.Move(f, Path.Combine(Path.GetTempPath(), LeftoverPrefix + Guid.NewGuid().ToString("N") + ".tmp"));
-                    else
-                        File.Delete(f);
+                    File.Delete(f);
                 }
                 catch
                 {
@@ -1296,7 +1400,11 @@ namespace FrontDeskHost
             return stuck;
         }
 
-        /// <summary>Delete exes an earlier uninstall moved aside. Best effort, every launch.</summary>
+        /// <summary>
+        /// Delete exes that an uninstall from an earlier version moved into %TEMP%.
+        /// This version no longer does that; the clean-up stays for those copies.
+        /// Best effort, every launch, and only files with this app's own prefix.
+        /// </summary>
         public static void CleanLeftovers()
         {
             try
@@ -1445,7 +1553,7 @@ namespace FrontDeskHost
     {
         private readonly FlowLayoutPanel _options;
 
-        public SetupForm(string title, string heading, string body, string okText)
+        public SetupForm(string title, string heading, string body, string okText, string cancelText = "Cancel")
         {
             Text = title;
             Font = SystemFonts.MessageBoxFont;
@@ -1499,7 +1607,7 @@ namespace FrontDeskHost
             ok.AutoSize = true;
             ok.MinimumSize = new Size(96, 30);
             Button cancel = new Button();
-            cancel.Text = "Cancel";
+            cancel.Text = cancelText;
             cancel.DialogResult = DialogResult.Cancel;
             cancel.AutoSize = true;
             cancel.MinimumSize = new Size(96, 30);
@@ -2389,6 +2497,20 @@ namespace FrontDeskHost
     internal static class Program
     {
         private static Mutex _instance;
+        private static bool _visualsReady;
+
+        /// <summary>
+        /// Windows' display setup, once. It has to run before the first window and
+        /// throws if it runs after one, and setup can now show a window (the
+        /// install offer) before the app's own.
+        /// </summary>
+        internal static void PrepareVisuals()
+        {
+            if (_visualsReady) return;
+            _visualsReady = true;
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+        }
 
         [STAThread]
         private static void Main(string[] args)
@@ -2399,8 +2521,7 @@ namespace FrontDeskHost
             // it is often run while the app is open, to update it.
             if (startup.Install || startup.Uninstall)
             {
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
+                PrepareVisuals();
                 Environment.ExitCode = startup.Install ? Installer.Install(startup) : Installer.Uninstall(startup);
                 return;
             }
@@ -2410,13 +2531,24 @@ namespace FrontDeskHost
             string missing = Installer.MissingFiles(AppDomain.CurrentDomain.BaseDirectory);
             if (missing != null)
             {
-                Application.EnableVisualStyles();
+                PrepareVisuals();
                 MessageBox.Show(
                     "Front Desk is missing some of its files (" + missing + ").\r\n\r\n" +
                     "If you opened it from inside the zip, close it, right-click the zip, choose Extract All, " +
-                    "and then run \"Install Front Desk\" from the folder that makes.",
+                    "and then open RFrontDesk.exe from the folder that makes.",
                     "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
+            }
+
+            // Opened from an unzipped copy for the first time: offer to install.
+            // This replaces the "Install Front Desk.cmd" script the zip used to
+            // carry -- a script inside a downloaded zip is a classic phishing
+            // shape, and mail filters and endpoint agents block it.
+            if (Installer.ShouldOffer(AppDomain.CurrentDomain.BaseDirectory, Installer.DefaultInstallDir(),
+                    Installer.Exists, startup.Minimized))
+            {
+                PrepareVisuals();
+                if (Installer.OfferInstall(startup)) return;
             }
 
             RunApp(startup);
@@ -2447,9 +2579,11 @@ namespace FrontDeskHost
             // kiosk came back from a reboot with DevTools enabled.
             Paths.Resolve();
             Installer.CleanLeftovers();
-            Autostart.RepairIfStale();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
+            // The startup entry is no longer corrected silently here. Changing a
+            // run-at-sign-in entry with nobody asking is what persistence looks
+            // like to an endpoint agent; Settings shows a stale entry and offers
+            // to fix it instead (Bridge.RepairAutostart -> Autostart.RepairNow).
+            PrepareVisuals();
 
             Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e)
             {

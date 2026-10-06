@@ -8,11 +8,11 @@ Front Desk is a Windows app. What is left, in order. Tick items off as they are 
       request (Actions → *Build*). No build computer needed.
 - [x] **Review and merge [PR #10](https://github.com/camster91/RFrontdesk/pull/10).**
 - [ ] **Download the zip** from the latest run's Artifacts and try
-      *Install Front Desk* on a real desk.
+      installing it on a real desk.
 
 ## Setting up a desk
 
-- [ ] **Install it:** extract the zip, double-click *Install Front Desk*. On a
+- [ ] **Install it:** extract the zip, open *RFrontDesk.exe*, choose Install. On a
       public tablet tick "This is a public tablet: lock it down".
 - [ ] **Change the PIN** the first time you sign in. It starts as 1234.
 - [ ] **Turn on "Start with Windows"** (an install option, or Settings → This computer).

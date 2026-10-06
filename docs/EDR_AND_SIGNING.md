@@ -247,6 +247,31 @@ machine, not a guarantee.
   detection for this app will keep having one, and the changes that actually help
   are signing and allowlisting.
 
+## Behaviour changed so the app looks less like malware (2026-10-06)
+
+A review against what CrowdStrike and SentinelOne score found four things the
+app did that are also things malware does. All four are gone:
+
+- **Uninstall no longer moves its own exe into Temp.** A running exe cannot
+  delete itself, and the old trick (rename it into `%TEMP%`, delete it on the
+  next launch) is a textbook evasion pattern. Uninstall now removes everything
+  else and says that one file is left and safe to delete.
+- **The zip has no install script.** `Install Front Desk.cmd` is gone: a script
+  inside a downloaded zip is a phishing shape that mail filters and agents
+  block. Opening `RFrontDesk.exe` from the unzipped folder offers *Install* or
+  *Run from this folder* instead.
+- **The start-with-Windows entry changes only when someone asks.** It used to be
+  rewritten silently at every launch when it looked out of date, which is what
+  persistence looks like. Now Settings shows an out-of-date entry with a
+  **Fix it** button.
+- **The file's company name is "Cameron Ashley"**, the same name as on the
+  signing certificate, and so is the Publisher in Settings > Apps. A file that
+  claims one maker and is signed by another is one more thing to score.
+
+What is left needs IT, not code: an allowlist by **publisher** (the signer),
+not by hash, in the CrowdStrike and SentinelOne consoles, and in AppLocker or
+WDAC if the machines use them. A publisher rule survives every new build.
+
 ## For the record: the build change that was not about the agent
 
 While editing `build.ps1` for the above, a separate footgun was found and fixed.
@@ -263,7 +288,7 @@ Verified: a rebuild leaves `dist\data\browser`, `dist\data\backups` and
 
 ## Status
 
-**Open, and tracked as [issue #9](https://github.com/camster91/frontdesk/issues/9).**
+**Open, and tracked as [issue #9](https://github.com/camster91/RFrontdesk/issues/9).**
 The v1.0.0 release is unsigned (`signed: NotSigned`), so everything above is a
 proposal rather than a report: what the agent does with a *signed* build has not
 been measured, because no certificate exists on this machine yet. Getting one is

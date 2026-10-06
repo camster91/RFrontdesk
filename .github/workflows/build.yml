@@ -124,7 +124,9 @@ jobs:
           Write-Host 'update keeps the records: ok'
 
           Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet')
-          if (Test-Path (Join-Path $dir 'RFrontDesk.exe')) { throw 'uninstall left the exe' }
+          # The running exe stays (it does not move itself into Temp, which
+          # endpoint agents flag); everything else of the app goes.
+          if (Test-Path (Join-Path $dir 'web')) { throw 'uninstall left the app files' }
           if (Test-Path $lnk) { throw 'uninstall left the shortcut' }
           if (Test-Path $key) { throw 'uninstall left the Apps entry' }
           if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'uninstall deleted the records without being asked' }
@@ -132,8 +134,10 @@ jobs:
 
           Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
           Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet', '--delete-data')
-          if (Test-Path $dir) { throw "uninstall --delete-data left: $((Get-ChildItem $dir -Recurse -Name) -join ', ')" }
-          Write-Host 'uninstall --delete-data removes everything: ok'
+          $left = @(Get-ChildItem $dir -Recurse -Name)
+          if ($left.Count -ne 1 -or $left[0] -ne 'RFrontDesk.exe') { throw "uninstall --delete-data left: $($left -join ', ')" }
+          if (@(Get-ChildItem $env:TEMP -Filter 'RFrontDesk-removed-*' -ErrorAction SilentlyContinue).Count) { throw 'uninstall moved a file into Temp' }
+          Write-Host 'uninstall --delete-data removes everything but the running exe: ok'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
