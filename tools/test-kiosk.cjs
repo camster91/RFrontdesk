@@ -670,6 +670,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       .catch(() => false);
     check("and LOGIN works on a document where the hold was never used", gotIn);
 
+    // Consume the creation allowance through Borrow something else, then Finish.
+    await gotoWelcome();
+    const startPerson = async (phone, name) => {
+      await clickIn("screen-welcome", ".btn-kiosk-borrow");
+      await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)");
+      await fill("#kiosk-phone", phone);
+      await clickIn("screen-kiosk-borrow-phone", '[data-action="kiosk-phone-continue"]');
+      await page.waitForSelector("#screen-kiosk-borrow-name:not(.hidden)");
+      await fill("#kiosk-name", name);
+      await clickIn("screen-kiosk-borrow-name", '[data-action="kiosk-name-continue"]');
+      await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)");
+    };
+    const borrowThree = async (names) => {
+      for (let i = 0; i < names.length; i++) {
+        await fill("#kiosk-need", names[i]);
+        await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
+        await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
+        await page.waitForSelector("#screen-kiosk-borrow-done:not(.hidden)", { timeout: 10000 });
+        check(`session can add and borrow ${names[i]}`,
+          (await textIn("screen-kiosk-borrow-done", "#kiosk-done-text")) === names[i]);
+        if (i < names.length - 1) {
+          await clickIn("screen-kiosk-borrow-done", '[data-action="kiosk-borrow-another"]');
+          await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)");
+        }
+      }
+    };
+    await startPerson("4165550991", "First Session Person");
+    await borrowThree(["Cerulean Telescope", "Velvet Harpsichord", "Magenta Windmill"]);
+    const finish = '#screen-kiosk-borrow-done [data-action="kiosk-back-home"]';
+    const hit = await page.$eval(finish, (button) => {
+      button.scrollIntoView({ block: "center", behavior: "instant" });
+      const r = button.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return button.offsetParent !== null && (at === button || button.contains(at));
+    });
+    check("DONE's Finish button is visible and receives the tap", hit);
+    await page.click(finish);
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    const clean = await page.evaluate(() => ({
+      fields: ["kiosk-phone", "kiosk-name", "kiosk-need"].map((id) => document.getElementById(id).value),
+      draft: sessionStorage.getItem("frontdesk.draft"),
+      welcome: document.getElementById("screen-welcome").textContent
+    }));
+    check("Finish clears the previous person's fields and leaves no checkout draft",
+      clean.fields.every((value) => value === "") && clean.draft === null, JSON.stringify(clean.fields));
+    check("the welcome screen carries no previous name or item",
+      !/First Session Person|Magenta Windmill/.test(clean.welcome));
+    await startPerson("4165550992", "Fresh Session Person");
+    check("the next session greets its own borrower",
+      (await textIn("screen-kiosk-borrow-need", "#kiosk-greeting-name")) === "Fresh Session Person");
+    await borrowThree(["Fuchsia Origami", "Bronze Accordion", "Silver Hourglass"]);
+    await page.click(finish);
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    check("a fresh session gets the full three-item allowance after Finish", true);
+
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));
   } finally {
