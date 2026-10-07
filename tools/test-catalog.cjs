@@ -14,13 +14,9 @@
 // Its own browser profile per run, so the 10,000-item seed cannot leak into
 // another suite, and no other suite's catalog can make a check here pass.
 //
-// What this suite deliberately does NOT test: the kiosk's three-items-per-session
-// cap. Every creation ends the session -- the app goes to the DONE screen, and the
-// only way off it is `kiosk-back-home`, which calls `resetKioskCreations()` -- so
-// the cap is a backstop no UI path can reach. The reachable guard rails (a name
-// that matches the catalog at any tier, and a name too short to be an item) are
-// tested below instead. A check that claimed to test the cap would pass for the
-// wrong reason, which is worse than not having it.
+// The catalog suite covers matching, creation and cache invalidation. The kiosk
+// suite drives Borrow something else and Finish to verify that each borrower
+// gets a fresh three-item creation allowance.
 
 const fs = require("fs");
 const path = require("path");
