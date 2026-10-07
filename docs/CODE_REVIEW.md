@@ -1,7 +1,7 @@
 # Front Desk — Code Review
 
 Date: 2026-09-18
-Subject: `frontdesk.html` (Rotman Front Desk, single-file build, Jun 10 2026)
+Subject: `frontdesk.html` (RFrontDesk, single-file build, Jun 10 2026)
 Method: static read of the split source (`web/js/app.js`), three parallel reviewers
 covering the data layer + flows, the interaction layer, and the admin/kiosk/backup
 surfaces.
@@ -12,11 +12,11 @@ this document and have since drifted** — Phases 1–5, 10 and 11 all edited th
 file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
-**Status at 2026-09-22: Phases 1–12 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**eleven** suites, 662 checks, all green) —
+**Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
+covered by `node tools/test-all.cjs` (**thirteen** suites, 780 checks, all green) —
 except the items listed under "Still open", which are the findings from the most
-recent passes that remain unfixed, and which are tracked as issues on this
-repository. The
+recent passes that remain unfixed. Phase 13's are listed in its own section;
+the earlier ones are tracked as issues on this repository. The
 sections that follow are kept as the record of what was wrong and why — they are
 no longer a to-do list. See "Phase 7" for an earlier round of fixes, "Phase 8" for
 shipping the app (icon, packaging, and what the package could have carried out
@@ -25,7 +25,8 @@ used, "Phase 10" for the headings that were not headings and the light-theme
 contrast nobody had measured, "Phase 11" for the rest of that contrast work —
 the accents used as ink, and a brand mark that was invisible on four screens —
 "Phase 12" for the catalog at scale, the host's own two holes, and three
-refusals that used to be silent, and "Known, not
+refusals that used to be silent, "Phase 13" for a fresh three-way read that found
+the boundaries holding at the front door and leaking at the edges, and "Known, not
 fixed" for what was found and deliberately left alone. The endpoint-agent
 question is in `docs/EDR_AND_SIGNING.md`.
 
@@ -105,7 +106,7 @@ visibility by class/DOM, never by a computed style a transition touches.
 | H1 schema mismatch silently wipes the database | `openDB` now salvages first: `_salvageStores` reads every surviving store into memory, the database is recreated, `_restoreSalvage` puts the records back into the stores the new schema still has. A `localStorage` report (`_recordRecoveryReport` / `takeRecoveryReport`) records how many records carried over and how many were dropped, and bootstrap toasts it with a "take a backup" prompt. | Runtime: staged a version-3 database holding items/borrowers/loans/settings but **no `requests`** store. Reload produced `stores: [borrowers, items, loans, requests, settings]` with the seeded "Survivor Item" intact — recovered, not wiped. |
 | H2 `onversionchange` nulls without `close()` | The handler now calls `close()` before nulling, so another tab — or this app after a future schema bump — can actually upgrade or delete. | Static; verified by the H1 test's recreate path reaching completion rather than tripping `onblocked`. |
 | H3 three unescaped DB values in `innerHTML` | `_makeClosedLoanRow` escapes `conditionIn` (its colour was already whitelisted); the loan-hours input coerces via `Number(settings.defaultLoanHours) || 8`; both `data-request-id` sites coerce via `Number(req.id)`. | Static. Worth doing because Import writes records verbatim (A4), so an edited backup was a real injection path. |
-| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under `TZ=America/Toronto` plus live filtering in the app. |
+| H4 date filters are UTC-anchored | New `_localDayStart(value, dayOffset)` builds the boundary from local date parts, with `dayOffset: 1` for the inclusive upper bound so month ends and DST shifts fall out for free. Both call sites (`_renderAllLoansList`, `_exportAllLoansCsv`) moved to it. | Runtime: unit math under an Eastern-time `TZ` plus live filtering in the app. |
 | **`getSettings` could revert the staff PIN** (exposed *by* the H1 work) | Settings live under the key `1`, but a rebuilt or older database can hold a real settings record under another key. `getSettings` treated that as "no settings" and wrote defaults — silently reverting the staff PIN, loan duration and theme while the user's actual settings sat unread in the same store. It now adopts an existing record (`existing.find(s => s && s.pin) \|\| existing[0]`), re-keys it to `id: 1`, and deletes the leftovers. | Runtime: with `{id: 'legacy', pin: '4321', defaultLoanHours: 12, theme: 'light'}` staged, the result was a single `{id: 1, pin: '4321', hours: 12, theme: 'light'}` and `<body>` actually carried the `light` class — the adopted record was read, not just stored. |
 
 The recovery toast was confirmed separately by staging the `localStorage` marker
@@ -533,7 +534,7 @@ persistent backup folder.
 ### F3. Backup filenames use UTC dates **[REVIEWED]**
 
 `dateStamp()` uses `toISOString().slice(0,10)` (`app.js:3732-3734`), so backups
-after 8pm Toronto are named with tomorrow's date, and two backups in that window
+after 8pm Eastern are named with tomorrow's date, and two backups in that window
 overwrite each other in a directory. The filename is otherwise safe — only
 `[0-9-]` from the ISO date reaches it, no user input.
 
@@ -696,7 +697,7 @@ on submit.
   validation (A4), so a shared or edited backup can inject markup. Every other
   render path checked does escape, including attributes.
 - **H4 [REVIEWED]** Date filters are UTC-anchored (`app.js:5047-5048`,
-  `app.js:5072-5073`), so a Toronto filter of Sep 1 includes loans from Aug 31 8pm
+  `app.js:5072-5073`), so an Eastern-time filter of Sep 1 includes loans from Aug 31 8pm
   onward.
 - **H5 [FIXED]** Clipboard fallback reports success it cannot know
   (`app.js:5467-5486`) — the `execCommand` boolean return is discarded and "Copied"
@@ -1223,7 +1224,7 @@ without knowing a theme exists. Two values are not simple inversions:
 - **`--magenta` is deepened to `#C40069`.** Brand magenta `#E6007E` on white is
   4.46:1 — under the 4.5:1 WCAG AA floor for normal text — and it is used as a
   text colour in 30 places (active tabs, badges, the recent-kiosk strip's item
-  names). `#C40069` is 5.9:1 and still reads as the Rotman colour. Dark keeps the
+  names). `#C40069` is 5.9:1 and still reads as the brand colour. Dark keeps the
   pure brand value.
 - **Shadows are rebuilt.** The dark set is a black glow, which is depth on a
   near-black page and dirt on a white one.
@@ -1722,8 +1723,8 @@ taken out — scale and glow carry it alone. `pulse-glow` is left intact for
 
 ### The mark was invisible on four screens
 
-The Rotman mark is one shared SVG — the `data:image/svg+xml` URI in
-`index.html`'s `__ROT_LOGO` has `fill="none"` on its root and `fill="#fff"` on
+The brand mark is one shared SVG — the `data:image/svg+xml` URI in
+`index.html`'s `__LOGO` has `fill="none"` on its root and `fill="#fff"` on
 its only group — painted into nine `<img data-logo>` placements. White artwork.
 Every one of the nine sits on `--surface` or `--bg`, and on the light theme those
 are `#ffffff` and `#f4f5f8`:
@@ -1879,7 +1880,7 @@ and `tel:`, `sms:` and `mailto:` are handed to Windows on an ordinary install an
 **refused** on a `--no-devtools` install, which is the locked-down one. Everything
 refused is logged with the URL that was refused.
 
-Runtime evidence, not just unit checks: launching `dist\RotmanFrontDesk.exe
+Runtime evidence, not just unit checks: launching `dist\RFrontDesk.exe
 --minimized --no-devtools` produced no `blocked navigation` or `navigation failed`
 lines, and the page's own IndexedDB directory
 (`…/IndexedDB/https_frontdesk.local_0.indexeddb.leveldb/`) was written during that
@@ -1943,6 +1944,205 @@ Found re-reading the source in this phase, each one a case of the same shape.
 
 ---
 
+## Phase 13 — boundaries that held at the door and leaked at the edges
+
+Date: 2026-10-02. A fresh read in three parts — the data layer, the screens and
+kiosk, and the host, packaging and keyboard — each reproducing what it found in
+headless Chromium where it could. It turned up 28 findings that none of the
+earlier phases record. The ten that could hurt someone at the desk are fixed
+here, each with a check that fails on the code before the fix; the rest are
+listed at the end of this section.
+
+The common shape: every boundary Phases 1–12 built was enforced where you enter
+it and nowhere else. The kiosk refuses to navigate to a staff screen — but a
+splash tap was already on one. The admin panel locks after five minutes — but
+the dialog on top of it did not, and Cancel on the lock screen walked round it.
+A borrower's session ended when they pressed DONE — and at no other time.
+
+### Fixed
+
+| | Finding | What it was | Now |
+|---|---|---|---|
+| P1 | Kiosk phone typed on the keys | The return-phone field reformats on every `input` event (`4` → `(4`) and parks the caret at the end; `_insertAtCursor` then moved the caret back to an offset worked out against the unformatted text. Every later digit landed in the wrong place: tapping 4165551234 produced `(165) 123-4554`, and CONTINUE signed in whoever owns 1651234554 and listed their loans. The existing suites set `.value` directly and never saw it. | `_placeCaret` only moves the caret if the value is still what the keyboard wrote; a handler that rewrote it owns the caret. |
+| P2 | A half-finished kiosk return carried over | `_askCondition`'s panel holds the loan, and only its own buttons settled it. DONE, Back and the countdown left it on the return screen, so the next borrower saw "Projector Remote — Is it coming back in good shape?" under their own list, and their "All good" flagged the previous borrower's loan as handed in. | Pending panels register a cancel; `_clearKioskOverlays` settles every one, removes every sign-in panel and picker, and closes the dialog, from `_kioskBackHome` and every kiosk Back. |
+| P3 | Kiosk sessions never ended | The only kiosk timer was the DONE countdown. A borrower who walked away on the item step left the next person checking out on their account; on the return list, their name, phone and loans stayed up. | Any kiosk screen past the welcome returns to it after 90 seconds without a touch or key (`KIOSK_IDLE_MS`), armed by the router. |
+| P4 | The idle lock left its dialog live | The lock navigated to the PIN screen and left `#dialog` open on top — an "Edit borrower" form with the person's name, phone and notes — and Save still wrote the record and opened the detail screen without a PIN. The activity listeners were on `#screen-admin` only, so typing in that dialog never counted and the lock fired mid-edit. | The lock closes the dialog through its own `close()`, so the caller's promise settles as a cancel. Activity listeners are on the document (capture). `showItemDetail`/`showBorrowerDetail` refuse outside an admin session. `closeDialog()` now settles the open dialog rather than only emptying its container. |
+| P5 | Cancel on the lock screen led past it | `adminLoginReturn` was set when the panel was first opened, usually from the staff home, and the lock reused it. Cancel went to the staff home, which has no lock of its own. | The lock sets the way back to the kiosk. |
+| P6 | A tap on the splash opened the staff home | The splash click handler went to `home` with no PIN, and the splash is what every F5, Ctrl+R and crash-reload at the public tablet shows for 400ms. | It goes to the welcome screen, where its own timer goes. The kiosk suite's section 10 used this tap as its way in; it now checks the tap lands on the kiosk and reaches the staff home by navigating in-page. |
+| P7 | The keyboard typed into radios and dates | `_onFocusIn` checked the tag name only. On Review duplicates, tapping a row and then a digit turned the radio's item id 712 into 7123, and Merge folded the duplicate into an unrelated item; on All Loans, any key cleared the date filter. | Only `KBD_TEXT_TYPES` (text, search, tel, password, email, url, number), and never a read-only or disabled field. |
+| P8 | All Loans CSV skipped `csvEscape` | Phase 12's formula guard reached the overdue and report exports; `_loansToCsv` did its own quoting, so a kiosk-typed name beginning `=` went out live, and a quote in the notes was doubled twice. | Every cell goes through `csvEscape`. |
+| P9 | Desk returns discarded the kiosk report | `returnLoan` deleted `returnRequestedCondition`/`Note`; Check In → RETURNED OK and the ✓ buttons on Currently Out and Overdue passed `"good"` without the desk ever seeing the report. "damaged: battery cover missing" became `good` with no note — the same thing Phase 1 fixed for the Queue tab. | `returnLoan` defaults to the reported condition and always writes the borrower's note to the record. The ✓ buttons pass no condition. The check-in screen shows the report (`.return-report`). |
+| P10 | A failed backup could cost a good one | The host wrote straight to the per-day name, so a backup that failed half-way truncated the day's good file and headed the Restore list as newest; rotation ran even when the read-back failed, deleting the oldest good backup; and the page recorded `lastBackupAt` either way, so nothing retried for 24 hours. "Back up now" zeroed the record first, so a failed one left it saying no backup had ever been made. | Written to `<name>.partial`, verified, then `File.Replace`/`Move`d into place; a failed check deletes the partial file, rotates nothing and says the earlier backups are untouched. The page records only a verified backup, and a forced run is a flag rather than a reset. |
+
+The host change (P10) is checked by reading: there is no C# compiler on the
+machine this pass ran on, so `tools/test-host.cjs` could not run, and no check was
+added to `tools/HostTests.cs` that had not been compiled. The page's side of it is
+covered in `tools/test-bridge.cjs`.
+
+### The checks
+
+`tools/test-sessions.cjs` is new: P1–P7 and P9 driven through the page, with the
+two idle timers shortened by wrapping the page's `setTimeout` rather than by a
+hook in the app. P8 is in `tools/test-report.cjs` (lifted by marker, as
+`csvEscape` already was), and P10's page side in `tools/test-bridge.cjs`. Run
+against the code before this pass, the new suite stops at its second check with
+the field reading `(165) 123-4554` and the greeting "Signed in as Other Person",
+the CSV checks show `"=1+2 Cable"` and `said """"thanks"""""`, and the backup
+checks show `lastBackupAt` zeroed and then written after a failure.
+
+### Fixed in a second round
+
+Eight more from the list below, each covered by `tools/test-records.cjs` (which
+serves the real bundle with one appended line naming a few of its functions on
+`window.__t`, so the data layer can be called directly) and each failing on the
+code before it.
+
+| | Finding | Now |
+|---|---|---|
+| R1 | `runTx` rejected with `null` when a request inside it failed — the error event reaches the transaction before `transaction.error` is set — so callers' `err.message` threw inside the catch and no toast appeared (undo, import, restore, the duplicates merge). A callback that threw after writing also committed what it had written. | The request's own error is used; a callback that rejects aborts the transaction, so its earlier writes roll back and its own message is what the caller sees. |
+| R2 | Un-merging after a chained merge (A→B, then B→D) brought A back as available while its unit was still out, free to go out twice. | Refused, naming the later merge to undo first. Undone in order, the loan comes back to A. |
+| R3 | `createLoan` accepted an archived or merged-away item, so a resumed checkout draft could lend the same unit twice. | It follows a merge to the item that lives on (whose "already out" check then applies), and refuses an archived item. |
+| R4 | Import accepted ids at or above 2^53, exhausting the store's key generator for good, and items or people with no `name`, which took down the Items list, search and the kiosk. | Ids must be safe, positive and under 2^40; items and people need a name. The two name sorts are null-safe as a backstop. |
+| R5 | Cancel on "Not handed in" cleared the return request: `prompt()` returned `null` for Cancel and for an empty OK alike. | `prompt()` returns `""` for an empty OK; Cancel changes nothing. |
+| R6 | In checkout, Enter took the top fuzzy match ("Key 12" picked "Key 112"), and Add was withheld whenever the fuzzy search found anything. | Enter and Add follow `resolveItem`, as the list and the kiosk do: a resolved item is attached, an ambiguous name asks the desk to pick, anything else is added. |
+| R7 | The on-screen keys ignored `maxlength` (12 digits into the 8-digit PIN field). | Enforced. The two kiosk phone fields allow 16, so a leading 1 still fits. |
+| R8 | The kiosk kept the last ten digits of whatever was typed, so a double-tapped digit became someone else's valid number. | Exactly ten digits (after a leading 1) or it is refused; the return field's formatter keeps the first ten, not the last. |
+
+### Found, not fixed -- now fixed
+
+All seven are fixed; see *The last seven* below. Host, keyboard and packaging:
+all five fixed -- see *Install, uninstall and a GitHub build* below.
+
+
+### Fixed when the app became Windows-only (2026-10-06)
+
+The web build was retired so there is one desk with one set of records, and the
+Windows kiosk was locked down instead:
+
+- `--no-devtools` now opens borderless and full screen (taskbar covered), and
+  F11, Escape and Alt+F4 do nothing; sign-out, shutdown and Task Manager still
+  close it. It used to be a normal window one click from the desktop.
+- The kiosk's tray menu is Show, Back up now and Reload only. *Open data folder*
+  and *Open backup folder* were File Explorer on the public tablet; *Exit* and
+  *Start with Windows* went with them (autostart is still in Settings, behind
+  the PIN).
+- A kiosk started by Windows comes up on screen, not hidden in the tray.
+- A misspelt lock flag locks (`--no-devtool`, `--nodevtools`, ...); unknown
+  flags are logged.
+- The log records a link's scheme, not the phone number in it.
+
+`host/FrontDesk.cs` and `tools/HostTests.cs` were compiled with Mono's `mcs`
+under `-langversion:5` against the WebView2 1.0.4191.47 reference assemblies,
+which also compiled Phase 13's backup change for the first time, and the host
+suite's three modes ran under Mono: 44 checks, none failed.
+
+### Install, uninstall and a GitHub build (2026-10-06)
+
+The five host and packaging findings above, fixed:
+
+- **The startup entry is corrected** (`Autostart.Repair`) when
+  it is this copy's entry with old flags, or points at an exe that is gone.
+  (Since the EDR review this only happens when someone presses *Fix it* in
+  Settings, never silently at launch.) It
+  never takes over another copy's working entry, and never drops the lock: a
+  locked entry stays locked even if this launch is not.
+- **The data folder beside the app wins whenever it already has a database**
+  (`Paths.ChooseData`), so one failed write check no longer opens an empty
+  desk; and a probe that was written but could not be deleted counts as
+  writable.
+- **Rotation only deletes the app's own backups**
+  (`frontdesk-backup-YYYY-MM-DD[-HHMMSS].json`). Anything else in the folder
+  still shows in the restore list and is never deleted or counted.
+- **The zip carries WebView2's licence files** under `licenses`, and `For IT.txt`
+  reads the exe's real signature instead of always saying "unsigned".
+- **A browser crash is recovered by kind** (`MainForm.RecoveryFor`): a crashed
+  page reloads; a hung one asks staff (reloads on a kiosk); a dead browser
+  process gets a new WebView2 control on the same data folder instead of a
+  Reload that threw; GPU and helper restarts are only logged. Four recoveries in
+  two minutes stop and say so. The log rolls over to `frontdesk.log.1` past 1 MB,
+  is read from its end, and page messages are one line, capped at 2,000
+  characters.
+
+New:
+
+- **Install and uninstall, built into the exe** (`Installer`): per user into
+  `%LOCALAPPDATA%\Programs\RFrontDesk`, Start menu and desktop
+  shortcuts, an Apps entry, options for a public tablet and start-with-Windows,
+  silent switches for IT. Updating keeps `data`; uninstalling keeps it unless
+  asked. Running setup closes a running copy through a named event, which even a
+  locked kiosk obeys. Running the exe from inside a zip now says to extract it
+  instead of failing to load WebView2.
+- **The GitHub build** (`.github/workflows/build.yml`, from #11 and #14, which
+  signs on `main` with Azure Artifact Signing) now also runs every test suite, and
+  installs, updates and uninstalls the packaged zip on `windows-latest`.
+
+Checked here with Mono `mcs -langversion:5` and the WebView2 reference
+assemblies: the host compiles, and the host suite's four modes ran 91 checks,
+none failed (parse 68, plain 3, kiosk 5, files 15). The PowerShell scripts were
+parse-checked with PowerShell 7. The first real Windows build is the GitHub run.
+
+### Against the paper sheet it replaces (2026-10-06)
+
+The desk used a paper sheet: name, item, time out, signature; time in when it
+came back. Walking the kiosk at tablet size from a fresh install, as a
+borrower would, found five places where the app was worse than the paper:
+
+- **A return could be lost without a word.** Tapping an item opened a "Return
+  this item?" dialog, then put "Is it in good shape?" *below* the screen's big
+  Done button. Tapping Done there -- the obvious next move -- left with
+  nothing recorded: the item stayed out, and the borrower thought it was
+  handed in. It is now one question over the screen (*All good, hand it in* /
+  *Something's wrong* / *Cancel*), and Done cannot be pressed until it is
+  answered. Three taps per item became two.
+- **"Borrow it" refused new items.** On a new desk nothing is on the list yet,
+  so every first borrow typed a name, pressed the big button, and was told
+  "not on the list -- tap Add below". The button now says *Add "HDMI cable"
+  and borrow it* when that is the only way forward, and does it. Enter still
+  never adds anything.
+- **One item per visit.** A paper line can list two things; the kiosk asked
+  for the phone number again for each. The confirmation now has *Borrow
+  something else*, which goes straight back to the item step for the same
+  person, and only while that screen is up.
+- **Messages carried over to the next person**, including an error from the
+  last borrower and a "Backup saved" notice on the public welcome screen.
+  Messages are cleared when a borrow completes and when the kiosk goes back
+  to its welcome screen, and automatic backup notices are kept off the public
+  screens (a failure there goes to the log; staff still see it on theirs).
+- **Typed names lost their capitals**: "HDMI cable" became "Hdmi Cable" and
+  McDonald became Mcdonald (issue 4). Only words typed all in lower case are
+  changed now; a whole line typed in capitals is still softened.
+
+What paper did that the app still does not: a signature. The phone number is
+the identity, as before.
+
+### The last seven (2026-10-06)
+
+The seven left in *Found, not fixed*, each with a check in
+`tools/test-records.cjs` (or `test-restore.cjs` for Import), and the two
+data-layer ones confirmed to fail against the old code:
+
+- **A dismissed duplicate group stays dismissed.** The dismissal was looked up
+  under the busiest member's name, which a checkout can change. It now counts
+  if the exact set of items was dismissed under any member's name, and new
+  dismissals are stored under the alphabetically first name, which does not
+  move.
+- **Settings and aliases no longer lose a write.** `updateSettings` and
+  `addItemAlias` read and wrote in two transactions, so a write landing in
+  between was undone. Each is one transaction now, applied to the record as it
+  is at that moment.
+- **All loans finds old ranges.** The date range is applied to every loan and
+  then the first 200 are shown; the 1,000 cap that came first is gone.
+- **Merge with… lists everyone**, sorted, with a search box, and leaves
+  archived people out. It offered the first ten the store returned.
+- **A blank name is refused** when editing an item or a person; the old name is
+  kept and the desk is told.
+- **People says "Nobody matches"** for a search that finds no one, and a phone
+  number typed with dashes matches.
+- **Settings → Import asks first**, naming the file and how much is in it, as
+  Restore always has. A file that is not a backup is refused without asking.
+
+---
+
 ## Still open
 
 The findings from the most recent passes that are **not fixed**. Everything not
@@ -2003,7 +2203,7 @@ changed.
 
 - **Typed item and category names are sentence-cased.** `sentenceCase`
   (`app.js:1837`) lowercases everything after the first letter, so "HDMI dongle"
-  is stored as "Hdmi Dongle" and "AV Equipment" as "Av Equipment". This is
+  is stored as "Hdmi Dongle" and "TV Equipment" as "Tv Equipment". This is
   pre-existing behaviour and it is applied to the catalog, not to display strings,
   so every screen and every report shows the mangled form. It is pinned by a check
   in `tools/test-ui.cjs` so a change is visible. Fixing it means deciding whether

@@ -1,4 +1,4 @@
-# Builds Rotman Front Desk into a folder you can copy anywhere.
+# Builds RFrontDesk into a folder you can copy anywhere.
 #
 #   pwsh -File build.ps1              # build into ..\dist
 #   pwsh -File build.ps1 -Sign <thumbprint>      # sign with an installed certificate
@@ -100,7 +100,7 @@ trap {
 }
 
 Write-Host ""
-Write-Host "Rotman Front Desk - build" -ForegroundColor Magenta
+Write-Host "RFrontDesk - build" -ForegroundColor Magenta
 Write-Host ""
 
 # --- Toolchain -------------------------------------------------------------
@@ -116,7 +116,10 @@ Say "compiler: $csc"
 $coreDll = Join-Path $here 'lib\Microsoft.Web.WebView2.Core.dll'
 $formsDll = Join-Path $here 'lib\Microsoft.Web.WebView2.WinForms.dll'
 $loaderDll = Join-Path $here 'lib\WebView2Loader.dll'
-foreach ($f in @($coreDll, $formsDll, $loaderDll)) {
+# Microsoft's licence terms for the WebView2 files ship with them.
+$wvLicense = Join-Path $here 'lib\LICENSE.txt'
+$wvNotice = Join-Path $here 'lib\NOTICE.txt'
+foreach ($f in @($coreDll, $formsDll, $loaderDll, $wvLicense, $wvNotice)) {
     if (-not (Test-Path $f)) {
         Fail "Missing $f. Re-run fetch-deps.ps1 to download the WebView2 assemblies."
     }
@@ -208,9 +211,9 @@ if ($cert) {
 # would be left with its records in %TEMP% and the old app still running on the
 # old files. Asking first costs nothing and turns a half-finished build into one
 # sentence the operator can act on.
-$runningApp = @(Get-Process -Name 'RotmanFrontDesk' -ErrorAction SilentlyContinue)
+$runningApp = @(Get-Process -Name 'RFrontDesk' -ErrorAction SilentlyContinue)
 if ($runningApp.Length -gt 0) {
-    Fail "Rotman Front Desk is running (PID $($runningApp.Id -join ', ')). Exit it from the tray icon, then build again."
+    Fail "RFrontDesk is running (PID $($runningApp.Id -join ', ')). Exit it from the tray icon, then build again."
 }
 
 if (Test-Path $dataDir) {
@@ -225,8 +228,8 @@ if (Test-Path $OutputDir) {
 }
 New-Item -ItemType Directory -Force $OutputDir | Out-Null
 
-$exePath = Join-Path $OutputDir 'RotmanFrontDesk.exe'
-$pdbPath = Join-Path $OutputDir 'RotmanFrontDesk.pdb'
+$exePath = Join-Path $OutputDir 'RFrontDesk.exe'
+$pdbPath = Join-Path $OutputDir 'RFrontDesk.pdb'
 
 # --- Compile ---------------------------------------------------------------
 # /langversion:5 is explicit rather than implied: this compiler only does C# 5,
@@ -265,6 +268,10 @@ Say "copying WebView2 assemblies"
 Copy-Item $coreDll  -Destination $OutputDir -Force
 Copy-Item $formsDll -Destination $OutputDir -Force
 Copy-Item $loaderDll -Destination $OutputDir -Force
+$licDir = Join-Path $OutputDir 'licenses'
+New-Item -ItemType Directory -Force $licDir | Out-Null
+Copy-Item $wvLicense -Destination (Join-Path $licDir 'WebView2 LICENSE.txt') -Force
+Copy-Item $wvNotice -Destination (Join-Path $licDir 'WebView2 NOTICE.txt') -Force
 
 if (-not $NoSymbols) {
     # Kept so a crash report from the desk is actionable.
@@ -327,7 +334,7 @@ if ($cert) {
     }
 
     $sig = Get-AuthenticodeSignature $exePath
-    if ($sig.Status -ne 'Valid') { Fail "Signed, but the signature does not verify: $($sig.Status)" }
+    if ($sig.Status -ne 'Valid') { Fail "Signed, but the signature does not verify: $($sig.Status) $($sig.StatusMessage)" }
     Say "signature: $($sig.SignerCertificate.Subject)"
     # A signature without a timestamp stops verifying the day the certificate
     # expires, and every installed copy starts being flagged again. Worth saying
@@ -355,7 +362,7 @@ $hash = (Get-FileHash -Path $exePath -Algorithm SHA256).Hash
 $sig = Get-AuthenticodeSignature $exePath
 Write-Host "  sha256: $hash"
 Write-Host "  signed: $($sig.Status)"
-if ($sig.Status -ne 'Valid') {
+if (-not $sig.SignerCertificate) {
     # Not a failure -- an unsigned build runs fine. It is just the thing that
     # decides how an endpoint agent treats it, so it is stated rather than left
     # to be discovered. See docs\EDR_AND_SIGNING.md.
@@ -365,5 +372,6 @@ if ($sig.Status -ne 'Valid') {
 Write-Host ""
 Write-Host "  Run it:  $exePath"
 Write-Host "  Options: --minimized  start in the tray"
-Write-Host "           --no-devtools  lock down a kiosk install"
+Write-Host "           --no-devtools  lock down a kiosk install (--kiosk is the same)"
+Write-Host "           --install / --uninstall  set it up for this Windows user"
 Write-Host ""

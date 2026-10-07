@@ -1,5 +1,9 @@
 name: Build
 
+# Builds, tests and packages RFrontDesk on a GitHub Windows machine, so
+# nobody needs a build computer, and signs it on main (docs/code-signing.md).
+# It deploys nothing: the zip is a download on the run page, under Artifacts.
+
 on:
   push:
   pull_request:
@@ -10,13 +14,26 @@ permissions:
   contents: read
 
 jobs:
+  # Compiles the app into dist\ and uploads that folder unsigned.
+  # Every test suite runs here; a failure stops signing and packaging.
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write # Azure sign-in without stored secrets (OIDC), used only for code signing.
+    env:
+      # The tests drive the Edge that is already on the machine.
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install test tools
+        run: npm ci --ignore-scripts
 
       - name: Fetch WebView2 assemblies
         shell: pwsh
@@ -25,61 +42,105 @@ jobs:
       # -NoSymbols: the .pdb is for local crash reports, not for the desk zip.
       - name: Build
         shell: pwsh
-        run: ./host/build.ps1 -NoSymbols
-
-      # Code signing (Azure Artifact Signing). Runs only on main and only once the
-      # AZURE_* repository variables exist; see docs/code-signing.md. Until then
-      # the build still runs and produces an unsigned zip.
-      - name: Check signing prerequisites
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
-        shell: pwsh
-        env:
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
-          AZURE_SIGNING_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
         run: |
-          foreach ($name in @('AZURE_TENANT_ID','AZURE_SUBSCRIPTION_ID','AZURE_SIGNING_ENDPOINT','AZURE_SIGNING_ACCOUNT','AZURE_SIGNING_PROFILE','AZURE_SIGNING_PUBLISHER')) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing repository variable: $name" }
-          }
+          ./host/build.ps1 -NoSymbols
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      - name: Sign in to Azure (code signing)
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Sign RotmanFrontDesk.exe
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\dist\RotmanFrontDesk.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Verify signature
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
-        shell: pwsh
-        env:
-          PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
-        run: ./tools/verify-azure-signatures.ps1 -Path dist/RotmanFrontDesk.exe -Publisher $env:PUBLISHER
-
-      # Packaged after signing: the zip's For IT.txt records the exe's hash and
-      # signature, so it has to describe the signed binary.
-      - name: Package
-        shell: pwsh
-        run: ./tools/package.ps1
+      - name: Test
+        run: node tools/test-all.cjs
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: rotman-front-desk
+          name: rfrontdesk-windows
+          path: dist/
+          if-no-files-found: error
+
+  # Code signing (Azure Artifact Signing) through the shared workflow in camster91/Rclicker.
+  # Only main is signed. Signs RFrontDesk.exe only: the WebView2 DLLs are already
+  # signed by Microsoft. Sign-in uses OIDC, so no secret is stored in this repository.
+  sign:
+    needs: build
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@main
+    with:
+      artifact: rfrontdesk-windows
+      file-types: exe
+
+  # Packaged after signing: the zip's For IT.txt records the exe's hash and
+  # signature, so it has to describe the signed binary. Uses the signed build when
+  # signing ran; a failed signing packages nothing.
+  package:
+    needs: [build, sign]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.sign.result == 'success' || needs.sign.result == 'skipped')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.sign.outputs.signed == 'true' && 'rfrontdesk-windows-signed' || 'rfrontdesk-windows' }}
+          path: dist
+
+      - name: Package
+        shell: pwsh
+        run: |
+          ./tools/package.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Try the installer from the zip (install, update, uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run($exe, [string[]] $a) {
+            $p = Start-Process $exe -ArgumentList $a -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "$($a -join ' ') exited with $($p.ExitCode)" }
+          }
+          $unzipped = Join-Path $env:RUNNER_TEMP 'unzipped'
+          Expand-Archive (Get-Item release/*.zip).FullName $unzipped
+          $app = Join-Path $unzipped 'RFrontDesk'
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\RFrontDesk'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'RFrontDesk.lnk'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RFrontDesk'
+
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          foreach ($f in 'RFrontDesk.exe', 'web\index.html', 'data\backups', 'licenses\WebView2 LICENSE.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "install is missing $f" }
+          }
+          if (-not (Test-Path $lnk)) { throw 'no Start menu shortcut' }
+          if ((Get-ItemProperty $key).InstallLocation -ne $dir) { throw 'no Apps entry' }
+          Write-Host 'install: ok'
+
+          New-Item -ItemType Directory -Force (Join-Path $dir 'data\browser') | Out-Null
+          Set-Content (Join-Path $dir 'data\browser\marker') 'records'
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'an update lost the records' }
+          Write-Host 'update keeps the records: ok'
+
+          Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet')
+          # The running exe stays (it does not move itself into Temp, which
+          # endpoint agents flag); everything else of the app goes.
+          if (Test-Path (Join-Path $dir 'web')) { throw 'uninstall left the app files' }
+          if (Test-Path $lnk) { throw 'uninstall left the shortcut' }
+          if (Test-Path $key) { throw 'uninstall left the Apps entry' }
+          if (-not (Test-Path (Join-Path $dir 'data\browser\marker'))) { throw 'uninstall deleted the records without being asked' }
+          Write-Host 'uninstall keeps the records: ok'
+
+          Run (Join-Path $app 'RFrontDesk.exe') @('--install', '--quiet', '--no-desktop')
+          Run (Join-Path $dir 'RFrontDesk.exe') @('--uninstall', '--quiet', '--delete-data')
+          $left = @(Get-ChildItem $dir -Recurse -Name)
+          if ($left.Count -ne 1 -or $left[0] -ne 'RFrontDesk.exe') { throw "uninstall --delete-data left: $($left -join ', ')" }
+          if (@(Get-ChildItem $env:TEMP -Filter 'RFrontDesk-removed-*' -ErrorAction SilentlyContinue).Count) { throw 'uninstall moved a file into Temp' }
+          Write-Host 'uninstall --delete-data removes everything but the running exe: ok'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rfrontdesk
           path: release/*.zip
           if-no-files-found: error

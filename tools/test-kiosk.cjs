@@ -341,12 +341,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       );
     const offered = await catalogCount2();
     check("a novel name is offered as an add rather than silently created", offered === 2, `${offered} items`);
-    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
+    // The main button names the add, so the button a borrower reaches for works.
+    const borrowLabel = () => page.$eval('[data-action="kiosk-confirm-pick"]', (b) => b.textContent.trim());
+    check("the main button says it will add and borrow the new name",
+      /^Add "Squeaky Rubber Duck" and borrow it$/.test(await borrowLabel()), await borrowLabel());
+
+    // Enter is still never an add: a stray key must not write a catalog row.
+    await page.focus("#kiosk-need");
+    await page.keyboard.press("Enter");
     await waitToast(/not on the list/i);
-    check("confirming free text does not create a catalog item", /not on the list/i.test(await toastText()), await toastText());
-    const afterConfirm = await catalogCount2();
-    check("and the catalog is untouched by it", afterConfirm === 2, `${afterConfirm} items`);
+    check("pressing Enter on free text does not create a catalog item", /not on the list/i.test(await toastText()), await toastText());
+    const afterEnter = await catalogCount2();
+    check("and the catalog is untouched by it", afterEnter === 2, `${afterEnter} items`);
     check("and the borrower stays on the item step", (await screen()) === "screen-kiosk-borrow-need", await screen());
+
+    // Tapping the button is the deliberate act, and it does what it says.
+    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
+    await page.waitForSelector("#screen-kiosk-borrow-done:not(.hidden)", { timeout: 15000 });
+    check("tapping it adds the item and lends it", (await textIn("screen-kiosk-borrow-done", "#kiosk-done-text")) === "Squeaky Rubber Duck",
+      await textIn("screen-kiosk-borrow-done", "#kiosk-done-text"));
+    const afterAdd = await catalogCount2();
+    check("and the catalog has the one new item", afterAdd === 3, `${afterAdd} items`);
+    const staleToast = await page.evaluate(() => (document.getElementById("toast") || {}).textContent || "");
+    check("the earlier 'not on the list' message is gone once it worked", !/not on the list/i.test(staleToast), staleToast);
+
+    // One more thing, same person: no phone number again.
+    await clickIn("screen-kiosk-borrow-done", '[data-action="kiosk-borrow-another"]');
+    await page.waitForSelector("#screen-kiosk-borrow-need:not(.hidden)", { timeout: 8000 });
+    const again = await page.evaluate(() => ({
+      name: document.getElementById("kiosk-greeting-name").textContent,
+      box: document.getElementById("kiosk-need").value,
+      label: document.querySelector('[data-action="kiosk-confirm-pick"]').textContent.trim()
+    }));
+    check("Borrow something else goes back to the item step for the same person",
+      again.name === "Kiosk Person" && again.box === "" && again.label === "Borrow it", JSON.stringify(again));
 
     // ── 6. an item that is already out cannot be taken twice ──────────────
     await fill("#kiosk-need", "Clicker");
@@ -374,7 +402,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await fill("#kiosk-return-phone", STRANGER_PHONE);
     await clickIn("screen-kiosk-return-phone", '[data-action="kiosk-return-phone-continue"]');
     await page.waitForSelector("#screen-kiosk-return-phone .kiosk-signin-panel", { timeout: 10000 });
-    check("an unknown number is offered sign-in rather than an empty list", true);
+    check("an unknown number is asked to check it, rather than shown an empty list", true);
     check("and never reaches the item list", (await screen()) === "screen-kiosk-return-phone", await screen());
 
     await gotoWelcome();
@@ -401,7 +429,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const ownRows = await page.evaluate(() =>
       Array.from(document.querySelectorAll("#kiosk-return-list .kiosk-return-item")).map((r) => (r.querySelector(".kiosk-return-item-name") || {}).textContent || "")
     );
-    check("the borrower's own loan is listed", ownRows.length === 1 && /Clicker/.test(ownRows[0]), JSON.stringify(ownRows));
+    // Two: the Clicker, and the duck added and borrowed in step 5.
+    check("the borrower's own loans are listed", ownRows.length === 2 && ownRows.some((r) => /Clicker/.test(r)) && ownRows.some((r) => /Squeaky Rubber Duck/.test(r)), JSON.stringify(ownRows));
 
     // ── 8. a return is a request, not a close ─────────────────────────────
     await page.evaluate(() => {
@@ -409,22 +438,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       if (row) row.click();
     });
 
-    // Handing something back is a commitment, so it is confirmed first rather
-    // than fired by a stray tap.
-    await page.waitForSelector(".dialog-actions .btn", { timeout: 10000 });
-    const dialogButtons = await page.evaluate(() =>
-      Array.from(document.querySelectorAll(".dialog-actions .btn")).map((b) => b.textContent.trim())
-    );
-    check("tapping to return asks for confirmation first", dialogButtons.some((t) => /handing it in/i.test(t)), JSON.stringify(dialogButtons));
-
-    await page.evaluate(() => {
-      const b = Array.from(document.querySelectorAll(".dialog-actions .btn")).find((x) => /handing it in/i.test(x.textContent));
-      if (b) b.click();
+    // Handing something back is still a deliberate answer, not a stray tap --
+    // but one question, over the screen. It used to be a dialog and then a
+    // second question *below* the screen's Done button, and tapping Done there
+    // lost the return without a word.
+    await page.waitForSelector('.kiosk-modal .kiosk-condition-actions [data-cond="good"]', { timeout: 10000 });
+    check("tapping to return asks one question: is it in good shape", true);
+    const doneReachable = await page.evaluate(() => {
+      const done = document.querySelector('#screen-kiosk-return-items [data-action="kiosk-back-home"]');
+      const r = done.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit === done || done.contains(hit);
     });
-    // Condition is asked, not assumed (D7): "good" used to be hardcoded, which
-    // silently overwrote whatever the borrower actually reported.
-    await page.waitForSelector('.kiosk-condition-actions [data-cond="good"]', { timeout: 10000 });
-    check("and then asks whether it is coming back in good shape", true);
+    check("and the screen's Done button cannot be pressed until it is answered", !doneReachable);
+    const dialogOpen = await page.evaluate(() => !!document.querySelector("#dialog:not(.hidden) .dialog-actions"));
+    check("with no separate confirmation dialog first", !dialogOpen);
 
     await page.evaluate(() => document.querySelector('[data-cond="good"]').click());
     await page.waitForFunction(() => {
@@ -509,11 +537,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.evaluate(() => {
       const row = document.querySelector("#kiosk-return-list .kiosk-return-item");
       if (row) row.click();
-    });
-    await page.waitForSelector(".dialog-actions .btn", { timeout: 10000 });
-    await page.evaluate(() => {
-      const b = Array.from(document.querySelectorAll(".dialog-actions .btn")).find((x) => /handing it in/i.test(x.textContent));
-      if (b) b.click();
     });
     await page.waitForSelector('[data-cond="damaged"]', { timeout: 10000 });
     await page.evaluate(() => document.querySelector('[data-cond="damaged"]').click());
@@ -600,9 +623,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // that matters is a fresh page where the hold has never been used: the desk
     // button has to be enough on its own.
     //
-    // A fresh document reaches the staff home one way, by tapping the splash
-    // inside its 400ms window. A 10ms poll catches it without racing.
-    await page.evaluateOnNewDocument(() => {
+    // A tap on the splash used to land on the staff home -- names, phone
+    // numbers, checkout and check-in, with no PIN in front of them -- and the
+    // splash is what every F5 or crash-reload at the public tablet shows. It now
+    // goes where the splash's own timer goes: the kiosk.
+    const splashTap = await page.evaluateOnNewDocument(() => {
       const t = setInterval(() => {
         const s = document.getElementById("screen-splash");
         if (s && !s.classList.contains("hidden")) {
@@ -612,8 +637,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       }, 10);
     });
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)", { timeout: 15000 });
+    await sleep(300);
+    check("a tap on the splash lands on the kiosk, not the staff home", (await screen()) === "screen-welcome", await screen());
+    await page.removeScriptToEvaluateOnNewDocument(splashTap.identifier);
+
+    // Every real route to the staff home now passes the PIN, which arms LOGIN as
+    // a side effect. The case this section exists for is a document where that
+    // never happened, so it is reached by navigating from the splash in-page --
+    // the one non-kiosk screen a fresh document starts on.
+    await page.evaluateOnNewDocument(() => {
+      const t = setInterval(() => {
+        const s = document.getElementById("screen-splash");
+        if (s && !s.classList.contains("hidden") && window.app && window.app.goToScreen) {
+          clearInterval(t);
+          window.app.goToScreen("home");
+        }
+      }, 10);
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("#screen-home:not(.hidden)", { timeout: 15000 });
-    check("a fresh page reaches the desk without the hold gesture", (await screen()) === "screen-home", await screen());
+    check("a fresh page can be put on the desk screen", (await screen()) === "screen-home", await screen());
 
     check("and the desk has its own way into the panel", (await clickIn("screen-home", "#btn-to-admin")) === "ok");
     await page.waitForSelector("#screen-admin-login:not(.hidden)", { timeout: 8000 });

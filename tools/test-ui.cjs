@@ -97,6 +97,13 @@ function startServer() {
       if (m.type() === "error") errors.push("console: " + m.text());
     });
 
+    // These checks drive the app's own on-screen keyboard, which a browser only
+    // shows when this device has asked for it (the Windows app always does).
+    await page.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("frontdesk.keyboard", "on");
+      } catch (_) {}
+    });
     await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "domcontentloaded" });
     // __appReady is set at the end of the bundle, before bootstrap() has built
     // the screens, so waiting on it alone races the app. The welcome screen is
@@ -201,7 +208,7 @@ function startServer() {
     check("the host section renders in the browser build", hostSection !== null, hostSection);
     check(
       "and explains the backup folder rather than showing a dead panel",
-      /RotmanFrontDesk\.exe/.test(hostSection || ""),
+      /RFrontDesk\.exe/.test(hostSection || ""),
       hostSection
     );
     check("no host-only buttons leak into the browser build", await page.evaluate(
@@ -545,10 +552,10 @@ function startServer() {
     });
     check("adding an item puts it in the tap-list", (afterAdd.name || "").toLowerCase() === "hdmi dongle", afterAdd.name);
     check("the new item is already selected, so the tap is not needed twice", afterAdd.selected);
-    // The app sentence-cases names typed into the catalog, so "HDMI dongle"
-    // is stored as "Hdmi Dongle". Pinned here so a change in that behaviour
-    // shows up rather than passing unnoticed.
-    check("typed names are normalised to sentence case", afterAdd.name === "Hdmi Dongle", afterAdd.name);
+    // Lower-case words get a capital; capitals people typed are kept, so
+    // "HDMI dongle" is stored as "HDMI Dongle" (it used to become "Hdmi
+    // Dongle"). Pinned here so a change in that behaviour shows up.
+    check("typed names get capitals but keep the ones typed", afterAdd.name === "HDMI Dongle", afterAdd.name);
     check("the count on the heading matches the cards under it", afterAdd.counted === afterAdd.cards, JSON.stringify({ heading: afterAdd.heading, cards: afterAdd.cards }));
     check("and Continue counts what is chosen", /1 selected/.test(afterAdd.continueLabel), afterAdd.continueLabel);
 
@@ -875,7 +882,7 @@ function startServer() {
     // --- the brand mark ----------------------------------------------------
     // The mark is an <img>, not text, so `color` says nothing about it: it is
     // one shared white-on-transparent SVG -- the data URI in index.html's
-    // __ROT_LOGO is fill="none" on its root and fill="#fff" on its only group --
+    // __LOGO is fill="none" on its root and fill="#fff" on its only group --
     // painted into nine placements, recoloured only by whatever `filter` the
     // theme applies. The general audit reads `color` on it and so reported the
     // inherited text colour, which is why this went unnoticed: every one of the

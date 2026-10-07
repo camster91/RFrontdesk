@@ -14,11 +14,14 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-[assembly: AssemblyTitle("Rotman Front Desk")]
+[assembly: AssemblyTitle("RFrontDesk")]
 [assembly: AssemblyDescription("Equipment checkout and returns for the front desk.")]
-[assembly: AssemblyProduct("Rotman Front Desk")]
-[assembly: AssemblyCompany("Rotman School of Management")]
-[assembly: AssemblyCopyright("Rotman School of Management")]
+[assembly: AssemblyProduct("RFrontDesk")]
+// Company matches the name on the code-signing certificate, so the file's own
+// description and its signature agree. A mismatch is one more thing an
+// endpoint agent can score.
+[assembly: AssemblyCompany("Cameron Ashley")]
+[assembly: AssemblyCopyright("Copyright (c) Cameron Ashley")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]

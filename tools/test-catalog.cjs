@@ -300,7 +300,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           );
           if (!row) return `no open loan for ${name}`;
           const btn = Array.from(row.querySelectorAll("button")).find(
-            (b) => b.textContent.trim() === "✓"
+            (b) => /^✓( Mark returned)?$/.test(b.textContent.trim())
           );
           if (!btn) return "no check-in button on the row";
           btn.click();
@@ -1429,7 +1429,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const savedEdit = await dialogButton(/^save$/i);
     check("the edit takes a new number and saves it", savedEdit === "ok", savedEdit);
 
-    const afterEdit = await readPhoneChange();
+    // Saving writes the person, then carries the number onto their open loans
+    // in a second transaction, so the read waits for that to land rather than
+    // racing it. It still fails if the loan never changes.
+    let afterEdit = await readPhoneChange();
+    for (let i = 0; i < 50 && !(afterEdit.open && afterEdit.open.borrowerPhoneSnapshot === "4165550399"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      afterEdit = await readPhoneChange();
+    }
     check(
       "the copy the People search reads is written along with the number",
       afterEdit.borrower && afterEdit.borrower.phoneFormatted === "(416) 555-0399",

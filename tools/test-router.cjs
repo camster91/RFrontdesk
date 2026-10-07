@@ -71,6 +71,9 @@ function makeSandbox() {
     window: {},
     // Not under test; the real one lives in the admin module.
     endAdminSession: () => {
+    },
+    // Nor this; the real one lives with the kiosk, and test-kiosk.cjs drives it.
+    _armKioskIdle: () => {
     }
   };
   sandbox.globalThis = sandbox;

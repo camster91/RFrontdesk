@@ -340,7 +340,20 @@ function runTx(storeNames, mode, fn) {
     // "Unhandled rejection" alongside every other rule this app enforces. Claiming
     // it here does not change what the caller sees: the handlers below still run,
     // and the transaction's own outcome still decides the result.
-    if (fnResult && typeof fnResult.then === "function") fnResult.then(undefined, () => {});
+    //
+    // And a throw after the callback has written something must undo it. The
+    // transaction used to commit whatever had been put before the throw, so a
+    // refusal half-way through a multi-write operation left half of it behind.
+    let asyncError = null;
+    if (fnResult && typeof fnResult.then === "function") {
+      fnResult.then(undefined, (err) => {
+        asyncError = err;
+        try {
+          transaction.abort();
+        } catch {
+        }
+      });
+    }
     if (fnError) {
       try {
         transaction.abort();
@@ -363,8 +376,12 @@ function runTx(storeNames, mode, fn) {
       }
       Promise.resolve(fnResult).then(resolve, reject);
     };
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error || new Error("transaction aborted"));
+    // A failed request reaches the transaction's onerror *before* the abort sets
+    // transaction.error, so that was always null here: every caller got
+    // `reject(null)`, and the `err.message` in its catch threw instead of showing
+    // the toast. The request's own error is on the event.
+    transaction.onerror = (e) => reject(transaction.error || (e && e.target && e.target.error) || new Error("The database refused the change."));
+    transaction.onabort = () => reject(asyncError || transaction.error || new Error("transaction aborted"));
   });
 }
 async function getAll(store) {
@@ -436,7 +453,7 @@ async function listItems({ includeArchived = false, sortBy = "name" } = {}) {
     if (sortBy === "timesCheckedOut") {
       return b.timesCheckedOut - a.timesCheckedOut;
     }
-    return a.name.localeCompare(b.name, void 0, {
+    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
       numeric: true
     });
   });
@@ -577,7 +594,7 @@ async function listBorrowers({ includeArchived = false, sortBy = "name" } = {}) 
     if (sortBy === "lastSeenAt") {
       return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
     }
-    return a.name.localeCompare(b.name, void 0, {
+    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
       numeric: true
     });
   });
@@ -681,6 +698,20 @@ async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOu
     if (itemId != null) {
       item = await s.req(s.get("items").get(itemId));
       if (!item) throw new Error(`Item ${itemId} not found`);
+      // A cart can outlive its items: a checkout draft resumed after one of its
+      // items was merged away used to write the loan against the archived copy,
+      // where the keeper's "already out" check could not see it -- so the same
+      // unit could go out twice. Follow the merge to the item that lives on.
+      for (let hops = 0; item.mergedIntoId != null && hops < 16; hops++) {
+        const next = await s.req(s.get("items").get(item.mergedIntoId));
+        if (!next) break;
+        item = next;
+      }
+      if (item.isArchived) {
+        const err = new Error(`${item.name} is archived. Unarchive it under Items to lend it.`);
+        err.code = "ARCHIVED";
+        throw err;
+      }
       itemName = item.name;
     } else if (customName) {
       itemName = String(customName).trim().slice(0, 200);
@@ -766,16 +797,20 @@ async function returnLoan(loanId, { returnedAt, conditionIn, notes } = {}) {
     if (loan.returnedAt) throw new Error(`Loan ${loanId} already returned`);
     loan.returnedAt = returnedAt || Date.now();
     loan.isOpen = "closed";
-    loan.conditionIn = conditionIn || "good";
+    // With no condition given, the borrower's own report stands -- the quick
+    // "returned" buttons pass none. They used to pass "good", and the delete
+    // below then threw away "damaged: battery cover missing" for good.
+    loan.conditionIn = conditionIn || loan.returnRequestedCondition || "good";
+    // Whatever the desk decides, what the borrower said goes on the record.
+    const reported = loan.returnRequestedNote ? `borrower reported: ${loan.returnRequestedNote}` : "";
+    let addition = String(notes || "").trim();
+    if (reported && !addition.includes(reported)) addition = addition ? `${reported} | ${addition}` : reported;
     // The return is now real, so any kiosk request that asked for it is spent.
     delete loan.returnRequestedAt;
     delete loan.returnRequestedCondition;
     delete loan.returnRequestedNote;
-    if (notes) {
-      const addition = String(notes).trim();
-      if (addition) {
-        loan.notes = loan.notes ? `${loan.notes} | Check-in: ${addition}` : `Check-in: ${addition}`;
-      }
+    if (addition) {
+      loan.notes = loan.notes ? `${loan.notes} | Check-in: ${addition}` : `Check-in: ${addition}`;
     }
     await s.req(store.put(loan));
     return loan;
@@ -1042,10 +1077,21 @@ async function getKioskDueAt() {
 }
 async function updateSettings(updates) {
   await openDB();
-  const settings = await getSettings();
-  Object.assign(settings, updates);
-  await put("settings", settings);
-  return settings;
+  // Makes sure the record exists (and adopts an old one) before the write.
+  const base = await getSettings();
+  // The read and the write are one transaction. They used to be two, so a
+  // background write landing in between -- the daily backup recording
+  // lastBackupAt, say -- was overwritten with the stale copy, and in the worst
+  // case a PIN change was undone by it.
+  return runTx([
+    "settings"
+  ], "readwrite", async (s) => {
+    const store = s.get("settings");
+    const current = await s.req(store.get(1)) || base;
+    const next = Object.assign({}, current, updates, { id: 1 });
+    await s.req(store.put(next));
+    return next;
+  });
 }
 /**
  * Merge one catalog entry into another.
@@ -1212,6 +1258,16 @@ async function unmergeItem(victimId) {
     const meta = victim.mergeMeta || {};
     const counters = meta.counters || {};
     const keep = await s.req(itemsStore.get(keepId));
+    // A then B: A was merged into B, and B later into D. A's open loan now sits
+    // on D, so the loop below skipped it, and A came back "available" while its
+    // unit was still out -- free to be checked out a second time -- with the
+    // loan counted on both. Undo in the order it was done.
+    if (keep && keep.mergedIntoId != null) {
+      const later = await s.req(itemsStore.get(keep.mergedIntoId));
+      const err = new Error(`"${keep.name}" has since been merged into "${later ? later.name : "another item"}". Undo that merge first, then this one.`);
+      err.code = "MERGE_CHAINED";
+      throw err;
+    }
     if (keep) {
       const added = Array.isArray(meta.aliasesAdded) ? meta.aliasesAdded : [];
       if (added.length > 0) {
@@ -1436,6 +1492,15 @@ function _dedupKeyFor(itemOrNameLower, near) {
 }
 
 /**
+ * The key a whole group is recorded under: its alphabetically first name, so
+ * it does not move when usage reorders the group.
+ */
+function _dedupGroupKey(members, near) {
+  const names = (members || []).map((m) => _dedupKeyFor(m, false)).filter(Boolean).sort();
+  return names.length ? _dedupKeyFor(names[0], near) : "";
+}
+
+/**
  * The duplicate groups a human should still be shown: unacknowledged, and not
  * silently acknowledged by a stale signature.
  *
@@ -1450,8 +1515,16 @@ async function findUnreviewedDuplicates() {
   const seen = settings.dedupAcknowledged && typeof settings.dedupAcknowledged === "object"
     ? settings.dedupAcknowledged
     : {};
-  const keyFor = (group, near) => _dedupKeyFor(group[0], near);
-  const pendingFor = (list, near) => list.filter((group) => seen[keyFor(group, near)] !== _dedupSignature(group));
+  // Acknowledged if the exact set of items was acknowledged under any member's
+  // name. It used to be looked up under group[0] only -- the busiest member --
+  // so one checkout could reorder the group and bring a dismissed group back.
+  // The signature is the exact set of ids, so matching on any member's name
+  // cannot hide a group that changed.
+  const isSeen = (group, near) => {
+    const sig = _dedupSignature(group);
+    return group.some((m) => seen[_dedupKeyFor(m, near)] === sig);
+  };
+  const pendingFor = (list, near) => list.filter((group) => !isSeen(group, near));
   const groups = pendingFor(duplicates, false);
   const nearGroups = pendingFor(nearDuplicates, true);
   const count = (list) => list.reduce((n, g) => n + g.length, 0);
@@ -1581,11 +1654,21 @@ function validateImportRecord(storeName, record) {
   if (storeName === "settings") {
     return record.id === 1 ? null : `a "settings" entry has id ${JSON.stringify(record.id)}, expected 1`;
   }
-  if (!Number.isInteger(record.id)) {
-    return `a "${storeName}" entry is missing a numeric id`;
+  // A safe, positive id well under 2^53. An id at or above that exhausts the
+  // store's key generator for good -- clear() does not reset it -- so after one
+  // such import no new item or loan could ever be added, and restoring a good
+  // backup did not bring it back.
+  if (!Number.isSafeInteger(record.id) || record.id < 1 || record.id > MAX_IMPORT_ID) {
+    return `a "${storeName}" entry is missing a usable numeric id (${JSON.stringify(record.id)})`;
+  }
+  // The catalog and the people list sort by name, and an entry with none used to
+  // throw there and take down the Items list, search and the kiosk.
+  if ((storeName === "items" || storeName === "borrowers") && (typeof record.name !== "string" || !record.name.trim())) {
+    return `a "${storeName}" entry (id ${record.id}) has no name`;
   }
   return null;
 }
+var MAX_IMPORT_ID = 2 ** 40;
 async function importAll(data, { mode = "replace", restoreSettings = true } = {}) {
   await openDB();
   if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -1782,6 +1865,16 @@ function showToast(message, opts = {}) {
   });
   return toast;
 }
+/** Take every message off the screen: the next person at the kiosk starts clean. */
+function clearToasts() {
+  for (const entry of [..._liveToasts.values()]) {
+    if (!entry || !entry.toast) continue;
+    // At once, not faded: the next person should not watch the last one's
+    // message leave.
+    _forgetToast(entry.toast);
+    if (entry.toast.parentNode) entry.toast.parentNode.removeChild(entry.toast);
+  }
+}
 function dismissToast(toast) {
   if (!toast) return;
   // Before the parentNode check: a toast that was already taken out of the DOM
@@ -1932,6 +2025,7 @@ function showDialogImpl(opts) {
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      if (container._closeActive === close) container._closeActive = null;
       if (Number(container.dataset.dialogGeneration) === generation) {
         container.innerHTML = "";
         // Belt to the guard above's braces: whatever else happens, a container
@@ -1987,6 +2081,7 @@ function showDialogImpl(opts) {
     }
   };
   document.addEventListener("keydown", onKey);
+  container._closeActive = close;
   return {
     close,
     onClose(cb) {
@@ -1998,6 +2093,14 @@ function closeDialog() {
   const container = document.getElementById("dialog");
   if (!container) return;
   if (container.classList.contains("hidden")) return;
+  // Close through the dialog's own close() when it has one, so the caller's
+  // promise settles as a cancel. Emptying the container alone left the caller
+  // awaiting forever -- and, before anything called this on a lock, left the
+  // dialog itself live on top of the screen that replaced it.
+  if (typeof container._closeActive === "function") {
+    container._closeActive();
+    return;
+  }
   container.classList.remove("show");
   setTimeout(() => {
     container.innerHTML = "";
@@ -2076,7 +2179,10 @@ function prompt(message, { title = "Enter", defaultValue = "", placeholder = "",
         variant: "primary"
       }
     ]
-  }).then((ok) => ok ? input.value || null : null);
+  // OK with an empty field is "" and Cancel is null -- two different answers. Both
+  // used to come back null, so "Not handed in" could not tell Cancel from "no
+  // reason given" and cleared the borrower's return request either way.
+  }).then((ok) => ok ? input.value : null);
 }
 function pulse(element, duration = 2e3) {
   if (!element) return;
@@ -2338,7 +2444,20 @@ function agoLabel(ms) {
 }
 function formatAbsoluteTime(ms) {
   if (ms == null) return "\u2014";
-  return formatTimeAgo(ms) + " (" + new Date(ms).toLocaleString() + ")";
+  return formatTimeAgo(ms) + " (" + shortWhen(ms) + ")";
+}
+// A clock time a person reads at a glance: "2:48 PM" today, "Oct 3, 2:48 PM"
+// otherwise, the year only when it is not this one. toLocaleString() gave
+// "10/4/2026, 2:48:34 PM" -- seconds nobody needs and a date nobody parses.
+function shortWhen(ms) {
+  if (ms == null) return "\u2014";
+  const d = new Date(ms);
+  const now = /* @__PURE__ */ new Date();
+  const time = d.toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return time;
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return `${d.toLocaleDateString(void 0, opts)}, ${time}`;
 }
 function formatDueLabel(ts) {
   if (ts == null) return "No due time";
@@ -2349,7 +2468,19 @@ function sentenceCase(s) {
   if (typeof s !== "string") return s;
   const t = s.trim().replace(/\s+/g, " ");
   if (!t) return t;
-  return t.toLowerCase().split(" ").map((w) => w.length ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
+  // Only a word typed all in lower case is changed, and only its first letter:
+  // "maria lopez" becomes "Maria Lopez", while "HDMI", "iPad" and "McDonald"
+  // stay as typed. This used to lower-case everything first, which turned an
+  // HDMI cable into "Hdmi" and McDonald into "Mcdonald".
+  // Caps lock is the exception: a whole line typed in capitals is shouting, not
+  // an acronym, so its longer words are softened ("MARIA LOPEZ" -> "Maria
+  // Lopez", "HDMI CABLE" -> "HDMI Cable").
+  const shouting = t === t.toUpperCase() && t !== t.toLowerCase() && t.includes(" ");
+  return t.split(" ").map((w) => {
+    if (!w.length) return w;
+    if (shouting && w.length > 4) return w[0] + w.slice(1).toLowerCase();
+    return w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w;
+  }).join(" ");
 }
 var prefersReducedMotion, MONTHS_SHORT;
 var init_ui = __esm({
@@ -2713,20 +2844,32 @@ async function addItemAlias(item, typed, { label } = {}) {
   if (!k) return item;
   const own = _nameKeyOf(item).key;
   if (k === own) return item;
-  const aliases = Array.isArray(item.aliases) ? item.aliases.slice() : [];
-  if (aliases.some((a) => a && a.k === k)) return item;
-  aliases.push({
-    k,
-    label: String(label || typed).trim().slice(0, 60),
-    addedAt: Date.now()
-  });
+  if ((Array.isArray(item.aliases) ? item.aliases : []).some((a) => a && a.k === k)) return item;
   // Newest kept, and few of them. An alias list is a memory of how people got
   // the name wrong, not an archive: a handful covers every real desk, and a long
   // one would ride along on every export and every `_nameKeyOf` alias pass.
-  const capped = aliases.slice(-8);
-  const next = Object.assign({}, item, { aliases: capped });
-  await put("items", next);
-  return next;
+  //
+  // Written onto the item as it is in the store *now*, in one transaction. It
+  // used to put the caller's copy back with the alias added, so anything that
+  // changed the item in between -- a checkout bumping its counters, a staff
+  // edit -- was quietly undone.
+  return runTx([
+    "items"
+  ], "readwrite", async (s) => {
+    const store = s.get("items");
+    const fresh = item.id != null ? await s.req(store.get(item.id)) : null;
+    const target = fresh || item;
+    const have = Array.isArray(target.aliases) ? target.aliases.slice() : [];
+    if (have.some((a) => a && a.k === k)) return target;
+    have.push({
+      k,
+      label: String(label || typed).trim().slice(0, 60),
+      addedAt: Date.now()
+    });
+    const next = Object.assign({}, target, { aliases: have.slice(-8) });
+    await s.req(store.put(next));
+    return next;
+  });
 }
 /**
  * The name an item is also known by, for display. Empty when there are none.
@@ -2813,6 +2956,29 @@ __export(keyboard_exports, {
   OnScreenKeyboard: () => OnScreenKeyboard,
   initKeyboard: () => initKeyboard
 });
+// Whether this device uses the app's own on-screen keyboard. It was built for
+// the Windows touch desk, where it is the only keyboard there is; on a phone or
+// tablet in a browser it came up *as well as* the device's own, and its alpha
+// layout ran off both sides of a phone screen. "auto" means: on inside the
+// Windows app, off in a browser. Settings can force it either way, per device.
+var KEYBOARD_PREF_KEY = "frontdesk.keyboard";
+function onScreenKeyboardMode() {
+  try {
+    const v = localStorage.getItem(KEYBOARD_PREF_KEY);
+    if (v === "on" || v === "off") return v;
+  } catch (_) {
+  }
+  return "auto";
+}
+function onScreenKeyboardWanted() {
+  const mode = onScreenKeyboardMode();
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  return isHosted();
+}
+// Input types the on-screen keyboard types into. Anything else (radio, checkbox,
+// date, range, file, ...) is left to its own control.
+var KBD_TEXT_TYPES = /* @__PURE__ */ new Set(["text", "search", "tel", "password", "email", "url", "number"]);
 function initKeyboard(container) {
   const kbd = new OnScreenKeyboard(container);
   kbd.init();
@@ -3218,7 +3384,15 @@ var init_keyboard = __esm({
           const t = e.target;
           if (!(t instanceof HTMLElement)) return;
           if (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA") return;
+          if (!onScreenKeyboardWanted()) return;
           if (t.dataset.kbd === "off") return;
+          // Only fields that take typed text. A radio, checkbox or date input is
+          // an <input> too, and the keyboard used to come up on all of them and
+          // overwrite `.value`: on Review duplicates, tapping a row and then a
+          // digit turned the radio's item id 712 into 7123, and Merge folded the
+          // duplicate into an unrelated item.
+          if (t.tagName === "INPUT" && !KBD_TEXT_TYPES.has((t.type || "text").toLowerCase())) return;
+          if (t.readOnly || t.disabled) return;
           const layout = this._inferLayout(t);
           this.show(layout, {
             target: t
@@ -3498,8 +3672,22 @@ var init_keyboard = __esm({
         const end = input.selectionEnd ?? input.value.length;
         const current = input.value || "";
         const next = current.slice(0, start) + text + current.slice(end);
+        // A real keyboard cannot type past maxlength, and neither may this one.
+        // It used to: the 8-digit PIN field took 12, and a double-tapped digit
+        // made an 11-digit phone number.
+        if (input.maxLength > 0 && next.length > input.maxLength) return;
         this._setValue(input, next);
-        const caret = start + text.length;
+        this._placeCaret(input, next, start + text.length);
+      }
+      // Put the caret where the edit left it -- unless an `input` handler rewrote
+      // the value while _setValue was dispatching. The kiosk phone fields do that:
+      // they reformat "4" into "(4" and park the caret at the end. Moving it back
+      // to an offset worked out against the *unformatted* text then put every
+      // later digit in the wrong place, so 4165551234 came out as (165) 123-4554
+      // and could sign the borrower in as whoever owns that number. A handler that
+      // rewrites the value owns the caret.
+      _placeCaret(input, expected, caret) {
+        if (input.value !== expected) return;
         try {
           input.setSelectionRange(caret, caret);
         } catch (_) {
@@ -3512,17 +3700,11 @@ var init_keyboard = __esm({
         if (start === end && start > 0) {
           const next = current.slice(0, start - 1) + current.slice(end);
           this._setValue(input, next);
-          try {
-            input.setSelectionRange(start - 1, start - 1);
-          } catch (_) {
-          }
+          this._placeCaret(input, next, start - 1);
         } else if (start !== end) {
           const next = current.slice(0, start) + current.slice(end);
           this._setValue(input, next);
-          try {
-            input.setSelectionRange(start, start);
-          } catch (_) {
-          }
+          this._placeCaret(input, next, start);
         }
       }
       _endLongPress() {
@@ -3610,6 +3792,9 @@ function goToScreen(name, opts = {}) {
   // stayed armed after the user was already out, and could fire later and drag
   // them from an unrelated screen back to the login prompt.
   if (name !== "admin" && name !== "admin-detail") endAdminSession();
+  // Same for the kiosk's own idle timer: armed on any kiosk screen past the
+  // welcome, cleared everywhere else.
+  _armKioskIdle();
   const hook = onEnterHooks.get(name);
   if (hook) {
     try {
@@ -3661,6 +3846,10 @@ function putKeyboardAway() {
 }
 // The kiosk is the public, unattended surface. Anything that reaches staff
 // screens, the admin login, or staff-only shortcuts must be refused from here.
+/** The public is looking: a kiosk screen, or the splash it starts on. */
+function _onPublicScreen() {
+  return currentScreen === "splash" || isKioskScreen(currentScreen);
+}
 function isKioskScreen(name) {
   return name === "welcome" || typeof name === "string" && name.indexOf("kiosk-") === 0;
 }
@@ -4481,25 +4670,25 @@ var CheckoutFlow = class {
           this._renderItemsList("");
           return;
         }
-        const results = await searchItems(query, {
-          limit: 1
-        });
-        if (results.length > 0) {
-          this.handleItemSelect(results[0].item, true);
-          showToast(`Selected "${results[0].item.name}"`, {
-            type: "success",
-            duration: 1500
+        // The same rules as the list and the kiosk: resolveItem, not the fuzzy
+        // search's top hit. Enter used to take searchItems(..)[0], a subsequence
+        // match, so "Key 12" picked "Key 112" -- the wrong key went out, and
+        // "Key 12" could not be added from here at all.
+        const res = await resolveItem(query);
+        if (res && !res.item && res.alternatives.length) {
+          showToast(`Several items match "${query}" \u2014 pick one from the list.`, {
+            type: "info"
           });
-          itemsSearch.value = "";
-          this._renderItemsList("");
           return;
         }
-        const newItem = await this.handleNewItem(query, "Other", {
+        // handleNewItem attaches to a resolved item (and remembers the name it
+        // was typed as), or adds a new one when nothing is meant.
+        const picked = await this.handleNewItem(query, "Other", {
           skipDialog: true
         });
-        if (newItem) {
-          this.handleItemSelect(newItem, true);
-          showToast(`Added "${newItem.name}"`, {
+        if (picked) {
+          this.handleItemSelect(picked, true);
+          showToast(res && res.item ? `Selected "${picked.name}"` : `Added "${picked.name}"`, {
             type: "success",
             duration: 1500
           });
@@ -4755,15 +4944,10 @@ var CheckoutFlow = class {
       note.appendChild(typedEl);
       allWrap.appendChild(note);
     }
-    let showAddNew = false;
-    if (typed && !resolved && !ambiguous) {
-      const results = await searchItems(typed, {
-        limit: 1
-      });
-      if (results.length === 0) {
-        showAddNew = true;
-      }
-    }
+    // Offered whenever nothing is meant. It used to be withheld whenever the
+    // fuzzy search found anything at all, so with "Key 112" in the catalog,
+    // "Key 12" could never be added from checkout.
+    const showAddNew = !!(typed && !resolved && !ambiguous);
     if (ambiguous) {
       // Two or more entries could be meant. Offer nothing to create, because
       // creating here is exactly how "Cable" becomes three catalog rows.
@@ -4801,7 +4985,7 @@ var CheckoutFlow = class {
     const continueBtn = root.querySelector(".step-items .step-continue");
     if (continueBtn) {
       continueBtn.disabled = this.state.items.length === 0;
-      continueBtn.textContent = this.state.items.length > 0 ? `CONTINUE \u2192 (${this.state.items.length} selected)` : "CONTINUE \u2192";
+      continueBtn.textContent = this.state.items.length > 0 ? `Continue (${this.state.items.length} selected)` : "Continue";
     }
   }
   _makeItemCard(item) {
@@ -4934,7 +5118,7 @@ var CheckoutFlow = class {
     const settings = await getSettings();
     const dueAt = Date.now() + (settings.defaultLoanHours || 8) * 3600 * 1e3;
     this.state.dueAt = dueAt;
-    if (dueEl) dueEl.textContent = formatDueLabel(dueAt) + ` (${new Date(dueAt).toLocaleString()})`;
+    if (dueEl) dueEl.textContent = formatDueLabel(dueAt) + ` (${shortWhen(dueAt)})`;
     const printBtn = root.querySelector(".btn-print-receipt");
     if (printBtn) {
       printBtn.onclick = () => {
@@ -5074,8 +5258,8 @@ var CheckinFlow = class {
     const itemName = item?.name || loan.itemNameSnapshot || "?";
     const borrowerName = borrower?.name || loan.borrowerNameSnapshot || "(unknown)";
     const phone = borrower?.phoneFormatted || (loan.borrowerPhoneSnapshot ? formatPhone(loan.borrowerPhoneSnapshot) : "");
-    const outAt = new Date(loan.checkedOutAt).toLocaleString();
-    const dueAt = loan.dueAt ? new Date(loan.dueAt).toLocaleString() : "\u2014";
+    const outAt = shortWhen(loan.checkedOutAt);
+    const dueAt = loan.dueAt ? shortWhen(loan.dueAt) : "\u2014";
     const wasOverdue = loan.dueAt && loan.dueAt < Date.now();
     const conditionLabel = {
       good: "\u2713 Returned in good condition",
@@ -5339,8 +5523,8 @@ var CheckinFlow = class {
     const outAt = new Date(loan.checkedOutAt);
     const dueAt = loan.dueAt ? new Date(loan.dueAt) : null;
     timing.innerHTML = `
-      <span><span class="timing-label">Out:</span> <span class="timing-value">${escapeHtml(outText)}</span> <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${outAt.toLocaleString()})</span></span>
-      <span><span class="timing-label">Due:</span> <span class="timing-value ${dueClass}">${escapeHtml(dueText)}</span>${dueAt ? ` <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${dueAt.toLocaleString()})</span>` : ""}</span>
+      <span><span class="timing-label">Out:</span> <span class="timing-value">${escapeHtml(outText)}</span> <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${escapeHtml(shortWhen(outAt.getTime()))})</span></span>
+      <span><span class="timing-label">Due:</span> <span class="timing-value ${dueClass}">${escapeHtml(dueText)}</span>${dueAt ? ` <span class="timing-label" style="font-size:11px;color:var(--text-muted);">(${escapeHtml(shortWhen(dueAt.getTime()))})</span>` : ""}</span>
     `;
     row.appendChild(timing);
     row.onclick = () => this.handleSelectLoan(loan);
@@ -5365,6 +5549,20 @@ var CheckinFlow = class {
       loanTimeEl.textContent = `Out ${out} \xB7 ${due}`;
     }
     if (notesEl) notesEl.value = "";
+    // A kiosk return request carries what the borrower said about the item. The
+    // desk never saw it here, pressed RETURNED OK, and it was gone.
+    const reportEl = root.querySelector(".return-report");
+    if (reportEl) {
+      if (loan.returnRequestedAt) {
+        const cond = loan.returnRequestedCondition === "damaged" ? "something is wrong" : "all good";
+        const note = loan.returnRequestedNote ? `: \u201C${loan.returnRequestedNote}\u201D` : "";
+        reportEl.textContent = `The borrower reported at the kiosk \u2014 ${cond}${note}`;
+        reportEl.classList.remove("hidden");
+      } else {
+        reportEl.textContent = "";
+        reportEl.classList.add("hidden");
+      }
+    }
   }
 };
 function stepName(n) {
@@ -5544,12 +5742,12 @@ async function hostRestoreBackup(fileName) {
   });
 }
 
-async function autoBackup() {
+async function autoBackup({ force = false } = {}) {
   try {
     const settings = await getSettings();
     const last = settings.lastBackupAt || 0;
     const now = Date.now();
-    if (now - last < BACKUP_INTERVAL_MS && last > 0) {
+    if (!force && now - last < BACKUP_INTERVAL_MS && last > 0) {
       return {
         ok: true,
         triggered: false,
@@ -5560,11 +5758,14 @@ async function autoBackup() {
     if (isHosted()) {
       try {
         const result = await hostSaveBackup(data);
-        await updateSettings({
-          lastBackupAt: now
-        });
+        // Only a backup that read back intact counts. This used to be recorded
+        // either way, so a failed backup was not retried for 24 hours -- and on a
+        // desk that starts minimised, nobody saw the toast saying it failed.
         if (result.verified) {
-          showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
+          await updateSettings({
+            lastBackupAt: now
+          });
+          if (force || !_onPublicScreen()) showToast(`Backup saved to the backup folder (${formatBytes(result.bytes)}). ${result.kept} kept.`, {
             type: "info",
             duration: 5e3
           });
@@ -5572,13 +5773,14 @@ async function autoBackup() {
           // The file was written but did not read back the same. Say so loudly:
           // a backup you cannot trust is worse than none, because it is the one
           // you find out about when you need it.
-          showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
+          if (!force && _onPublicScreen()) logToHost("automatic backup could not be verified: " + (result.error || "mismatch"));
+          else showToast(`Backup could not be verified: ${result.error || "the file on disk does not match"}. Check the backup folder.`, {
             type: "error",
             duration: 15e3
           });
         }
         return {
-          ok: result.verified,
+          ok: !!result.verified,
           triggered: true,
           reason: "host",
           path: result.path
@@ -5609,7 +5811,7 @@ async function autoBackup() {
     await updateSettings({
       lastBackupAt: now
     });
-    showToast("Backup saved. Check your Downloads folder.", {
+    if (force || !_onPublicScreen()) showToast("Backup saved. Check your Downloads folder.", {
       type: "info",
       duration: 4e3
     });
@@ -5653,12 +5855,9 @@ async function downloadExport() {
 }
 /** Bound to the tray's "Back up now", and usable from the console. */
 async function runBackupNow({ force = true } = {}) {
-  if (force) {
-    await updateSettings({
-      lastBackupAt: 0
-    });
-  }
-  return autoBackup();
+  // Forced by argument rather than by zeroing lastBackupAt first: a forced run
+  // that then failed left the record saying no backup had ever been made.
+  return autoBackup({ force });
 }
 
 // A crash inside the page would otherwise vanish into a devtools console that
@@ -5839,6 +6038,9 @@ var KIOSK_SCREENS = {
 function initKiosk() {
   const welcome = document.getElementById("screen-welcome");
   if (!welcome) return;
+  document.addEventListener("pointerdown", _bumpKioskIdle, { passive: true, capture: true });
+  document.addEventListener("keydown", _bumpKioskIdle, { capture: true });
+  document.addEventListener("input", _bumpKioskIdle, { capture: true });
   const borrowBtn = welcome.querySelector(".btn-kiosk-borrow");
   if (borrowBtn) {
     borrowBtn.onclick = () => {
@@ -5904,12 +6106,10 @@ function initKiosk() {
   }
   document.querySelectorAll(".btn-back-kiosk").forEach((btn) => {
     btn.onclick = () => {
-      const picker = document.querySelector(".kiosk-borrower-picker");
-      if (picker) picker.remove();
-      const signin = document.querySelector(".kiosk-signin-panel");
-      if (signin) signin.remove();
-      const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
-      if (continueBtn) continueBtn.style.display = "";
+      // All of them, settled: this used to remove the first sign-in panel in the
+      // document and leave any others -- including a pending condition question
+      // still holding the last borrower's loan.
+      _clearKioskOverlays();
       if (btn.dataset.back === "kiosk-return-phone" || btn.dataset.back === "welcome") {
         const returnInput = document.getElementById("kiosk-return-phone");
         if (returnInput) returnInput.value = "";
@@ -5965,7 +6165,12 @@ function initKiosk() {
   }
   const confirmBtn = document.querySelector('[data-action="kiosk-confirm-pick"]');
   if (confirmBtn) {
-    confirmBtn.onclick = () => _handleCommit();
+    confirmBtn.onclick = () => {
+      // The add offer on screen is the one this button now names: tap it.
+      const add = confirmBtn.dataset.adds && document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
+      if (add) add.click();
+      else _handleCommit();
+    };
   }
   // `querySelectorAll`, not `querySelector`: two screens carry this action --
   // the borrow confirmation and the list a borrower sees after a return -- and
@@ -5976,6 +6181,31 @@ function initKiosk() {
   // kiosk suite clicks this action scoped to the *borrow* screen.
   for (const btn of document.querySelectorAll('[data-action="kiosk-back-home"]')) {
     btn.onclick = () => _kioskBackHome();
+  }
+  // Same person, one more thing: back to the item step without the phone again.
+  const another = document.querySelector('[data-action="kiosk-borrow-another"]');
+  if (another) {
+    another.onclick = () => {
+      const who = _doneBorrower;
+      _doneBorrower = null;
+      if (!who) {
+        _kioskBackHome();
+        return;
+      }
+      state.borrower = who;
+      state.phone = who.phone || null;
+      state.isNew = false;
+      const greetEl = document.getElementById("kiosk-greeting-name");
+      if (greetEl) greetEl.textContent = who.name;
+      _cancelDoneCountdown();
+      clearToasts();
+      _resetNeedStep();
+      goToScreen(KIOSK_SCREENS.borrowNeed);
+      setTimeout(() => {
+        const need = document.getElementById("kiosk-need");
+        if (need) need.focus();
+      }, 100);
+    };
   }
   const returnPhoneContinue = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (returnPhoneContinue) {
@@ -5993,8 +6223,11 @@ function initKiosk() {
       valueBefore = e.target.value;
     });
     returnPhoneInput.addEventListener("input", (e) => {
-      const before = normalizePhone(valueBefore).slice(-10);
-      let digits = normalizePhone(e.target.value).slice(-10);
+      // The first ten, not the last ten: a digit tapped once too often used to
+      // push the first one off the front, and the field then showed -- and
+      // looked up -- a different number.
+      const before = normalizePhone(valueBefore).slice(0, 10);
+      let digits = normalizePhone(e.target.value).slice(0, 10);
       if (e.inputType === "deleteContentBackward" && digits === before && before.length > 0) {
         digits = before.slice(0, -1);
       }
@@ -6019,7 +6252,10 @@ function initKiosk() {
 async function handlePhoneSubmit() {
   const input = document.getElementById("kiosk-phone");
   if (!input) return;
-  const raw = input.value.replace(/\D/g, "").slice(-10);
+  // Exactly ten digits (after a leading 1), never "the last ten of however many
+  // were typed": a double-tapped digit used to pass as a different, valid number
+  // and book the loan to whoever owned it.
+  const raw = normalizePhone(input.value);
   if (raw.length !== 10) {
     showToast("Please enter a 10-digit phone number", {
       type: "error"
@@ -6233,6 +6469,7 @@ function _renderSuggestions(matches, query, opts = {}) {
   if (!container) return;
   const { create = null, catalogEmpty = false } = opts;
   container.innerHTML = "";
+  _setBorrowLabel(null);
   // What this list is the answer to. `_onNeedInput` compares the box against it
   // and takes the list away as soon as they disagree -- see there for why that
   // matters more than the flicker it costs.
@@ -6271,6 +6508,7 @@ function _renderSuggestions(matches, query, opts = {}) {
       btn.appendChild(hint);
       btn.onclick = () => _kioskCreateAndCheckout(create);
       container.appendChild(btn);
+      _setBorrowLabel(`Add "${create.name}" and borrow it`);
     } else if (create && create.reason) {
       const why = document.createElement("div");
       why.className = "kiosk-suggestion-empty";
@@ -6410,7 +6648,7 @@ async function _handleCommit() {
   }
   const check = kioskCreateCheck(query);
   showToast(check.ok
-    ? `That item is not on the list — tap Add "${check.name}" below, or ask the front desk.`
+    ? `That item is not on the list. Tap Add "${check.name}" and borrow it, or ask the front desk.`
     : "That item is not on the list. Please ask the front desk.", {
     type: "error",
     duration: 5e3
@@ -6507,8 +6745,12 @@ async function _kioskCreateAndCheckout(create) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6557,8 +6799,12 @@ async function _checkout(item, typedFrom) {
     });
     const doneText = document.getElementById("kiosk-done-text");
     if (doneText) doneText.textContent = item.name;
+    clearToasts();
     goToScreen(KIOSK_SCREENS.borrowDone);
     _startDoneCountdown();
+    // Kept only while the confirmation is on screen, for "Borrow something
+    // else"; leaving it for any reason forgets them (see _kioskBackHome).
+    _doneBorrower = state.borrower;
     state.phone = null;
     state.borrower = null;
     state.isNew = false;
@@ -6636,7 +6882,21 @@ function _cancelDoneCountdown() {
  * Registered as an `onEnter` hook for the step, so every route into it is
  * covered rather than the four that happen to call `goToScreen` today.
  */
+/**
+ * The item step's main button. Normally "Borrow it"; while the search has come
+ * back empty and the add offer is showing, it names the add -- so the button a
+ * borrower reaches for does what it says, instead of answering "not on the
+ * list, tap the other button". Pressing Enter still never adds anything.
+ */
+function _setBorrowLabel(text) {
+  const btn = document.querySelector('[data-action="kiosk-confirm-pick"]');
+  if (!btn) return;
+  btn.textContent = text || "Borrow it";
+  if (text) btn.dataset.adds = "1";
+  else delete btn.dataset.adds;
+}
 function _resetNeedStep() {
+  _setBorrowLabel(null);
   // A debounced pass from the previous borrower must not land after the clear and
   // re-render a list nobody asked for.
   if (_kioskTypeaheadTimer) {
@@ -6649,8 +6909,50 @@ function _resetNeedStep() {
   if (suggestEl) suggestEl.innerHTML = "";
   _kioskSuggestQuery = null;
 }
+// Inline kiosk panels that are waiting on the borrower (the condition question).
+// Each entry settles its panel as a cancel. They have to be settled, not only
+// removed: a panel left behind on the return screen kept its borrower's loan, so
+// when Alice walked away from "Is it coming back in good shape?", Carl signed in
+// next, saw her question under his own list, and his "All good" flagged her loan
+// as handed in.
+var _kioskPendingPanels = /* @__PURE__ */ new Set();
+function _clearKioskOverlays() {
+  for (const cancel of [..._kioskPendingPanels]) cancel();
+  _kioskPendingPanels.clear();
+  document.querySelectorAll(".kiosk-signin-panel, .kiosk-borrower-picker").forEach((el) => el.remove());
+  const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
+  if (continueBtn) continueBtn.style.display = "";
+  closeDialog();
+}
+// A borrower who walks away mid-session leaves it open for the next person:
+// signed in as them on the item step (so the next checkout lands on their
+// account), or with their name, phone and loans on the return screen. The only
+// timer the kiosk had was the DONE countdown. Any kiosk screen past the welcome
+// now goes back to it after this long without a touch or a key.
+var KIOSK_IDLE_MS = 9e4;
+var _kioskIdleTimer = null;
+function _armKioskIdle() {
+  if (_kioskIdleTimer) {
+    clearTimeout(_kioskIdleTimer);
+    _kioskIdleTimer = null;
+  }
+  const cur = getCurrentScreen();
+  if (!isKioskScreen(cur) || cur === KIOSK_SCREENS.welcome) return;
+  _kioskIdleTimer = setTimeout(() => {
+    _kioskIdleTimer = null;
+    const now = getCurrentScreen();
+    if (isKioskScreen(now) && now !== KIOSK_SCREENS.welcome) _kioskBackHome();
+  }, KIOSK_IDLE_MS);
+}
+function _bumpKioskIdle() {
+  if (_kioskIdleTimer) _armKioskIdle();
+}
+var _doneBorrower = null;
 function _kioskBackHome() {
+  _doneBorrower = null;
   _cancelDoneCountdown();
+  _clearKioskOverlays();
+  clearToasts();
   state.phone = null;
   state.borrower = null;
   state.isNew = false;
@@ -6681,7 +6983,7 @@ function _kioskBackHome() {
 async function handleReturnPhoneSubmit() {
   const input = document.getElementById("kiosk-return-phone");
   if (!input) return;
-  const raw = input.value.replace(/\D/g, "").slice(-10);
+  const raw = normalizePhone(input.value);
   if (raw.length !== 10) {
     showToast("Please enter a 10-digit phone number", {
       type: "error"
@@ -6706,6 +7008,10 @@ async function handleReturnPhoneSubmit() {
 }
 window.__handleReturnPhoneSubmit = handleReturnPhoneSubmit;
 function _showSignInPrompt(phone) {
+  // The return flow with a number this device has never seen. It used to offer
+  // to "sign in here" with a name -- which made an empty account and then said
+  // "You're all clear", when what the person almost always needs is to check
+  // the number they typed. Nothing can be out under a number nobody used.
   const continueBtn = document.querySelector('[data-action="kiosk-return-phone-continue"]');
   if (continueBtn) continueBtn.style.display = "none";
   const existingPicker = document.querySelector(".kiosk-borrower-picker");
@@ -6718,48 +7024,14 @@ function _showSignInPrompt(phone) {
   panel.className = "kiosk-signin-panel";
   panel.innerHTML = `
     <div class="kiosk-signin-card">
-      <div class="kiosk-signin-icon">\u2753</div>
-      <div class="kiosk-signin-title">We don't have an account for (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)} on this device</div>
-      <div class="kiosk-signin-sub">If you used the kiosk before, your data is on the device you used. Want to sign in here?</div>
-      <input type="text" class="input input-xl kiosk-input" id="kiosk-signin-name" placeholder="Your name" maxlength="100" autocomplete="off" />
+      <div class="kiosk-signin-title">Nothing is out under (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)}</div>
+      <div class="kiosk-signin-sub">Check the number and try again. If you borrowed under a different number, use that one \u2014 or ask the front desk.</div>
       <div class="kiosk-signin-actions">
-        <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-signin-create">SIGN IN HERE</button>
-        <button class="btn btn-ghost kiosk-cta-secondary" data-action="kiosk-signin-cancel">Cancel</button>
+        <button class="btn btn-primary btn-xl kiosk-cta" data-action="kiosk-signin-cancel">Try again</button>
       </div>
     </div>
   `;
   body.appendChild(panel);
-  panel.querySelector('[data-action="kiosk-signin-create"]').onclick = async () => {
-    const nameInput2 = panel.querySelector("#kiosk-signin-name");
-    const name = nameInput2?.value?.trim();
-    if (!name) {
-      showToast("Please enter your name", {
-        type: "error"
-      });
-      nameInput2?.focus();
-      return;
-    }
-    try {
-      await openDB();
-      const borrower = await upsertBorrower({
-        phone,
-        name
-      });
-      state.borrower = borrower;
-      state.phone = phone;
-      panel.remove();
-      if (continueBtn) continueBtn.style.display = "";
-      await _renderReturnList();
-      goToScreen(KIOSK_SCREENS.returnItems);
-      showToast(`Welcome, ${name}!`, {
-        type: "success"
-      });
-    } catch (err) {
-      showToast("Failed: " + err.message, {
-        type: "error"
-      });
-    }
-  };
   panel.querySelector('[data-action="kiosk-signin-cancel"]').onclick = () => {
     panel.remove();
     if (continueBtn) continueBtn.style.display = "";
@@ -6769,19 +7041,6 @@ function _showSignInPrompt(phone) {
       phoneInput.focus();
     }
   };
-  setTimeout(() => {
-    const nameInput2 = panel.querySelector("#kiosk-signin-name");
-    if (nameInput2) nameInput2.focus();
-  }, 100);
-  const nameInput = panel.querySelector("#kiosk-signin-name");
-  if (nameInput) {
-    nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        panel.querySelector('[data-action="kiosk-signin-create"]').click();
-      }
-    });
-  }
 }
 async function _renderReturnList() {
   const now = Date.now();
@@ -6847,7 +7106,8 @@ async function _renderReturnList() {
   const subEl = document.querySelector("#screen-kiosk-return-items .kiosk-step-sub");
   if (subEl) {
     const phone = state.phone || "";
-    subEl.textContent = `Signed in as ${state.borrower.name} \xB7 (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6, 10)} \xB7 hand items to the front desk`;
+    // The greeting above already says who this is; this line says what to do.
+    subEl.textContent = "Tap anything you're bringing back, then hand it to the front desk.";
   }
 }
 function _showBorrowerPicker(matches, phone, thenScreen) {
@@ -6928,41 +7188,15 @@ function _makeReturnRow(loan, now) {
   return row;
 }
 async function _confirmAndReturnLoan(loan) {
-  const now = Date.now();
-  const isOverdue = loan.dueAt && loan.dueAt < now;
-  const overdueText = isOverdue ? `<div style="background:rgba(231,76,60,0.15); color:#e74c3c; padding:8px 12px; border-radius:6px; font-weight:600; margin-top:8px;">\u26A0\uFE0F Overdue by ${formatRelativeTime(loan.dueAt - now)}</div>` : "";
-  const dueText = loan.dueAt && !isOverdue ? `<div>Due: ${new Date(loan.dueAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })}</div>` : "";
-  const confirmed = await _confirmDialog("Return this item?", `<div style="text-align:left; padding:4px 0;">
-       <div style="font-size:22px; font-weight:700; margin-bottom:12px; color:var(--text);">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-       <div style="color:var(--text-muted); font-size:14px; line-height:1.6;">
-         <div><strong>Out:</strong> ${loan.checkedOutAt ? new Date(loan.checkedOutAt).toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }) : "\u2014"}</div>
-         ${dueText}
-       </div>
-       ${overdueText}
-     </div>
-     <div style="margin-top:12px; padding:10px; background:var(--bg-alt, rgba(255,255,255,0.05)); border-radius:6px; font-size:13px; color:var(--text-muted);">
-       Hand it to the front desk and they will close it off. Nothing is marked returned until they do.
-     </div>`, {
-    danger: true,
-    confirmLabel: "Yes, I'm handing it in"
-  });
-  if (!confirmed) return;
+  // One step, not two. Tapping an item used to open a "Return this item?" dialog
+  // and then put "Is it coming back in good shape?" *below* the screen's big
+  // Done button -- so a borrower who tapped Done after the first answer walked
+  // away believing it was handed in, with nothing recorded. The question now
+  // covers the screen, and answering it is the hand-in.
   // Condition is asked for, not assumed. This used to hardcode "good", so
   // "Damaged"/"Lost" could never be recorded from a kiosk return even though the
   // item detail screen counts them.
-  const condition = await _askCondition(loan);
+  const condition = await _askCondition(loan, { modal: true });
   if (!condition) return;
   try {
     await openDB();
@@ -6987,7 +7221,7 @@ async function _confirmAndReturnLoan(loan) {
  * wrong -> say what" needs a dialog that stays open between steps, which the
  * promise adapter around showDialog cannot do (it closes on the first click).
  */
-function _askCondition(loan) {
+function _askCondition(loan, opts = {}) {
   return new Promise((resolve) => {
     const host = document.querySelector(".screen:not(.hidden)");
     const body = host && host.querySelector(".kiosk-flow-body");
@@ -6995,28 +7229,40 @@ function _askCondition(loan) {
       resolve(null);
       return;
     }
+    const now = Date.now();
+    const overdue = loan.dueAt && loan.dueAt < now;
+    const when = loan.checkedOutAt ? `Out ${agoLabel(now - loan.checkedOutAt)}` : "";
+    const late = overdue ? ` \u00b7 <span class="kiosk-return-item-overdue">overdue by ${formatRelativeTime(loan.dueAt - now)}</span>` : "";
     const panel = document.createElement("div");
-    panel.className = "kiosk-signin-panel";
+    panel.className = "kiosk-signin-panel" + (opts.modal ? " kiosk-modal" : "");
+    if (opts.modal) {
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+    }
     panel.innerHTML = `
       <div class="kiosk-signin-card">
         <div class="kiosk-condition-title">${escapeHtml2(loan.itemNameSnapshot || "Item")}</div>
-        <div class="kiosk-signin-sub">Is it coming back in good shape?</div>
+        ${when ? `<div class="kiosk-signin-sub">${escapeHtml2(when)}${late}</div>` : ""}
+        <div class="kiosk-signin-sub">Handing it back? Is it in good shape?</div>
         <div class="kiosk-condition-actions">
-          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good</button>
+          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-cond="good">All good, hand it in</button>
           <button type="button" class="btn btn-secondary btn-xl kiosk-cta" data-cond="damaged">Something's wrong</button>
         </div>
         <div data-role="note-wrap" class="kiosk-condition-note hidden">
           <input type="text" class="input input-xl kiosk-input" data-role="note" maxlength="300" placeholder="e.g. one key is bent, cable missing" autocomplete="off" />
-          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-role="note-submit">SEND TO FRONT DESK</button>
+          <button type="button" class="btn btn-primary btn-xl kiosk-cta" data-role="note-submit">Send to the front desk</button>
         </div>
         <button type="button" class="btn btn-ghost kiosk-cta-secondary" data-role="cancel">Cancel</button>
       </div>
     `;
-    body.appendChild(panel);
+    (opts.modal ? host : body).appendChild(panel);
     const done = (value) => {
+      _kioskPendingPanels.delete(cancel);
       panel.remove();
       resolve(value);
     };
+    const cancel = () => done(null);
+    _kioskPendingPanels.add(cancel);
     const noteWrap = panel.querySelector('[data-role="note-wrap"]');
     const noteInput = panel.querySelector('[data-role="note"]');
     panel.querySelector('[data-cond="good"]').onclick = () => done({
@@ -7106,11 +7352,24 @@ function touchAdminSession() {
   if (_adminIdleTimer) clearTimeout(_adminIdleTimer);
   _adminIdleTimer = setTimeout(() => {
     if (getCurrentScreen() === "admin" || getCurrentScreen() === "admin-detail") {
+      // An open dialog is part of the session being locked. It used to stay on
+      // top of the PIN screen -- an "Edit borrower" form showing a name, phone
+      // and notes -- and its Save still wrote to the record and opened the
+      // detail screen, with no PIN. Closing it settles it as a cancel.
+      closeDialog();
+      // Cancel on the lock screen goes back to the kiosk, not to wherever the
+      // login was first opened from. That was usually the staff home, which has
+      // no lock of its own, so Cancel was a way past this one.
+      adminLoginReturn = "welcome";
       goToScreen("admin-login");
       Promise.resolve().then(() => (init_ui(), ui_exports)).then((m) => m.showInfo("Admin panel locked after 5 minutes of inactivity.")).catch(() => {
       });
     }
   }, ADMIN_IDLE_MS);
+}
+function _inAdminSession() {
+  const cur = getCurrentScreen();
+  return cur === "admin" || cur === "admin-detail";
 }
 function endAdminSession() {
   if (_adminIdleTimer) {
@@ -7232,9 +7491,13 @@ function _clearPinField() {
   if (pinInput) pinInput.value = "";
 }
 async function showAdmin() {
-  goToScreen("admin");
+  // Pick the tab first, then enter the screen: entering runs the enter hook,
+  // which draws whichever tab is active at that moment. In the other order the
+  // hook drew Queue and the remembered tab was switched to afterwards, never
+  // drawn -- so the panel opened on a blank Settings, Items or People.
   _wireAdminChrome();
   _restoreActiveTab();
+  goToScreen("admin");
   touchAdminSession();
   await renderAdminStats();
   await renderRecentKiosk();
@@ -7246,6 +7509,9 @@ async function showAdmin() {
   // from a detail screen, which this line never did.
 }
 async function showItemDetail(itemId) {
+  // Only from inside the panel. A dialog that outlived the idle lock used to
+  // finish with one of these and land on the detail screen without a PIN.
+  if (!_inAdminSession()) return;
   goToScreen("admin-detail", {
     data: {
       kind: "item",
@@ -7353,6 +7619,9 @@ async function showItemDetail(itemId) {
   }
 }
 async function showBorrowerDetail(borrowerId) {
+  // Only from inside the panel. A dialog that outlived the idle lock used to
+  // finish with one of these and land on the detail screen without a PIN.
+  if (!_inAdminSession()) return;
   goToScreen("admin-detail", {
     data: {
       kind: "borrower",
@@ -7475,6 +7744,16 @@ async function renderAdminStats() {
       <span class="stat">Items: <strong>${items.length}</strong></span>
       <span class="stat">People: <strong>${borrowers.length}</strong></span>
     `;
+    // The Queue tab's badge, kept in step with the header. It was only ever set
+    // by drawing the Queue tab, so a panel that opened on another tab showed
+    // "Queue 0" beside "Returns to confirm: 1".
+    const pendingRequests = await getRequests({ status: "pending" }).catch(() => []);
+    const queued = pendingReturns.length + pendingRequests.length;
+    const queueBadge = document.getElementById("queue-count");
+    if (queueBadge) {
+      queueBadge.textContent = String(queued);
+      queueBadge.style.display = queued ? "" : "none";
+    }
   } catch (err) {
     // Swallowing this left the last good counts on screen, or -- on a first
     // render -- an empty bar, either way with nothing to say the numbers are
@@ -7580,19 +7859,25 @@ function _makePendingReturnRow(loan) {
   row.className = "admin-list-item queue-row";
   const age = agoLabel(Date.now() - (loan.returnRequestedAt || 0));
   const damaged = loan.returnRequestedCondition === "damaged";
+  const who = [
+    escapeHtml3(loan.borrowerNameSnapshot || "Unknown"),
+    loan.borrowerPhoneSnapshot ? escapeHtml3(formatPhone(loan.borrowerPhoneSnapshot)) : "",
+    escapeHtml3(age)
+  ].filter(Boolean).join(" \xB7 ");
+  // One button per decision. A damaged report used to offer "Accept as reported
+  // (damaged)" next to "Returned, damaged" -- two buttons that did the same
+  // thing -- and staff had to work out which one they meant.
   row.innerHTML = `
     <div class="queue-header">
       <div class="queue-borrower">
         <span class="queue-name">${escapeHtml3(loan.itemNameSnapshot || "Item")}</span>
-        <span class="queue-phone">${escapeHtml3(loan.borrowerNameSnapshot || "Unknown")}</span>
-        ${loan.borrowerPhoneSnapshot ? `<span class="queue-phone">${escapeHtml3(formatPhone(loan.borrowerPhoneSnapshot))}</span>` : ""}
+        <span class="queue-meta">${who}</span>
       </div>
-      <div class="queue-age">${age}</div>
     </div>
-    ${damaged ? `<div class="queue-description" style="color:var(--warning);">⚠️ Borrower reports a problem${loan.returnRequestedNote ? `: ${escapeHtml3(loan.returnRequestedNote)}` : ""}</div>` : `<div class="queue-description">Borrower says it is in good shape.</div>`}
+    ${damaged ? `<div class="queue-description queue-warning">Reported a problem${loan.returnRequestedNote ? `: ${escapeHtml3(loan.returnRequestedNote)}` : ""}</div>` : `<div class="queue-description">Says it's in good shape.</div>`}
     <div class="queue-actions">
-      <button class="btn btn-primary" data-action="confirm-return" data-loan-id="${loan.id}">${damaged ? "Accept as reported (damaged)" : "Confirm return"}</button>
-      <button class="btn ${damaged ? "btn-danger" : "btn-secondary"}" data-action="confirm-return-damaged" data-loan-id="${loan.id}">Returned, damaged</button>
+      <button class="btn btn-primary" data-action="confirm-return" data-loan-id="${loan.id}">${damaged ? "Confirm return (damaged)" : "Confirm return"}</button>
+      ${damaged ? "" : `<button class="btn btn-secondary" data-action="confirm-return-damaged" data-loan-id="${loan.id}">It's damaged</button>`}
       <button class="btn btn-ghost" data-action="deny-return" data-loan-id="${loan.id}">Not handed in</button>
     </div>
   `;
@@ -7627,6 +7912,8 @@ async function _denyPendingReturn(loanId) {
     title: "Not handed in",
     placeholder: "e.g. borrower kept it, will return tomorrow"
   });
+  // Cancel, Escape or a tap outside: change nothing.
+  if (reason === null) return;
   try {
     await denyRequestedReturn(loanId, {
       reason: reason ? String(reason).trim() : ""
@@ -7844,7 +8131,7 @@ async function renderAllLoans() {
 }
 /**
  * A `type="date"` input yields "YYYY-MM-DD", and `new Date("2026-09-01")` parses
- * that as *UTC* midnight. For a Toronto user that is Aug 31, 8pm local, so a
+ * that as *UTC* midnight. For a user in Eastern time that is Aug 31, 8pm local, so a
  * filter "from Sep 1" quietly included the previous evening's loans and "to
  * Sep 1" stopped at 8pm on the day they chose. Build the boundary from local
  * parts instead. `dayOffset` of 1 gives the start of the following local day,
@@ -7862,8 +8149,12 @@ async function _renderAllLoansList(content) {
   const to = panel?.querySelector('input[data-filter="to"]')?.value;
   const fromMs = _localDayStart(from) ?? 0;
   const toMs = _localDayStart(to, 1) ?? Infinity;
+  // Every loan, then the date range, then the 200 shown. The 1,000 cap used to
+  // come first, so on a busy desk any range older than the newest thousand
+  // loans came back empty while the export (which had them) disagreed. The
+  // store is read whole either way; only the slicing moved.
   const all = await getAllLoans({
-    limit: 1e3
+    limit: null
   });
   const filtered = all.filter((l) => l.checkedOutAt >= fromMs && l.checkedOutAt < toMs);
   content.innerHTML = "";
@@ -7930,13 +8221,16 @@ function _loansToCsv(loans) {
     l.returnedAt ? new Date(l.returnedAt).toISOString() : "",
     l.conditionOut || "",
     l.conditionIn || "",
-    (l.notes || "").replace(/"/g, '""')
+    l.notes || ""
   ]);
   const bom = "\uFEFF";
+  // Through csvEscape like the other exports. This one did its own quoting, so a
+  // kiosk-typed name or item beginning "=" went out as a live formula, and a
+  // quote in the notes was doubled twice.
   const csv = [
     headers,
     ...rows
-  ].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  ].map((r) => r.map(csvEscape).join(",")).join("\n");
   return bom + csv;
 }
 /**
@@ -8559,7 +8853,7 @@ function _wireDuplicatesReview(content, render) {
       const byId = new Map(items.map((it) => [it.id, it]));
       const members = ids.map((id) => byId.get(id)).filter(Boolean);
       if (members.length === 0) return;
-      const nameKey = _dedupKeyFor(members[0], near);
+      const nameKey = _dedupGroupKey(members, near);
       await setDedupAcknowledged(nameKey, _dedupSignature(members));
       showToast("Marked as separate units — won't ask again unless the list changes", {
         type: "info"
@@ -8684,7 +8978,9 @@ async function _renderPeopleList(content, query, sortBy) {
     includeArchived: true
   });
   const q = (query || "").toLowerCase().trim();
-  let filtered = q ? all.filter((b) => b.name.toLowerCase().includes(q) || (b.phoneFormatted || "").includes(q) || b.phone.includes(q)) : all;
+  // Digits alone too, so "416-555-0100" finds the number however it was typed.
+  const qDigits = q.replace(/\D/g, "");
+  let filtered = q ? all.filter((b) => b.name.toLowerCase().includes(q) || (b.phoneFormatted || "").includes(q) || b.phone.includes(q) || qDigits.length >= 3 && b.phone.includes(qDigits)) : all;
   filtered.sort((a, b) => {
     if (sortBy === "timesCheckedOut") return (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0);
     if (sortBy === "lastSeenAt") return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
@@ -8694,7 +8990,12 @@ async function _renderPeopleList(content, query, sortBy) {
   });
   content.innerHTML = "";
   if (filtered.length === 0) {
-    content.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:32px;">No people yet</p>';
+    // "No people yet" was shown for a search that just found nobody, which
+    // reads as if the whole list had gone.
+    const msg = all.length === 0
+      ? "No people yet"
+      : `Nobody matches “${escapeHtml3(query.trim())}”`;
+    content.innerHTML = `<p style="text-align:center; color:var(--text-muted); padding:32px;">${msg}</p>`;
     return;
   }
   for (const b of filtered) {
@@ -8747,7 +9048,17 @@ async function renderSettings() {
     </div>
 
     <div class="setting-group">
-      <button class="btn btn-primary" data-action="save-settings">Save Settings</button>
+      <label class="setting-label" for="setting-keyboard">On-screen keyboard</label>
+      <select class="setting-input" id="setting-keyboard" data-setting="keyboard">
+        <option value="auto"${onScreenKeyboardMode() === "auto" ? " selected" : ""}>Automatic (${isHosted() ? "on in this app" : "off \u2014 this device has its own"})</option>
+        <option value="on"${onScreenKeyboardMode() === "on" ? " selected" : ""}>Always show</option>
+        <option value="off"${onScreenKeyboardMode() === "off" ? " selected" : ""}>Never show</option>
+      </select>
+      <div class="loan-meta" style="margin-top:6px;">Just for this device. Turn it on for a touchscreen with no keyboard of its own.</div>
+    </div>
+
+    <div class="setting-group">
+      <button class="btn btn-primary" data-action="save-settings">Save settings</button>
     </div>
 
     <div class="setting-group" style="margin-top:32px; padding-top:24px; border-top:1px solid var(--border);">
@@ -8816,6 +9127,13 @@ async function renderSettings() {
     await updateSettings(updates);
     _pinFailures = 0;
     _pinLockedUntil = 0;
+    const kbdMode = panel.querySelector('select[data-setting="keyboard"]').value;
+    try {
+      if (kbdMode === "auto") localStorage.removeItem(KEYBOARD_PREF_KEY);
+      else localStorage.setItem(KEYBOARD_PREF_KEY, kbdMode);
+    } catch (_) {
+    }
+    if (!onScreenKeyboardWanted()) putKeyboardAway();
     document.body.classList.toggle("light", newTheme === "light");
     showToast("Settings saved", {
       type: "success"
@@ -8852,7 +9170,30 @@ async function renderSettings() {
   panel.querySelector('[data-action="import"]').onclick = () => importFile.click();
   importFile.onchange = async (e) => {
     const file = e.target.files?.[0];
+    // Cleared at once, so picking the same file again after Cancel still works.
+    importFile.value = "";
     if (!file) return;
+    // Import replaces everything, exactly as Restore does -- and Restore has
+    // always asked first. This used to go straight ahead on picking a file.
+    let counts = null;
+    try {
+      const peek = JSON.parse(await file.text());
+      if (peek && Array.isArray(peek.items) && Array.isArray(peek.borrowers) && Array.isArray(peek.loans)) {
+        counts = ` It holds ${peek.items.length} item${peek.items.length === 1 ? "" : "s"}, ${peek.borrowers.length} ${peek.borrowers.length === 1 ? "person" : "people"} and ${peek.loans.length} loan${peek.loans.length === 1 ? "" : "s"}.`;
+      }
+    } catch (_) {
+    }
+    // Not a backup at all: nothing would be replaced, so there is nothing to
+    // ask -- importFromFile refuses it and says why.
+    const yes = counts === null ? true : await confirmDialog(
+      `Replace everything in Front Desk with the contents of ${file.name}?${counts} Anything checked out or added since that file was saved will be gone.`,
+      {
+        title: "Import a backup",
+        danger: true,
+        confirmLabel: "Replace everything"
+      }
+    );
+    if (!yes) return;
     try {
       await importFromFile(file);
       showToast("Import complete", {
@@ -8898,7 +9239,7 @@ async function _renderHostSettings(container) {
         <h2 class="section-title" style="font-size:18px; margin-bottom:8px;">Backup folder</h2>
         <div class="loan-meta">In the browser, a backup can only be downloaded. The Windows app additionally
         writes one into a folder on this machine on every launch, and keeps the last few &mdash; open
-        <strong>RotmanFrontDesk.exe</strong> to use it.</div>
+        <strong>RFrontDesk.exe</strong> to use it.</div>
       </div>`;
     return;
   }
@@ -8914,6 +9255,12 @@ async function _renderHostSettings(container) {
     backups = res.backups || [];
   } catch (err) {
     listError = err.message;
+  }
+  // Read fresh, not from the GetInfo cache: the toggle and the fix change it.
+  let autostartStale = false;
+  try {
+    autostartStale = !!(await hostCall("GetAutostart")).stale;
+  } catch (_) {
   }
   if (!document.contains(container)) return;
   const escape = escapeHtml3;
@@ -8961,6 +9308,13 @@ async function _renderHostSettings(container) {
       <div class="loan-meta">Starts minimised to the notification area, so the desk is ready before anyone arrives.${
         info?.autostart ? ` Windows will run it as: <span class="path-value" style="display:inline;">${escape(info?.autostartArgs || "no options")}</span>` : ""
       }</div>
+      ${autostartStale ? `
+      <div class="path-row" data-autostart-stale>
+        <div class="path-row-main">
+          <div class="loan-meta" style="color:var(--error);">The Windows startup entry is out of date: it points at an old copy or old options. It is only changed when you ask.</div>
+        </div>
+        <button class="btn btn-secondary" data-action="repair-autostart">Fix it</button>
+      </div>` : ""}
     </div>
 
     <div class="setting-group" style="margin-top:24px;">
@@ -8995,12 +9349,30 @@ async function _renderHostSettings(container) {
       await renderSettings();
     }
   };
+  const repairAutostart = container.querySelector('[data-action="repair-autostart"]');
+  if (repairAutostart) repairAutostart.onclick = async () => {
+    repairAutostart.disabled = true;
+    try {
+      const res = await hostCall("RepairAutostart");
+      _hostInfoCache = null;
+      showToast(res.stale ? "The startup entry could not be fixed" : "Startup entry fixed", {
+        type: res.stale ? "error" : "success"
+      });
+    } catch (err) {
+      showToast("Could not fix the startup entry: " + err.message, {
+        type: "error"
+      });
+    } finally {
+      await renderSettings();
+    }
+  };
   const autostart = container.querySelector('[data-action="autostart"]');
   autostart.onchange = async () => {
     const wanted = autostart.checked;
     try {
       await hostCall("SetAutostart", wanted);
       if (_hostInfoCache) _hostInfoCache.autostart = wanted;
+      container.querySelector("[data-autostart-stale]")?.remove();
       showToast(wanted ? "Front Desk will start with Windows" : "Front Desk will no longer start with Windows", {
         type: "success"
       });
@@ -9532,9 +9904,10 @@ async function _makeOpenLoanRow(loan) {
   const badge = document.createElement("div");
   badge.className = `loan-badge ${loan.dueAt && loan.dueAt < Date.now() ? "badge-overdue" : "badge-today"}`;
   if (loan.dueAt && loan.dueAt < Date.now()) {
-    badge.textContent = `OVERDUE ${formatRelativeTime(Date.now() - loan.dueAt)}`;
+    badge.textContent = `Overdue ${formatRelativeTime(Date.now() - loan.dueAt)}`;
   } else {
-    badge.textContent = formatRelativeTime(Date.now() - loan.checkedOutAt);
+    // A bare "1h" read as a due time; it is how long the item has been out.
+    badge.textContent = `Out ${formatRelativeTime(Date.now() - loan.checkedOutAt)}`;
   }
   row.appendChild(badge);
   const details = document.createElement("div");
@@ -9547,16 +9920,17 @@ async function _makeOpenLoanRow(loan) {
   const quickCheckin = document.createElement("button");
   quickCheckin.className = "btn btn-success";
   quickCheckin.style.cssText = "min-height:48px; padding:8px 16px; font-size:14px;";
-  quickCheckin.textContent = "\u2713";
+  // A lone tick on a full-width green bar said nothing about what it would do.
+  quickCheckin.textContent = "\u2713 Mark returned";
+  quickCheckin.setAttribute("aria-label", `Mark ${loan.itemNameSnapshot || "this item"} returned`);
   quickCheckin.onclick = async (e) => {
     e.stopPropagation();
     try {
-      await returnLoan(loan.id, {
-        returnedAt: Date.now(),
-        conditionIn: "good"
+      const closed = await returnLoan(loan.id, {
+        returnedAt: Date.now()
       });
-      showToast("Returned OK", {
-        type: "success"
+      showToast(closed.conditionIn === "damaged" ? "Returned \u2014 damaged, as the borrower reported" : "Returned OK", {
+        type: closed.conditionIn === "damaged" ? "error" : "success"
       });
       if (document.getElementById("screen-admin-detail").classList.contains("hidden") === false) {
         const activeTab = document.querySelector(".tab.active")?.dataset.tab;
@@ -9617,7 +9991,7 @@ async function _makeOverdueRow(loan) {
   // staff member had open. So the two buttons exist only when they have a URI,
   // and Copy covers everything else.
   const callHref = telUri(phone);
-  const textHref = smsUri(phone, `Hi, you have an overdue item at the Rotman front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
+  const textHref = smsUri(phone, `Hi, you have an overdue item at the front desk (${item?.name || loan.itemNameSnapshot || "?"}). Please return it. Thanks!`);
   if (callHref) {
     const callBtn = document.createElement("a");
     callBtn.className = "btn btn-secondary";
@@ -9678,12 +10052,11 @@ async function _makeOverdueRow(loan) {
   checkinBtn.textContent = "\u2713 Returned";
   checkinBtn.onclick = async () => {
     try {
-      await returnLoan(loan.id, {
-        returnedAt: Date.now(),
-        conditionIn: "good"
+      const closed = await returnLoan(loan.id, {
+        returnedAt: Date.now()
       });
-      showToast("Returned OK", {
-        type: "success"
+      showToast(closed.conditionIn === "damaged" ? "Returned \u2014 damaged, as the borrower reported" : "Returned OK", {
+        type: closed.conditionIn === "damaged" ? "error" : "success"
       });
       await renderOverdue();
       await renderAdminStats();
@@ -9743,7 +10116,17 @@ async function _editItem(item) {
     ]
   });
   if (choice === "save") {
-    item.name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    // A blank name used to be saved, leaving an item nobody can find or read.
+    // The dialog closes on Save, so the old name is kept and the desk is told.
+    const typedName = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    if (!typedName) {
+      showToast(`An item needs a name, so it is still called "${item.name}". Nothing was changed.`, {
+        type: "error",
+        duration: 5e3
+      });
+      return;
+    }
+    item.name = typedName;
     item.nameLower = item.name.toLowerCase();
     item.category = sentenceCase(form.querySelector('[data-f="category"]').value.trim()) || "Other";
     item.location = form.querySelector('[data-f="location"]').value.trim();
@@ -9854,7 +10237,16 @@ async function _editBorrower(borrower) {
     ]
   });
   if (choice === "save") {
-    borrower.name = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    // As for items: a blank name is refused, and the old one kept.
+    const typedName = sentenceCase(form.querySelector('[data-f="name"]').value.trim());
+    if (!typedName) {
+      showToast(`A person needs a name, so they are still "${borrower.name}". Nothing was changed.`, {
+        type: "error",
+        duration: 5e3
+      });
+      return;
+    }
+    borrower.name = typedName;
     borrower.nameLower = borrower.name.toLowerCase();
     const newPhone = normalizePhone(form.querySelector('[data-f="phone"]').value);
     let phoneChanged = false;
@@ -9894,21 +10286,64 @@ async function _mergeBorrower(borrower) {
     });
     return;
   }
-  const buttons = others.slice(0, 10).map((b) => ({
-    label: `${b.name} \xB7 ${formatPhone(b.phone)}`,
-    value: b,
-    variant: "secondary"
-  }));
-  buttons.push({
-    label: "Cancel",
-    value: null,
-    variant: "ghost"
-  });
-  const other = await showDialog({
+  // A searchable list of everyone, not the first ten. The ten were whoever the
+  // store returned first -- archived people included -- so on a real desk the
+  // duplicate you wanted was usually not on offer at all.
+  const live = others.filter((b) => !b.isArchived);
+  const SHOW_MAX = 30;
+  let chosen = null;
+  const body = document.createElement("div");
+  body.innerHTML = `
+    <p style="color:var(--text-secondary); margin-bottom:12px;">All loans from the person you pick move to
+    <strong>${escapeHtml3(borrower.name)}</strong>, and that person is then deleted.</p>
+    <input class="input" data-f="q" placeholder="Search by name or phone" autocomplete="off" />
+    <div data-role="list" style="display:flex; flex-direction:column; gap:8px; margin-top:12px; max-height:50vh; overflow-y:auto;"></div>
+  `;
+  const input = body.querySelector('[data-f="q"]');
+  const list = body.querySelector('[data-role="list"]');
+  const note = (text) => {
+    const p = document.createElement("p");
+    p.className = "loan-meta";
+    p.style.textAlign = "center";
+    p.textContent = text;
+    list.appendChild(p);
+  };
+  const render = () => {
+    const q = input.value.toLowerCase().trim();
+    const qDigits = q.replace(/\D/g, "");
+    const hits = (q ? live.filter((b) => b.name.toLowerCase().includes(q) || qDigits.length >= 3 && b.phone.includes(qDigits)) : live)
+      .slice()
+      .sort((a, b) => (a.name || "").localeCompare(b.name || "", void 0, { numeric: true }));
+    list.innerHTML = "";
+    for (const b of hits.slice(0, SHOW_MAX)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-secondary";
+      btn.dataset.mergeWith = String(b.id);
+      btn.textContent = `${b.name} \xB7 ${formatPhone(b.phone)}`;
+      btn.onclick = () => {
+        chosen = b;
+        closeDialog();
+      };
+      list.appendChild(btn);
+    }
+    if (hits.length === 0) note(live.length ? "Nobody matches that." : "There is nobody else to merge with (archived people are not listed).");
+    else if (hits.length > SHOW_MAX) note(`Showing ${SHOW_MAX} of ${hits.length}. Type a name or number to narrow it down.`);
+  };
+  input.addEventListener("input", render);
+  render();
+  await showDialog({
     title: `Merge "${borrower.name}" with\u2026`,
-    body: '<p style="color:var(--text-secondary); margin-bottom:12px;">All loans from the chosen borrower will be moved to <strong>' + escapeHtml3(borrower.name) + "</strong>. The other borrower will be deleted.</p>",
-    buttons
+    body,
+    buttons: [
+      {
+        label: "Cancel",
+        value: null,
+        variant: "ghost"
+      }
+    ]
   });
+  const other = chosen;
   if (!other) return;
   const confirmChoice = await showDialog({
     title: "Confirm merge",
@@ -10163,10 +10598,15 @@ function _wireAdminChrome() {
   // timer used to be started once in showAdmin() and never extended, so a staff
   // member actively working was thrown back to the login screen mid-task after
   // five minutes. These are passive listeners, so they cost nothing.
+  //
+  // On the document, not the admin screen: the detail screen, the dialogs it
+  // opens and the on-screen keyboard are all outside #screen-admin, so typing a
+  // long note into "Edit borrower" never counted as activity and the lock fired
+  // mid-edit. touchAdminSession ignores anything not on an admin screen.
   const bump = () => touchAdminSession();
-  root.addEventListener("pointerdown", bump, { passive: true });
-  root.addEventListener("keydown", bump);
-  root.addEventListener("wheel", bump, { passive: true });
+  document.addEventListener("pointerdown", bump, { passive: true, capture: true });
+  document.addEventListener("keydown", bump, { capture: true });
+  document.addEventListener("wheel", bump, { passive: true, capture: true });
   const tabs = root.querySelectorAll(".tab");
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -10325,6 +10765,14 @@ window.__appReady = true;
 async function bootstrap() {
   try {
     await openDB();
+    // On the web build every record lives in this browser's storage, which a
+    // browser may clear on its own when the disk runs low unless the site has
+    // asked to keep it. Asking is silent where it is granted outright (an
+    // installed or frequently used site), and a no-op inside the Windows host.
+    if (navigator.storage && typeof navigator.storage.persist === "function") {
+      navigator.storage.persist().catch(() => {
+      });
+    }
     const settings = await getSettings();
     if (!settings.lastDedupAt || Date.now() - settings.lastDedupAt > 24 * 60 * 60 * 1e3) {
       runDailyDedup().then((result) => {
@@ -10405,11 +10853,12 @@ async function bootstrap() {
     });
     const splash = document.getElementById("screen-splash");
     if (splash) {
+      // A tap on the splash skips the wait -- to the kiosk, the same place the
+      // timer below goes. It used to go to the staff home screen, which shows
+      // names and phone numbers and has no PIN in front of it, and the splash is
+      // on screen after every F5, Ctrl+R or crash-reload at the public tablet.
       splash.addEventListener("click", () => {
-        if (getCurrentScreen() === "splash") {
-          goToScreen("home");
-          refreshHome();
-        }
+        if (getCurrentScreen() === "splash") goToScreen("welcome");
       });
     }
     document.addEventListener("visibilitychange", () => {

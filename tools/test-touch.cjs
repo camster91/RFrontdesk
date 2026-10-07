@@ -85,6 +85,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const cdp = await page.createCDPSession();
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
 
+    // These checks drive the app's own on-screen keyboard, which a browser only
+    // shows when this device has asked for it (the Windows app always does).
+    await page.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("frontdesk.keyboard", "on");
+      } catch (_) {}
+    });
     await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "networkidle2" });
 
     // See the header: without this the keyboard sits part-way off the bottom of
@@ -94,7 +101,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     });
 
     // ── bring up the keyboard over a plain input ──────────────────────────
-    await page.waitForSelector(".btn-kiosk-borrow", { timeout: 15000 });
+    // The button is in the page from the start, hidden behind the splash; wait
+    // for the welcome screen to be showing, or the click can land before it is.
+    await page.waitForSelector("#screen-welcome:not(.hidden) .btn-kiosk-borrow", { visible: true, timeout: 15000 });
     await page.click(".btn-kiosk-borrow");
     await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)", { timeout: 15000 });
     await page.click("#kiosk-phone");

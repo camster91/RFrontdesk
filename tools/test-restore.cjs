@@ -108,7 +108,7 @@ function fixture(pin) {
         id: 1,
         name: "Clicker",
         nameLower: "clicker",
-        category: "Av Equipment",
+        category: "Tv Equipment",
         location: "Desk",
         condition: "good",
         notes: "",
@@ -126,7 +126,7 @@ function fixture(pin) {
         id: 2,
         name: "Hdmi Dongle",
         nameLower: "hdmi dongle",
-        category: "Av Equipment",
+        category: "Tv Equipment",
         location: "Desk",
         condition: "good",
         notes: "",
@@ -383,12 +383,28 @@ function fixture(pin) {
     // Drive the real import input. A fresh file name each time: re-selecting the
     // same path would not fire `change` a second time.
     let importSeq = 0;
-    const importPayload = async (text, name) => {
+    // Import asks before replacing everything, as Restore does. `answer` is the
+    // button pressed in that question: "Replace everything" or "Cancel".
+    const importPayload = async (text, name, answer = /Replace everything/) => {
       const file = path.join(tmp, name || `import-${importSeq++}.json`);
       fs.writeFileSync(file, text);
       await clearToasts();
       const input = await page.$('input[data-action="import-file"]');
       await input.uploadFile(file);
+      // A real backup brings up the question; a file that is not one goes
+      // straight to the refusal, since nothing would be replaced.
+      await page.waitForFunction(
+        () => document.querySelector("#dialog:not(.hidden) .dialog-actions .btn") || /Import/i.test((document.querySelector("#toast .toast") || {}).textContent || ""),
+        { timeout: 10000 }
+      ).catch(() => null);
+      await page.evaluate((src) => {
+        const b = Array.from(document.querySelectorAll("#dialog:not(.hidden) .dialog-actions .btn")).find((x) => new RegExp(src).test(x.textContent));
+        if (b) b.click();
+      }, answer.source);
+      if (/Cancel/.test(answer.source)) {
+        await sleep(400);
+        return null;
+      }
       // The handler is async; wait for it to report either way.
       const toast = await page
         .waitForFunction(
@@ -479,6 +495,13 @@ function fixture(pin) {
     await seed({ items: [], borrowers: [], loans: [], settings: [], requests: [] });
     const emptied = await dump();
     check("the desk can be emptied", emptied.items.length === 0 && emptied.loans.length === 0 && emptied.borrowers.length === 0, JSON.stringify({ i: emptied.items.length, l: emptied.loans.length, b: emptied.borrowers.length }));
+
+    // Import replaces everything, so it asks first -- and Cancel means nothing.
+    await importPayload(exportText, "restore-cancelled.json", /^\s*Cancel\s*$/);
+    const cancelled = await dump();
+    check("cancelling the import's question changes nothing",
+      cancelled.items.length === 0 && cancelled.loans.length === 0 && cancelled.borrowers.length === 0,
+      JSON.stringify({ i: cancelled.items.length, l: cancelled.loans.length, b: cancelled.borrowers.length }));
 
     const importToast = await importPayload(exportText, "restore.json");
     check("the restore reports success", /Import complete/i.test(importToast || ""), importToast);

