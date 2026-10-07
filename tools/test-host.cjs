@@ -9,15 +9,16 @@
 // tools\HostTests.cs together with host\FrontDesk.cs, using the same in-box
 // compiler the build uses and the same references, and runs the result.
 //
-// Four runs, because two of the checks are about a process's own command line:
+// Five runs, because two of the checks are about a process's own command line:
 //
 //   --mode=parse           the command-line parser and the URL decision table
 //   --mode=plain  --minimized         an ordinary install
 //   --mode=kiosk  --minimized --no-devtools   a locked-down kiosk install
 //   --mode=files           installing over an old copy, and the log, in a temp folder
+//   --mode=registry        write/read/remove in a unique non-logon registry key
 //
-// Nothing here starts a window, writes to the registry, or opens a socket. See
-// the header of HostTests.cs for why the Run key itself is not written by a test.
+// Nothing here starts a window, changes logon settings, or opens a socket. The
+// disposable registry key is outside Windows Run keys and is removed in finally.
 
 const { spawnSync } = require("child_process");
 const fs = require("fs");
@@ -89,7 +90,8 @@ const RUNS = [
   { mode: "parse", extra: [] },
   { mode: "plain", extra: ["--minimized"] },
   { mode: "kiosk", extra: ["--minimized", "--no-devtools"] },
-  { mode: "files", extra: [] }
+  { mode: "files", extra: [] },
+  { mode: "registry", extra: [] }
 ];
 
 let failures = 0;

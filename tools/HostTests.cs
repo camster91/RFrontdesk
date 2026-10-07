@@ -8,12 +8,9 @@
 // It is compiled *with* FrontDesk.cs rather than beside it, so there is no copy
 // of anything to drift: the checks below call the shipping source directly.
 //
-// And it starts no window, reads no registry and touches no network. The one
-// check that would prove the autostart value end to end -- write the Run key,
-// read it back -- would mean changing a real logon setting, and a test suite is
-// not the place to do that. So what is pinned here is the decision: given this
-// command line, and this URL, what does the host do. The Run key itself is a
-// `SetValue` of `Autostart.Command()`, and the command is checked here.
+// It starts no window and touches no network. Registry checks use a unique
+// Software\RFrontDesk-Tests\Autostart-* key, removed in finally. They never open
+// or write a Windows Run key, so running this suite creates no logon entry.
 //
 // C# 5, like the source it is compiled with: this compiler is the in-box one.
 
@@ -22,6 +19,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 
 namespace FrontDeskHost
@@ -62,6 +60,7 @@ namespace FrontDeskHost
             if (mode == "kiosk") Kiosk();
             else if (mode == "plain") Plain();
             else if (mode == "files") Files();
+            else if (mode == "registry") RegistryRoundTrip();
             else
             {
                 ParseAndUrls();
@@ -70,6 +69,49 @@ namespace FrontDeskHost
 
             Console.WriteLine("  " + _checks + " checks in mode '" + mode + "', " + _failures + " failed");
             return _failures == 0 ? 0 : 1;
+        }
+
+        private static void RegistryRoundTrip()
+        {
+            string path = @"Software\RFrontDesk-Tests\Autostart-" + Guid.NewGuid().ToString("N");
+            string exe = @"C:\Program Files\RFrontDesk\RFrontDesk.exe";
+            string kiosk = Autostart.CommandFor(exe, false);
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(path))
+                {
+                    key.SetValue("Unrelated", "keep");
+                    Autostart.WriteEntry(key, true, kiosk);
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(path, true))
+                {
+                    Check("startup command survives closing and reopening its key",
+                        (string)key.GetValue("RFrontDesk") == "\"" + exe + "\" --minimized --no-devtools", null);
+                    Check("startup command is stored as a string",
+                        key.GetValueKind("RFrontDesk") == RegistryValueKind.String, null);
+                    Autostart.WriteEntry(key, true, Autostart.CommandFor(exe, true));
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(path, true))
+                {
+                    Check("updating startup replaces the command",
+                        (string)key.GetValue("RFrontDesk") == "\"" + exe + "\" --minimized", null);
+                    Autostart.WriteEntry(key, false, null);
+                    Autostart.WriteEntry(key, false, null);
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(path, false))
+                {
+                    Check("disabling startup removes the value, including repeated disable",
+                        key.GetValue("RFrontDesk") == null, null);
+                    Check("disabling startup preserves unrelated values",
+                        (string)key.GetValue("Unrelated") == "keep", null);
+                }
+            }
+            finally
+            {
+                Registry.CurrentUser.DeleteSubKeyTree(path, false);
+            }
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(path, false))
+                Check("registry test removes its disposable key", key == null, null);
         }
 
         /// <summary>
