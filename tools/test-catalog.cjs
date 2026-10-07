@@ -14,13 +14,9 @@
 // Its own browser profile per run, so the 10,000-item seed cannot leak into
 // another suite, and no other suite's catalog can make a check here pass.
 //
-// What this suite deliberately does NOT test: the kiosk's three-items-per-session
-// cap. Every creation ends the session -- the app goes to the DONE screen, and the
-// only way off it is `kiosk-back-home`, which calls `resetKioskCreations()` -- so
-// the cap is a backstop no UI path can reach. The reachable guard rails (a name
-// that matches the catalog at any tier, and a name too short to be an item) are
-// tested below instead. A check that claimed to test the cap would pass for the
-// wrong reason, which is worse than not having it.
+// The catalog suite covers matching, creation and cache invalidation. The kiosk
+// suite drives Borrow something else and Finish to verify that each borrower
+// gets a fresh three-item creation allowance.
 
 const fs = require("fs");
 const path = require("path");
@@ -1539,6 +1535,77 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           })
       )) === 1
     );
+
+    // Wipe uses this suite's disposable browser profile, never desk data.
+    // Warm the catalog first so a forgotten invalidation cannot pass on a cold cache.
+    await kioskWalkToNeed("Before Wipe");
+    await fill("#kiosk-need", "Projector");
+    await page.waitForSelector("#kiosk-need-suggestions .kiosk-suggestion", { timeout: 10000 });
+    await backHome();
+    await login();
+    await clickEl('#screen-admin .tab[data-tab="settings"]');
+    await page.waitForSelector('#tab-settings [data-action="wipe"]', { timeout: 10000 });
+
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const q = indexedDB.open("frontdesk");
+      q.onerror = () => reject(q.error);
+      q.onsuccess = () => {
+        const db = q.result;
+        const tx = db.transaction(["requests", "settings"], "readwrite");
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+        tx.objectStore("requests").put({ id: 900001, status: "pending", borrowerId: 1, createdAt: Date.now(), name: "Wipe fixture" });
+        tx.objectStore("settings").put({ id: 55, pin: "legacy-fixture", endOfDayHour: 21 });
+        const req = tx.objectStore("settings").get(1);
+        req.onsuccess = () => tx.objectStore("settings").put({ ...req.result, endOfDayHour: 20, wipeFixture: true });
+      };
+    }));
+    const stores = ["items", "borrowers", "loans", "settings", "requests"];
+    const snapshot = async () => {
+      const data = await openDb(stores);
+      return stores.map((name) => JSON.stringify(data[name])).join("\n");
+    };
+    const beforeWipe = await snapshot();
+    const openWipe = async () => {
+      await clearToasts();
+      await clickEl('#tab-settings [data-action="wipe"]');
+      await page.waitForSelector('#dialog [data-f="confirm"]', { timeout: 10000 });
+    };
+    await openWipe();
+    check("wipe explains every store, settings reset, and backing up first",
+      /request.*reset settings.*Make a backup first.*Existing backup files are kept/s.test(await dialogText()));
+    await dialogButton(/^cancel$/i);
+    await page.waitForFunction(() => document.getElementById("dialog").classList.contains("hidden"));
+    check("cancelling wipe leaves every stored record unchanged", await snapshot() === beforeWipe);
+
+    for (const wrong of ["", "delete", "DELETE ", "DELET"]) {
+      await openWipe();
+      await fill('#dialog [data-f="confirm"]', wrong);
+      await dialogButton(/^wipe$/i);
+      await waitToast(/Confirmation text didn't match/i);
+      check(`wipe refuses ${JSON.stringify(wrong)} without changing any store`, await snapshot() === beforeWipe);
+      await page.waitForFunction(() => document.getElementById("dialog").classList.contains("hidden"));
+    }
+    await openWipe();
+    await fill('#dialog [data-f="confirm"]', "DELETE");
+    await dialogButton(/^wipe$/i);
+    const wiped = await waitToast(/All data wiped/i);
+    check("confirmed wipe reports success", !!wiped, await toastText());
+    const afterWipe = await openDb(stores);
+    check("confirmed wipe clears items, borrowers, loans and requests",
+      ["items", "borrowers", "loans", "requests"].every((name) => afterWipe[name].length === 0));
+    check("wipe removes legacy settings and recreates the complete defaults",
+      afterWipe.settings.length === 1 && JSON.stringify(afterWipe.settings[0]) === JSON.stringify({
+        id: 1, pin: "1234", defaultLoanHours: 8, endOfDayHour: 17, theme: "dark",
+        lastBackupAt: null, pinFailures: 0, pinLockedUntil: 0, schemaVersion: 1
+      }), JSON.stringify(afterWipe.settings));
+    await itemsTab();
+    check("admin catalog immediately stops showing the wiped rows", await itemRows() === 0);
+    await kioskWalkToNeed("After Wipe");
+    await fill("#kiosk-need", "Projector");
+    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
+    check("kiosk cache no longer offers a wiped item",
+      await page.$$eval("#kiosk-need-suggestions .kiosk-suggestion", (rows) => rows.length === 0));
 
     const lateErrors = errors.filter((e) => !/favicon/i.test(e));
     check("no console errors through the whole run", lateErrors.length === 0, lateErrors.join(" | "));
