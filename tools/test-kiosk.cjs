@@ -672,6 +672,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // Consume the creation allowance through Borrow something else, then Finish.
     await gotoWelcome();
+    const staffDraftBefore = await page.evaluate(() => sessionStorage.getItem("frontdesk.draft"));
     const startPerson = async (phone, name) => {
       await clickIn("screen-welcome", ".btn-kiosk-borrow");
       await page.waitForSelector("#screen-kiosk-borrow-phone:not(.hidden)");
@@ -713,8 +714,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       draft: sessionStorage.getItem("frontdesk.draft"),
       welcome: document.getElementById("screen-welcome").textContent
     }));
-    check("Finish clears the previous person's fields and leaves no checkout draft",
-      clean.fields.every((value) => value === "") && clean.draft === null, JSON.stringify(clean.fields));
+    check("Finish clears the previous person's fields without changing the staff checkout draft",
+      clean.fields.every((value) => value === "") && clean.draft === staffDraftBefore,
+      JSON.stringify({ fields: clean.fields, staffDraftUnchanged: clean.draft === staffDraftBefore }));
     check("the welcome screen carries no previous name or item",
       !/First Session Person|Magenta Windmill/.test(clean.welcome));
     await startPerson("4165550992", "Fresh Session Person");

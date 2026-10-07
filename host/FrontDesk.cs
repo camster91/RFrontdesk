@@ -871,7 +871,7 @@ namespace FrontDeskHost
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
             {
                 if (k == null) return false;
-                k.SetValue(ValueName, fix);
+                WriteEntry(k, true, fix);
             }
             Paths.Log("startup entry updated to: " + fix);
             return true;
@@ -898,7 +898,7 @@ namespace FrontDeskHost
         {
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKey))
             {
-                k.SetValue(ValueName, CommandFor(exePath, devTools));
+                WriteEntry(k, true, CommandFor(exePath, devTools));
             }
         }
 
@@ -926,17 +926,18 @@ namespace FrontDeskHost
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
             {
                 if (k == null) throw new InvalidOperationException("Cannot open the Run key for this user.");
-                if (enabled)
-                {
-                    // Not a fixed string: see StartupOptions. A kiosk install
-                    // started with --no-devtools must come back up that way.
-                    k.SetValue(ValueName, Command());
-                }
-                else
-                {
-                    if (k.GetValue(ValueName) != null) k.DeleteValue(ValueName, false);
-                }
+                WriteEntry(k, enabled, Command());
             }
+        }
+
+        // Accept an already-open key so the same write/remove operations can be
+        // verified under a disposable, non-logon test key. Production callers
+        // retain ownership of opening the real Run key after an operator action.
+        internal static void WriteEntry(RegistryKey key, bool enabled, string command)
+        {
+            if (key == null) throw new ArgumentNullException("key");
+            if (enabled) key.SetValue(ValueName, command, RegistryValueKind.String);
+            else key.DeleteValue(ValueName, false);
         }
     }
 
