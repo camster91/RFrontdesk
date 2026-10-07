@@ -20,6 +20,10 @@ The shared workflow needs one thing per repository: a federated credential that 
 
 - Scenario: **GitHub Actions deploying Azure resources**
 - Organization: `camster91`, Repository: `RFrontdesk`, Entity type: **Branch**, Branch: `main`
+- Immutable subject: `repo:camster91@33962910/RFrontdesk@1381855799:ref:refs/heads/main`
+- Issuer: `https://token.actions.githubusercontent.com`; audience: `api://AzureADTokenExchange`
+
+Verify the current subject with `gh api repos/camster91/RFrontdesk/actions/oidc/customization/sub` before changing federation. Existing signing access is already configured; no per-repository Azure variables need to be added.
 
 If the default branch is ever renamed, update that credential and the `refs/heads/main` check in the workflow.
 
@@ -27,7 +31,8 @@ For the Azure account itself (subscription, signing account, identity check, cer
 
 ## Checking a build
 
-- The shared workflow's **Verify signatures** step fails the run if the signature isn't valid.
+- The shared workflow's **Verify signatures** step requires a valid Authenticode signature, a timestamp, and the exact verified publisher **Cameron Ashley**. It fails before uploading the signed artifact if any check fails.
+- These rejection paths are tested in Rclicker's Windows CI with synthetic signatures. The policy is maintained in the shared signer; do not restore the obsolete inline signing steps from this repository's earlier draft.
 - `For IT.txt` inside the zip shows `Signed  : yes, by <publisher>` and the exe's SHA-256.
 - On Windows: right-click `RFrontDesk.exe` → **Properties** → **Digital Signatures**.
 
@@ -41,4 +46,4 @@ For the Azure account itself (subscription, signing account, identity check, cer
 
 - Only `RFrontDesk.exe` is signed. The WebView2 DLLs are already signed by Microsoft.
 - The certificate names whoever passed the Azure identity check (you, or Ashbi if you verified as an organization). It is publicly trusted, so it works on any Windows PC, not just domain machines.
-- A new certificate can still see a SmartScreen prompt for a short while until downloads build reputation. Endpoint agents usually trust a valid, timestamped signature much sooner.
+- A new certificate can still see a SmartScreen prompt for a short while until downloads build reputation. Acceptance by managed endpoint agents still needs a test on an IT-controlled PC.
