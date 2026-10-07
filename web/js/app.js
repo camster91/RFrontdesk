@@ -1045,7 +1045,13 @@ async function getSettings() {
       }
       return settings;
     }
-    settings = {
+    settings = defaultSettings();
+    await put("settings", settings);
+  }
+  return settings;
+}
+function defaultSettings() {
+  return {
       id: 1,
       pin: "1234",
       defaultLoanHours: 8,
@@ -1060,10 +1066,7 @@ async function getSettings() {
       pinFailures: 0,
       pinLockedUntil: 0,
       schemaVersion: 1
-    };
-    await put("settings", settings);
-  }
-  return settings;
+  };
 }
 async function getKioskDueAt() {
   const settings = await getSettings();
@@ -10518,7 +10521,7 @@ async function _promptAddBorrower(refresh) {
 async function _wipeData() {
   const form = document.createElement("div");
   form.innerHTML = `
-    <p style="color:var(--error); margin-bottom:12px;">This will delete <strong>every</strong> item, borrower, and loan record. This cannot be undone (unless you have a backup).</p>
+    <p style="color:var(--error); margin-bottom:12px;">This will delete <strong>every</strong> item, borrower, loan, and request, and reset settings. Make a backup first: this cannot be undone without one. Existing backup files are kept.</p>
     <p style="margin-bottom:8px;">Type <strong>DELETE</strong> to confirm:</p>
     <input class="input" placeholder="DELETE" data-f="confirm" />
   `;
@@ -10546,41 +10549,11 @@ async function _wipeData() {
     });
     return;
   }
-  // Read the settings *before* opening the wipe transaction below.
-  //
-  // `getSettings` is not a plain read: a database can hold its settings under a
-  // key other than 1, and it migrates such a record to id 1 (see there). Doing
-  // that inside the wipe would mean awaiting a second transaction while the first
-  // was still open, which is what this function used to do and why it silently
-  // half-worked -- two overlapping transactions run in creation order, so the
-  // read could not be issued until the wipe had committed, and by the time it
-  // returned the wipe's transaction was finished and its `put` threw
-  // `InvalidStateError`. The three clears had already committed, so items,
-  // borrowers and loans were destroyed while the PIN, theme and lockout state
-  // survived, no toast appeared and the admin screens went on listing rows that
-  // no longer existed.
-  const settings = await getSettings();
-  settings.pin = "1234";
-  settings.defaultLoanHours = 8;
-  settings.theme = "dark";
-  settings.lastBackupAt = null;
-  settings.pinFailures = 0;
-  settings.pinLockedUntil = 0;
-  // One transaction, and nothing awaited inside it but its own requests. Going
-  // through `runTx` rather than building the transaction by hand is what drops
-  // the item and loan caches on commit -- without that, the kiosk went on
-  // offering deleted items for up to `ITEMS_CACHE_TTL_MS`, and tapping one
-  // produced "Item N not found".
-  await runTx([
-    "items",
-    "borrowers",
-    "loans",
-    "settings"
-  ], "readwrite", async (s) => {
-    await s.req(s.get("items").clear());
-    await s.req(s.get("borrowers").clear());
-    await s.req(s.get("loans").clear());
-    await s.req(s.get("settings").put(settings));
+  // Clear every store atomically, including requests and legacy settings rows.
+  // runTx also invalidates the catalog and loan caches when it commits.
+  await runTx(STORES, "readwrite", async (s) => {
+    for (const name of STORES) await s.req(s.get(name).clear());
+    await s.req(s.get("settings").put(defaultSettings()));
   });
   _pinFailures = 0;
   _pinLockedUntil = 0;
