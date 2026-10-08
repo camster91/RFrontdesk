@@ -218,7 +218,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $msix = Get-Item $env:UPDATE_MSIX
-          Add-AppxPackage -Path $msix.FullName
+          $updated = $false
+          $updateError = $null
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            try {
+              Add-AppxPackage -Path $msix.FullName -ErrorAction Stop
+              $updated = $true
+            }
+            catch {
+              $updateError = $_
+              if ($_.Exception.Message -notmatch '0x80073D02|resources it modifies') { throw }
+              Start-Sleep -Milliseconds 1000
+            }
+          } while (-not $updated -and (Get-Date) -lt $deadline)
+          if (-not $updated) { throw $updateError }
           $pkg = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
           if (-not $pkg) { throw 'higher-version package is unavailable after update' }
           $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw)
