@@ -5624,7 +5624,7 @@ let _hostInfoCache = null;
 // Keep WEB_VERSION in step with Build.Version in host/FrontDesk.cs and
 // AssemblyVersion in host/AssemblyInfo.cs; tools/test-host-bridge.cjs fails if
 // they drift apart.
-const WEB_VERSION = "1.0.0";
+const WEB_VERSION = "1.1.0";
 async function renderBuildInfo() {
   const el = document.querySelector(".build-info");
   if (!el) return;
@@ -10918,4 +10918,3 @@ function escapeHtml4(s) {
 bootstrap();
 
 })();
-

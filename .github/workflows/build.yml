@@ -144,3 +144,63 @@ jobs:
           name: rfrontdesk
           path: release/*.zip
           if-no-files-found: error
+
+  # Publishing is an explicit release action, never a side effect of a push,
+  # pull request, or tag. It can run only when a person starts this workflow
+  # from main, after the signed package has completed successfully.
+  release:
+    needs: [build, sign, package]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      needs.build.result == 'success' &&
+      needs.sign.result == 'success' &&
+      needs.sign.outputs.signed == 'true' &&
+      needs.package.result == 'success'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rfrontdesk
+          path: release
+
+      - name: Verify the signed 1.1.0 package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.zip'
+          if (-not (Test-Path $zip)) { throw "The package job did not produce $zip." }
+
+          $check = Join-Path $env:RUNNER_TEMP 'rfrontdesk-release-check'
+          Remove-Item $check -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $check
+          $exe = Join-Path $check 'RFrontDesk\RFrontDesk.exe'
+          if (-not (Test-Path $exe)) { throw 'The release zip has no RFrontDesk.exe.' }
+
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion
+          if ($version -ne '1.1.0.0') { throw "The package executable is version '$version', not 1.1.0.0." }
+
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
+            throw "The package executable is not a valid timestamped signature: $($sig.Status)."
+          }
+          Write-Host "Verified $version signed by $($sig.SignerCertificate.Subject)."
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create v1.1.0 release/RFrontDesk-1.1.0.zip `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title 'RFrontDesk 1.1.0' `
+            --notes-file docs/release-notes-1.1.0.md
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE." }

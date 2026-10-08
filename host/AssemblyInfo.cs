@@ -23,6 +23,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCompany("Cameron Ashley")]
 [assembly: AssemblyCopyright("Copyright (c) Cameron Ashley")]
 [assembly: AssemblyConfiguration("Release")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 [assembly: ComVisible(false)]
