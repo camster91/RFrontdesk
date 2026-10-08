@@ -104,6 +104,7 @@ namespace FrontDeskHost
         public static string PackageFullName;
         public static string PackageFamilyName;
         public static string LegacyData;
+        public static bool MigrationFailed;
 
         private const string MigrationMarker = ".legacy-data-migrated-v1";
 
@@ -120,6 +121,7 @@ namespace FrontDeskHost
             PackageFullName = PackageIdentity.FullName();
             PackageFamilyName = PackageIdentity.FamilyName(PackageFullName);
             Packaged = !string.IsNullOrEmpty(PackageFamilyName);
+            MigrationFailed = false;
             if (Packaged)
             {
                 Portable = false;
@@ -190,31 +192,136 @@ namespace FrontDeskHost
         internal static int MigrateLegacyData(string source, string target)
         {
             if (string.IsNullOrEmpty(source) || !Directory.Exists(source) || SamePath(source, target)) return 0;
+            MigrationFailed = false;
             SafeCreate(target);
             string marker = Path.Combine(target, MigrationMarker);
             if (File.Exists(marker)) return 0;
             int copied = 0;
-            bool browserInitialized = HasInitializedData(Path.Combine(target, "browser"));
-            bool complete = CopyWithoutOverwrite(source, target, ref copied, browserInitialized);
+            string targetBrowser = Path.Combine(target, "browser");
+            bool browserInitialized;
+            if (!TryHasInitializedData(targetBrowser, out browserInitialized))
+            {
+                MigrationFailed = true;
+                return 0;
+            }
+
+            bool complete = true;
+            string stagedBrowser = null;
+            int stagedBrowserFiles = 0;
+            // A browser profile is a database, not a bag of independent files.
+            // If the package has no profile yet, stage the complete legacy tree
+            // and promote it only after every file copied. A failed copy must
+            // leave no partial profile that the next launch could mistake for
+            // an initialized store.
+            if (!browserInitialized && Directory.Exists(Path.Combine(source, "browser")))
+            {
+                stagedBrowser = Path.Combine(target, ".legacy-browser-migration-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    Directory.CreateDirectory(stagedBrowser);
+                    if (!CopyWithoutOverwrite(Path.Combine(source, "browser"), stagedBrowser,
+                        ref stagedBrowserFiles, false)) complete = false;
+                }
+                catch (Exception ex)
+                {
+                    Log("legacy browser data could not be staged: " + ex.Message);
+                    complete = false;
+                }
+            }
+
+            // Copy settings/backups/logs directly, while excluding the browser
+            // directory handled above or deliberately preserved in place.
+            if (!CopyWithoutOverwrite(source, target, ref copied, true)) complete = false;
+            if (complete && stagedBrowser != null)
+            {
+                try
+                {
+                    if (Directory.Exists(targetBrowser))
+                    {
+                        bool nowInitialized;
+                        if (!TryHasInitializedData(targetBrowser, out nowInitialized))
+                            throw new IOException("could not recheck package browser data");
+                        if (nowInitialized)
+                        {
+                            // A concurrent app launch won the race. Keep its
+                            // initialized store and discard the staged legacy one.
+                            Directory.Delete(stagedBrowser, true);
+                            stagedBrowser = null;
+                        }
+                        else
+                        {
+                            // A selftest or another startup may have created
+                            // an empty placeholder. It contains no store to
+                            // preserve, so replace only that empty directory.
+                            Directory.Delete(targetBrowser, true);
+                            Directory.Move(stagedBrowser, targetBrowser);
+                            stagedBrowser = null;
+                            copied += stagedBrowserFiles;
+                        }
+                    }
+                    else
+                    {
+                        Directory.Move(stagedBrowser, targetBrowser);
+                        stagedBrowser = null;
+                        copied += stagedBrowserFiles;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("legacy browser data could not be promoted: " + ex.Message);
+                    complete = false;
+                }
+            }
             if (complete)
             {
                 try { File.WriteAllText(marker, "Legacy data was migrated without overwriting package data.\r\n"); }
                 catch { complete = false; }
             }
-            if (!complete) Paths.Log("legacy data migration is incomplete; it will retry next launch");
+            if (!complete)
+            {
+                MigrationFailed = true;
+                if (stagedBrowser != null)
+                {
+                    try { Directory.Delete(stagedBrowser, true); }
+                    catch (Exception ex) { Log("legacy browser staging cleanup failed: " + ex.Message); }
+                }
+                Paths.Log("legacy data migration is incomplete; original data was preserved and startup will retry");
+            }
             return copied;
         }
 
-        private static bool HasInitializedData(string directory)
+        private static bool TryHasInitializedData(string directory, out bool initialized)
         {
-            try { return Directory.Exists(directory) && Directory.GetFileSystemEntries(directory).Length > 0; }
-            catch { return false; }
+            initialized = false;
+            if (!Directory.Exists(directory)) return true;
+            try
+            {
+                initialized = Directory.GetFileSystemEntries(directory).Length > 0;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log("could not inspect package browser data: " + ex.Message);
+                return false;
+            }
         }
 
         private static bool CopyWithoutOverwrite(string source, string target, ref int copied, bool skipBrowser)
         {
             bool complete = true;
-            foreach (string file in Directory.GetFiles(source))
+            string[] files;
+            string[] directories;
+            try
+            {
+                files = Directory.GetFiles(source);
+                directories = Directory.GetDirectories(source);
+            }
+            catch (Exception ex)
+            {
+                Log("legacy data folder could not be read: " + source + " (" + ex.Message + ")");
+                return false;
+            }
+            foreach (string file in files)
             {
                 string destination = Path.Combine(target, Path.GetFileName(file));
                 try
@@ -231,7 +338,7 @@ namespace FrontDeskHost
                     complete = false;
                 }
             }
-            foreach (string directory in Directory.GetDirectories(source))
+            foreach (string directory in directories)
             {
                 if (skipBrowser && string.Equals(Path.GetFileName(directory), "browser", StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -2849,6 +2956,21 @@ namespace FrontDeskHost
             // always said "--minimized" and nothing else, so a --no-devtools
             // kiosk came back from a reboot with DevTools enabled.
             Paths.Resolve();
+            if (Paths.MigrationFailed)
+            {
+                const string message = "Front Desk could not finish moving its existing data.\r\n\r\n" +
+                    "The original data was left untouched. Close this message and try again; " +
+                    "the move will resume when the source files are available.";
+                if (startup.SelfTest)
+                {
+                    SelfTest.Run(false, message);
+                    return;
+                }
+                PrepareVisuals();
+                MessageBox.Show(message, "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Environment.ExitCode = 1;
+                return;
+            }
             Installer.CleanLeftovers();
             // The startup entry is no longer corrected silently here. Changing a
             // run-at-sign-in entry with nobody asking is what persistence looks

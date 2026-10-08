@@ -292,17 +292,23 @@ namespace FrontDeskHost
 
                 string retryLegacy = Path.Combine(migration, "retry-legacy");
                 string retryPackaged = Path.Combine(migration, "retry-packaged");
-                Directory.CreateDirectory(retryLegacy);
-                File.WriteAllText(Path.Combine(retryLegacy, "locked.json"), "retry me");
-                using (FileStream locked = new FileStream(Path.Combine(retryLegacy, "locked.json"),
+                string retryBrowser = Path.Combine(retryLegacy, "browser", "IndexedDB");
+                Directory.CreateDirectory(retryBrowser);
+                string lockedPath = Path.Combine(retryBrowser, "locked.json");
+                File.WriteAllText(lockedPath, "retry me");
+                using (FileStream locked = new FileStream(lockedPath,
                     FileMode.Open, FileAccess.Read, FileShare.None))
                 {
                     Check("failed migration does not claim completion",
                         Paths.MigrateLegacyData(retryLegacy, retryPackaged) == 0 &&
+                        !Directory.Exists(Path.Combine(retryPackaged, "browser")) &&
+                        Paths.MigrationFailed &&
                         !File.Exists(Path.Combine(retryPackaged, ".legacy-data-migrated-v1")), null);
                 }
                 Check("incomplete migration retries after the source is readable",
                     Paths.MigrateLegacyData(retryLegacy, retryPackaged) == 1 &&
+                    File.Exists(Path.Combine(retryPackaged, "browser", "IndexedDB", "locked.json")) &&
+                    !Paths.MigrationFailed &&
                     File.Exists(Path.Combine(retryPackaged, ".legacy-data-migrated-v1")), null);
             }
             finally
