@@ -150,9 +150,22 @@ namespace FrontDeskHost
             foreach (string candidate in candidates)
             {
                 if (string.IsNullOrEmpty(candidate) || SamePath(candidate, target)) continue;
-                if (Directory.Exists(candidate)) return candidate;
+                if (Directory.Exists(candidate) && HasLegacyData(candidate)) return candidate;
             }
             return null;
+        }
+
+        private static bool HasLegacyData(string directory)
+        {
+            try
+            {
+                if (Directory.Exists(Path.Combine(directory, "browser")) ||
+                    Directory.Exists(Path.Combine(directory, "backups"))) return true;
+                foreach (string file in Directory.GetFiles(directory, "*", SearchOption.TopDirectoryOnly))
+                    if (!string.Equals(Path.GetFileName(file), "README.txt", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            catch { }
+            return false;
         }
 
         private static bool SamePath(string a, string b)
