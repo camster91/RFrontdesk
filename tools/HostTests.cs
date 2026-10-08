@@ -273,6 +273,7 @@ namespace FrontDeskHost
                 Directory.CreateDirectory(Path.Combine(legacy, "backups"));
                 Directory.CreateDirectory(Path.Combine(packaged, "browser", "IndexedDB"));
                 File.WriteAllText(Path.Combine(legacy, "browser", "IndexedDB", "records"), "legacy records");
+                File.WriteAllText(Path.Combine(legacy, "browser", "IndexedDB", "legacy-only"), "must not mix stores");
                 File.WriteAllText(Path.Combine(legacy, "backups", "backup.json"), "legacy backup");
                 File.WriteAllText(Path.Combine(packaged, "browser", "IndexedDB", "records"), "new package records");
                 int copied = Paths.MigrateLegacyData(legacy, packaged);
@@ -280,12 +281,29 @@ namespace FrontDeskHost
                     File.Exists(Path.Combine(packaged, "backups", "backup.json")), null);
                 Check("legacy migration never overwrites package IndexedDB",
                     File.ReadAllText(Path.Combine(packaged, "browser", "IndexedDB", "records")) == "new package records", null);
+                Check("legacy migration does not mix into an initialized IndexedDB store",
+                    !File.Exists(Path.Combine(packaged, "browser", "IndexedDB", "legacy-only")), null);
                 Check("legacy migration records a retry-safe marker",
                     File.Exists(Path.Combine(packaged, ".legacy-data-migrated-v1")), null);
                 File.WriteAllText(Path.Combine(legacy, "backups", "new.json"), "new backup");
                 Check("completed migration does not unexpectedly recopy files",
                     Paths.MigrateLegacyData(legacy, packaged) == 0 &&
                     !File.Exists(Path.Combine(packaged, "backups", "new.json")), null);
+
+                string retryLegacy = Path.Combine(migration, "retry-legacy");
+                string retryPackaged = Path.Combine(migration, "retry-packaged");
+                Directory.CreateDirectory(retryLegacy);
+                File.WriteAllText(Path.Combine(retryLegacy, "locked.json"), "retry me");
+                using (FileStream locked = new FileStream(Path.Combine(retryLegacy, "locked.json"),
+                    FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    Check("failed migration does not claim completion",
+                        Paths.MigrateLegacyData(retryLegacy, retryPackaged) == 0 &&
+                        !File.Exists(Path.Combine(retryPackaged, ".legacy-data-migrated-v1")), null);
+                }
+                Check("incomplete migration retries after the source is readable",
+                    Paths.MigrateLegacyData(retryLegacy, retryPackaged) == 1 &&
+                    File.Exists(Path.Combine(retryPackaged, ".legacy-data-migrated-v1")), null);
             }
             finally
             {

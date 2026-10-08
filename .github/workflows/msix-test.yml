@@ -141,26 +141,85 @@ jobs:
           $report = Get-Content $reportPath -Raw | ConvertFrom-Json
           if (-not $report.frozen -or -not $report.packaged) { throw 'selftest did not report packaged mode' }
           if ($report.data_dir -notmatch [regex]::Escape($family)) { throw 'data path was not package-local' }
+          if (-not $report.checks.webview2 -or -not $report.checks.webview2.ok) { throw 'packaged selftest did not complete WebView2 navigation' }
           $bad = @($report.checks.PSObject.Properties | Where-Object { -not $_.Value.ok })
           if ($bad.Count) { throw "$($bad.Count) packaged selftest checks failed" }
           foreach ($f in 'browser\IndexedDB\legacy-marker', 'backups\legacy-backup.json', 'pin-settings.json') {
             if (-not (Test-Path (Join-Path $data $f))) { throw "migration did not copy $f" }
           }
           Set-Content (Join-Path $data 'update-marker') 'survives package update'
-          Write-Host "packaged selftest: $($report.checks.PSObject.Properties.Name.Count) checks passed"
+          Write-Host "packaged selftest: $($report.checks.PSObject.Properties.Name.Count) checks passed, including WebView2 navigation"
           Write-Host "package data: $data"
 
-      - name: Reinstall package and verify data survives update
+      - name: Build a higher-version update package
+        id: update_package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = $env:GITHUB_WORKSPACE
+          $updateRoot = Join-Path $env:RUNNER_TEMP 'rfrontdesk-update-source'
+          if (Test-Path $updateRoot) { Remove-Item $updateRoot -Recurse -Force }
+          New-Item -ItemType Directory -Force $updateRoot | Out-Null
+          Copy-Item (Join-Path $source '*') -Destination $updateRoot -Recurse -Force
+
+          $frontDesk = Join-Path $updateRoot 'host\FrontDesk.cs'
+          $frontDeskText = Get-Content $frontDesk -Raw
+          $frontDeskText = $frontDeskText.Replace('public const string Version = "1.1.0";', 'public const string Version = "1.1.1";')
+          if ($frontDeskText -notmatch 'public const string Version = "1\.1\.1";') { throw 'could not prepare higher host version' }
+          Set-Content $frontDesk -Value $frontDeskText -Encoding utf8
+
+          $assemblyInfo = Join-Path $updateRoot 'host\AssemblyInfo.cs'
+          $assemblyText = Get-Content $assemblyInfo -Raw
+          $assemblyText = $assemblyText -replace 'AssemblyVersion\("1\.1\.0\.0"\)', 'AssemblyVersion("1.1.1.0")'
+          $assemblyText = $assemblyText -replace 'AssemblyFileVersion\("1\.1\.0\.0"\)', 'AssemblyFileVersion("1.1.1.0")'
+          if ($assemblyText -notmatch 'AssemblyFileVersion\("1\.1\.1\.0"\)') { throw 'could not prepare higher file version' }
+          Set-Content $assemblyInfo -Value $assemblyText -Encoding utf8
+
+          $updateDist = Join-Path $updateRoot 'dist-update'
+          & (Join-Path $updateRoot 'host\build.ps1') -OutputDir $updateDist -NoSymbols
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found for update package' }
+          $updateExe = Join-Path $updateDist 'RFrontDesk.exe'
+          & $signtool.FullName sign /fd SHA256 /f $env:RFD_MSIX_PFX /p $env:RFD_MSIX_PFX_PASSWORD `
+            /tr http://timestamp.digicert.com /td SHA256 $updateExe
+          if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the higher-version executable' }
+          if ((Get-AuthenticodeSignature $updateExe).Status -ne 'Valid') { throw 'higher-version executable signature was not valid' }
+
+          $updateRelease = Join-Path $source 'release-update'
+          & (Join-Path $updateRoot 'tools\package-msix.ps1') -DistDir $updateDist -OutDir $updateRelease
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $updateMsix = Get-ChildItem $updateRelease -Filter 'RFrontDesk-*.msix' | Select-Object -First 1
+          if (-not $updateMsix) { throw 'higher-version MSIX was not produced' }
+          & $signtool.FullName sign /fd SHA256 /f $env:RFD_MSIX_PFX /p $env:RFD_MSIX_PFX_PASSWORD `
+            /tr http://timestamp.digicert.com /td SHA256 $updateMsix.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the higher-version MSIX' }
+          $manifest = [xml](Get-Content (Join-Path $updateRoot 'build\msix-staging\AppxManifest.xml') -Raw)
+          if ($manifest.Package.Identity.Version -ne '1.1.1.0') { throw "higher package identity version was $($manifest.Package.Identity.Version)" }
+          "UPDATE_MSIX=$($updateMsix.FullName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "prepared higher-version package: $($updateMsix.FullName)"
+
+      - name: Install higher-version package and verify data survives update
         shell: pwsh
         env:
           PACKAGE_FAMILY_NAME: ${{ steps.package.outputs.PACKAGE_FAMILY_NAME }}
+          UPDATE_MSIX: ${{ steps.update_package.outputs.UPDATE_MSIX }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $msix = Get-ChildItem release\RFrontDesk-*.msix | Select-Object -First 1
-          Add-AppxPackage -Path $msix.FullName -ForceUpdateFromAnyVersion
+          $msix = Get-Item $env:UPDATE_MSIX
+          Add-AppxPackage -Path $msix.FullName
+          $pkg = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
+          if (-not $pkg) { throw 'higher-version package is unavailable after update' }
+          $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw)
+          if ($manifest.Package.Identity.Version -ne '1.1.1.0') { throw "installed update version was $($manifest.Package.Identity.Version)" }
           $data = Join-Path $env:LOCALAPPDATA "Packages\$($env:PACKAGE_FAMILY_NAME)\LocalCache\Local\FrontDesk"
           if ((Get-Content (Join-Path $data 'update-marker') -Raw).Trim() -ne 'survives package update') {
             throw 'package update did not preserve package-local data'
+          }
+          foreach ($f in 'browser\IndexedDB\legacy-marker', 'backups\legacy-backup.json', 'pin-settings.json') {
+            if (-not (Test-Path (Join-Path $data $f))) { throw "package update removed $f" }
           }
           Write-Host 'package update preserved IndexedDB/backup/PIN migration data'
 
@@ -173,13 +232,12 @@ jobs:
           LEGACY_DATA: ${{ steps.package.outputs.LEGACY_DATA }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:PACKAGE_FULL_NAME) {
-            $installed = Get-AppxPackage -Name CameronAshley.RFrontDesk |
-              Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }
-            if ($installed) { Remove-AppxPackage -Package $env:PACKAGE_FULL_NAME -ErrorAction Stop }
+          $installed = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
+          if ($installed) {
+            Remove-AppxPackage -Package $installed.PackageFullName -ErrorAction Stop
             $deadline = (Get-Date).AddSeconds(120)
-            while ((Get-AppxPackage -Name CameronAshley.RFrontDesk | Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-            if (Get-AppxPackage -Name CameronAshley.RFrontDesk | Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }) { throw 'package remained installed after uninstall' }
+            while ((Get-AppxPackage -Name CameronAshley.RFrontDesk) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (Get-AppxPackage -Name CameronAshley.RFrontDesk) { throw 'package remained installed after uninstall' }
             $data = Join-Path $env:LOCALAPPDATA "Packages\$($env:PACKAGE_FAMILY_NAME)\LocalCache\Local\FrontDesk"
             if (Test-Path $data) { throw "uninstall left package-local data: $data" }
             if (-not (Test-Path (Join-Path $env:LEGACY_DATA 'browser\IndexedDB\legacy-marker'))) { throw 'uninstall removed legacy data that was outside the package' }

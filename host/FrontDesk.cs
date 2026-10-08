@@ -194,14 +194,26 @@ namespace FrontDeskHost
             string marker = Path.Combine(target, MigrationMarker);
             if (File.Exists(marker)) return 0;
             int copied = 0;
-            CopyWithoutOverwrite(source, target, ref copied);
-            try { File.WriteAllText(marker, "Legacy data was migrated without overwriting package data.\r\n"); }
-            catch { }
+            bool browserInitialized = HasInitializedData(Path.Combine(target, "browser"));
+            bool complete = CopyWithoutOverwrite(source, target, ref copied, browserInitialized);
+            if (complete)
+            {
+                try { File.WriteAllText(marker, "Legacy data was migrated without overwriting package data.\r\n"); }
+                catch { complete = false; }
+            }
+            if (!complete) Paths.Log("legacy data migration is incomplete; it will retry next launch");
             return copied;
         }
 
-        private static void CopyWithoutOverwrite(string source, string target, ref int copied)
+        private static bool HasInitializedData(string directory)
         {
+            try { return Directory.Exists(directory) && Directory.GetFileSystemEntries(directory).Length > 0; }
+            catch { return false; }
+        }
+
+        private static bool CopyWithoutOverwrite(string source, string target, ref int copied, bool skipBrowser)
+        {
+            bool complete = true;
             foreach (string file in Directory.GetFiles(source))
             {
                 string destination = Path.Combine(target, Path.GetFileName(file));
@@ -216,19 +228,24 @@ namespace FrontDeskHost
                 catch (Exception ex)
                 {
                     Log("legacy data file was not copied: " + file + " (" + ex.Message + ")");
+                    complete = false;
                 }
             }
             foreach (string directory in Directory.GetDirectories(source))
             {
+                if (skipBrowser && string.Equals(Path.GetFileName(directory), "browser", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 string destination = Path.Combine(target, Path.GetFileName(directory));
                 try { Directory.CreateDirectory(destination); }
                 catch (Exception ex)
                 {
                     Log("legacy data folder was not created: " + destination + " (" + ex.Message + ")");
+                    complete = false;
                     continue;
                 }
-                CopyWithoutOverwrite(directory, destination, ref copied);
+                if (!CopyWithoutOverwrite(directory, destination, ref copied, false)) complete = false;
             }
+            return complete;
         }
 
         /// <summary>
@@ -370,12 +387,12 @@ namespace FrontDeskHost
 
     /// <summary>
     /// A non-interactive check used only by the isolated Windows package job.
-    /// It exercises the same packaged process and writable data path as the
-    /// app, without opening WebView2 or touching any real desk record.
+    /// It exercises the same packaged process, writable data path and WebView2
+    /// profile as the app, without touching any real desk record.
     /// </summary>
     internal static class SelfTest
     {
-        public static void Run()
+        public static void Run(bool webViewReady, string webViewDetail)
         {
             Directory.CreateDirectory(Paths.Data);
             Directory.CreateDirectory(Paths.BrowserData);
@@ -401,9 +418,12 @@ namespace FrontDeskHost
                 "\"data_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.Data)) + "}," +
                 "\"browser_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.BrowserData)) + "}," +
                 "\"backups_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.Backups)) + "}," +
-                "\"writable\":{\"ok\":" + Json.Bool(writable) + "}}}";
+                "\"writable\":{\"ok\":" + Json.Bool(writable) + "}," +
+                "\"webview2\":{\"ok\":" + Json.Bool(webViewReady) +
+                    ",\"detail\":" + Json.Str(webViewDetail ?? "") + "}}}";
             File.WriteAllText(Path.Combine(Paths.Data, "selftest.json"), report, new UTF8Encoding(false));
             Console.WriteLine(report);
+            Environment.ExitCode = webViewReady ? 0 : 1;
         }
     }
 
@@ -1913,6 +1933,12 @@ namespace FrontDeskHost
             Controls.Add(_web);
 
             BuildTray();
+            if (_startup.SelfTest)
+            {
+                ShowInTaskbar = false;
+                WindowState = FormWindowState.Minimized;
+                _tray.Visible = false;
+            }
             ListenForQuit();
         }
 
@@ -1961,6 +1987,13 @@ namespace FrontDeskHost
             catch (Exception ex)
             {
                 Paths.Log("init failed: " + ex);
+                if (_startup.SelfTest)
+                {
+                    SelfTest.Run(false, ex.Message);
+                    _quitting = true;
+                    Application.Exit();
+                    return;
+                }
                 MessageBox.Show(
                     "Front Desk could not start.\r\n\r\n" + ex.Message +
                     "\r\n\r\nA log was written to:\r\n" + Paths.LogFile,
@@ -1975,8 +2008,15 @@ namespace FrontDeskHost
             {
                 RuntimeVersion = CoreWebView2Environment.GetAvailableBrowserVersionString();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                if (_startup.SelfTest)
+                {
+                    SelfTest.Run(false, "WebView2 runtime unavailable: " + ex.Message);
+                    _quitting = true;
+                    Application.Exit();
+                    return;
+                }
                 ShowRuntimeMissing();
                 Application.Exit();
                 return;
@@ -2040,6 +2080,12 @@ namespace FrontDeskHost
         {
             if (!e.IsSuccess)
                 Paths.Log("navigation failed: " + e.WebErrorStatus);
+            if (_startup.SelfTest)
+            {
+                SelfTest.Run(e.IsSuccess, e.IsSuccess ? RuntimeVersion : e.WebErrorStatus.ToString());
+                _quitting = true;
+                BeginInvoke((Action)delegate { Close(); });
+            }
         }
 
         /// <summary>
@@ -2735,13 +2781,6 @@ namespace FrontDeskHost
 
             bool packaged = !string.IsNullOrEmpty(PackageIdentity.FullName());
 
-            if (startup.SelfTest)
-            {
-                Paths.Resolve();
-                SelfTest.Run();
-                return;
-            }
-
             // Setup runs instead of the app, before the single-instance check:
             // it is often run while the app is open, to update it.
             if (startup.Install || startup.Uninstall)
@@ -2776,7 +2815,7 @@ namespace FrontDeskHost
             // This replaces the "Install Front Desk.cmd" script the zip used to
             // carry -- a script inside a downloaded zip is a classic phishing
             // shape, and mail filters and endpoint agents block it.
-            if (!packaged && Installer.ShouldOffer(AppDomain.CurrentDomain.BaseDirectory, Installer.DefaultInstallDir(),
+            if (!startup.SelfTest && !packaged && Installer.ShouldOffer(AppDomain.CurrentDomain.BaseDirectory, Installer.DefaultInstallDir(),
                     Installer.Exists, startup.Minimized))
             {
                 PrepareVisuals();
