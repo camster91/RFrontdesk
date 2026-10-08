@@ -56,6 +56,9 @@ jobs:
           $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
           $pfx = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.pfx'
           $cer = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.cer'
+          $msixDist = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-dist'
+          Copy-Item dist $msixDist -Recurse -Force
+          $msixExe = Join-Path $msixDist 'RFrontDesk.exe'
           Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $password | Out-Null
           Export-Certificate -Cert $cert -FilePath $cer | Out-Null
           Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
@@ -65,11 +68,12 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $signtool) { throw 'signtool.exe was not found' }
           & $signtool.FullName sign /fd SHA256 /f $pfx /p $passwordText `
-            /tr http://timestamp.digicert.com /td SHA256 dist\RFrontDesk.exe
+            /tr http://timestamp.digicert.com /td SHA256 $msixExe
           if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the executable' }
-          $readback = Get-AuthenticodeSignature dist\RFrontDesk.exe
+          $readback = Get-AuthenticodeSignature $msixExe
           if (-not $readback.SignerCertificate) { throw 'signed executable has no certificate' }
           Write-Host "Executable signature: $($readback.Status) / $($readback.SignerCertificate.Subject)"
+          "RFD_MSIX_DIST=$msixDist" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "RFD_MSIX_PFX=$pfx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "RFD_MSIX_PFX_PASSWORD=$passwordText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "RFD_MSIX_THUMB=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -77,7 +81,7 @@ jobs:
       - name: Pack MSIX from the valid signed executable
         shell: pwsh
         run: |
-          ./tools/package-msix.ps1 -OutDir release
+          ./tools/package-msix.ps1 -DistDir $env:RFD_MSIX_DIST -OutDir release
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Sign and install MSIX
