@@ -83,6 +83,10 @@ async function openDB() {
           keyPath: "id"
         });
       }
+      // Keep the requests store for schema compatibility. The current kiosk
+      // return flow records its request fields on the loan, and no UI writes
+      // this store, but desks upgraded through v3 may already have it. Dropping
+      // it would turn a cleanup into a migration over existing desk data.
       if (e.oldVersion < 3) {
         const requests = db.createObjectStore("requests", {
           keyPath: "id",
@@ -3266,8 +3270,8 @@ var init_keyboard = __esm({
         this._setInert(false);
         // Deferred so the slide-in transition actually runs. Guarded by a token
         // because hide() -- or a second show() -- can land before this frame
-        // does: both are only ever a task away (a [data-kbd-toggle] click, a
-        // focusout plus 150ms, the Done key), and a frame delayed past them by a
+        // does: both are only ever a task away (a focusout plus 150ms, the Done
+        // key), and a frame delayed past them by a
         // busy main thread is enough. A stale frame would then re-show a
         // keyboard hide() had already made inert -- on screen, sliding up over
         // the entry, and dead to every tap, because inert is what hide() set.
@@ -3350,7 +3354,6 @@ var init_keyboard = __esm({
         if (!this.bound) return;
         document.removeEventListener("focusin", this._onFocusIn);
         document.removeEventListener("focusout", this._onFocusOut);
-        document.removeEventListener("click", this._onDocClick);
         if (this._onContainerMouseDown) {
           this.container.removeEventListener("mousedown", this._onContainerMouseDown);
         }
@@ -3409,16 +3412,8 @@ var init_keyboard = __esm({
             this.hide();
           }, 150);
         };
-        this._onDocClick = (e) => {
-          const toggleEl = e.target instanceof Element ? e.target.closest("[data-kbd-toggle]") : null;
-          if (toggleEl) {
-            e.preventDefault();
-            this.hide();
-          }
-        };
         document.addEventListener("focusin", this._onFocusIn);
         document.addEventListener("focusout", this._onFocusOut);
-        document.addEventListener("click", this._onDocClick);
         // Keep DOM focus on the input while the keyboard is being tapped.
         //
         // Without this, tapping a key button focused the button, which fired
@@ -10918,4 +10913,3 @@ function escapeHtml4(s) {
 bootstrap();
 
 })();
-
