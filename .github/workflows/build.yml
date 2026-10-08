@@ -147,6 +147,125 @@ jobs:
           path: release/*.zip
           if-no-files-found: error
 
+  # MSIX is prepared only from the signed main artifact. The package test
+  # workflow exercises a disposable certificate on pull requests; this path
+  # uses the same Azure-signed identity as the primary ZIP distribution.
+  msix:
+    needs: [build, sign]
+    if: >-
+      needs.build.result == 'success' &&
+      needs.sign.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rfrontdesk-windows-signed
+          path: dist
+
+      - name: Package MSIX from signed executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\RFrontDesk.exe'
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
+            throw "signed executable readback failed: $($sig.Status)"
+          }
+          $publisher = $sig.SignerCertificate.GetNameInfo(
+            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          if ($publisher -cne 'Cameron Ashley') { throw "unexpected executable publisher: $publisher" }
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion
+          if ($version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "invalid executable version: $version" }
+          ./tools/package-msix.ps1 -DistDir dist -OutDir release-msix
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $msix = Get-ChildItem release-msix\RFrontDesk-*.msix | Select-Object -First 1
+          if (-not $msix) { throw 'MSIX packaging produced no package' }
+          $manifest = [xml](Get-Content (Join-Path $env:GITHUB_WORKSPACE 'build\msix-staging\AppxManifest.xml') -Raw)
+          if ($manifest.Package.Identity.Version -ne $version) {
+            throw "MSIX version $($manifest.Package.Identity.Version) does not match executable $version"
+          }
+          if ($manifest.Package.Identity.Publisher -ne $sig.SignerCertificate.Subject) {
+            throw 'MSIX manifest publisher does not match the signed executable'
+          }
+          Write-Host "Prepared MSIX $($msix.Name): version=$version publisher=$publisher"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rfrontdesk-msix
+          path: release-msix/*.msix
+          if-no-files-found: error
+
+  # Sign the package itself with the same Azure Artifact Signing profile. The
+  # reusable workflow checks Valid status, RFC3161 timestamp and exact publisher
+  # before uploading rfrontdesk-msix-signed.
+  sign_msix:
+    needs: msix
+    if: needs.msix.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@main
+    with:
+      artifact: rfrontdesk-msix
+      file-types: msix
+
+  verify_msix:
+    needs: sign_msix
+    if: needs.sign_msix.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rfrontdesk-msix-signed
+          path: signed-msix
+
+      - name: Verify signed MSIX readback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Get-ChildItem signed-msix\RFrontDesk-*.msix | Select-Object -First 1
+          if (-not $msix) { throw 'signed MSIX artifact is empty' }
+          $sig = Get-AuthenticodeSignature -LiteralPath $msix.FullName
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
+            throw "MSIX signature readback failed: $($sig.Status)"
+          }
+          $publisher = $sig.SignerCertificate.GetNameInfo(
+            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          if ($publisher -cne 'Cameron Ashley') { throw "unexpected MSIX publisher: $publisher" }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-readback'
+          Remove-Item $unpacked -Recurse -Force -ErrorAction SilentlyContinue
+          $makeAppx = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+          if (-not $makeAppx) {
+            $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $makeAppx = Get-ChildItem $sdk -Filter makeappx.exe -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\makeappx\.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          }
+          if (-not $makeAppx) { throw 'makeappx.exe was not found for MSIX readback' }
+          & $makeAppx.FullName unpack /p $msix.FullName /d $unpacked /o
+          if ($LASTEXITCODE -ne 0) { throw 'makeappx failed to unpack the signed MSIX for readback' }
+          $manifest = [xml](Get-Content (Join-Path $unpacked 'AppxManifest.xml') -Raw)
+          if ($manifest.Package.Identity.Name -ne 'CameronAshley.RFrontDesk') { throw 'MSIX identity name drifted' }
+          $exe = Join-Path $unpacked 'RFrontDesk.exe'
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion
+          if ($manifest.Package.Identity.Version -ne $version) {
+            throw "signed MSIX version $($manifest.Package.Identity.Version) does not match payload $version"
+          }
+          if ($manifest.Package.Identity.Publisher -ne $sig.SignerCertificate.Subject) {
+            throw 'signed MSIX manifest publisher drifted from its signature'
+          }
+          Write-Host "Verified signed MSIX: $($msix.Name), version=$version, publisher=$publisher, timestamped=yes"
+
   # Publishing is an explicit release action, never a side effect of a push,
   # pull request, or tag. It can run only when a person starts this workflow
   # from main, after the signed package has completed successfully.
