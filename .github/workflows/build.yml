@@ -2,7 +2,9 @@ name: Build
 
 # Builds, tests and packages RFrontDesk on a GitHub Windows machine, so
 # nobody needs a build computer, and signs it on main (docs/code-signing.md).
-# It deploys nothing: the zip is a download on the run page, under Artifacts.
+# Ordinary pushes and pull requests only build, test, sign on main, and upload
+# the zip as an artifact. A GitHub release is published only by the guarded,
+# manual workflow_dispatch job below; nothing is deployed to a desk.
 
 on:
   push:
@@ -190,7 +192,12 @@ jobs:
           if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
             throw "The package executable is not a valid timestamped signature: $($sig.Status)."
           }
-          Write-Host "Verified $version signed by $($sig.SignerCertificate.Subject)."
+          $publisher = $sig.SignerCertificate.GetNameInfo(
+            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          if ($publisher -cne 'Cameron Ashley') {
+            throw "The package executable is signed by '$publisher', not 'Cameron Ashley'."
+          }
+          Write-Host "Verified $version signed by $publisher."
 
       - name: Publish the GitHub release
         shell: pwsh
