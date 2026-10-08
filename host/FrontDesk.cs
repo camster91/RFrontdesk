@@ -28,7 +28,7 @@ namespace FrontDeskHost
 {
     internal static class Build
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
         public const int KeepBackups = 30;
         // A stable, per-user virtual host. Serving the app over a real https
         // origin is what lets IndexedDB work; file:// would give an opaque
