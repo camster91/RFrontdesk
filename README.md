@@ -6,16 +6,18 @@ Built to replace a paper sign-out sheet at an equipment desk.
 
 ## What it does and why
 
-The desk lends out cables, adapters, keys and other gear all day, often from a tablet that members of the public can see and touch. Front Desk gives staff a fast checkout and returns flow behind a PIN, and gives borrowers a kiosk that can only borrow and ask to return. It needs no admin rights: install it for one Windows user with a click, or just run the exe from the unzipped folder. Either way the records live in a `data` folder beside the app, so copying that folder moves the whole desk to another machine.
+The desk lends out cables, adapters, keys and other gear all day, often from a tablet that members of the public can see and touch. Front Desk gives staff a fast checkout and returns flow behind a PIN, and gives borrowers a kiosk that can only borrow and ask to return. It needs no admin rights: install it for one Windows user with a click, or just run the exe from the unzipped folder. For ZIP installations the records live in a `data` folder beside the app. MSIX installations use package-private storage; export a backup to move the records to another machine.
 
 ## Getting and installing it
 
 Download the latest [GitHub release](https://github.com/camster91/RFrontdesk/releases), which includes both install choices and `SHA256SUMS.txt`:
 
-1. **MSIX (recommended for managed Windows).** Open `RFrontDesk-1.1.0.msix` and let Windows App Installer add the package for your account. Windows creates the Start menu entry and owns package updates, startup and uninstall. The package uses a read-only install location and keeps its writable data in the package's private data area.
+1. **MSIX (managed staff workstation).** Open `RFrontDesk-1.1.0.msix` and let Windows App Installer add the package for your account. Windows creates the Start menu entry and owns package updates, startup and uninstall. The package uses a read-only install location and keeps its writable data in the package's private data area.
 2. **ZIP (portable or per-user install).** Extract `RFrontDesk-1.1.0.zip`, double-click **RFrontDesk.exe**, and choose **Install**. It installs for you only into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut and no admin rights. To keep it portable, choose **Run from this folder** instead. On a public tablet, tick **This is a public tablet: lock it down**.
 3. **Update.** Open a newer MSIX or install a newer ZIP the same way. The records, backups and PIN settings are kept within that distribution's supported data location.
-4. **Uninstall.** Before removing an MSIX, use **Settings → Windows app → Export Backup (JSON)** and keep the file somewhere protected. Windows removes the package's private data on uninstall. The ZIP installer keeps records by default; its uninstall option can delete them when you explicitly choose it.
+4. **Uninstall.** Before removing an MSIX, sign in to the staff panel and use **Settings → Export Backup (JSON)**, then keep the file somewhere protected. Windows removes the package's private data on uninstall. The ZIP installer keeps records by default; its uninstall option can delete them when you explicitly choose it.
+
+**Public-tablet deployment:** use the ZIP installer and select **This is a public tablet: lock it down**. A normal MSIX Start menu or package-startup launch uses staff mode with DevTools available. MSIX does not carry the ZIP installer’s kiosk flags across launches; installing the package alone does not provide a locked kiosk. Change the factory PIN before exposing either installation to borrowers.
 
 For the ZIP install, the **Start with Windows** toggle is available in the Windows app settings. For an MSIX install, startup is managed by the Windows package, so the app does not add a duplicate registry startup entry.
 

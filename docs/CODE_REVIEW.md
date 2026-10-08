@@ -2194,34 +2194,31 @@ database with one of the wrong shape and reloads onto it, so the recovery senten
 the desk reads is asserted against records that are really there. A unit test on
 `_restoreSalvage` would have passed with the counting bug still in place.
 
-### Open
+### Current issue reconciliation (2026-10-08)
 
-Each of these is an issue on this repository, so it can be assigned, discussed
-and closed where the work happens rather than in this file.
+The table previously listed already resolved findings as open. The historical
+phase narratives above remain evidence of the original review.
 
-| Issue | What is open | Kind |
-|---|---|---|
-| [#1](https://github.com/camster91/frontdesk/issues/1) | **H1's registry round trip is verified by reading, not by observation.** The startup entry is now built from the same parse the process used, and `tools/test-host.cjs` pins that decision — but nothing has written the `Run` key and read it back. Doing so changes a real logon setting on a real machine, and the attempt was refused by the sandbox classifier as `[Unauthorized Persistence]`, correctly: a test suite is not the place to create a logon entry, and an interrupted run could leave one behind. | testing |
-| [#2](https://github.com/camster91/frontdesk/issues/2) | **`_wipeData` has no check.** It is the one control that empties every store, behind a typed `DELETE`, and nothing drives it. | testing |
-| [#3](https://github.com/camster91/frontdesk/issues/3) | **The kiosk's DONE screen has no check that leaves it** — the control that resets the session, and so the only thing that makes the three-per-session limit mean anything. | testing |
-| [#4](https://github.com/camster91/frontdesk/issues/4) | **`sentenceCase` keeps touching typed names** (`McDonald` → `Mcdonald`). Matching no longer depends on it, so the remaining cost is how a name reads — a desk call, with a middle path worth considering. | decision |
-| [#5](https://github.com/camster91/frontdesk/issues/5) | **The README's "Known quirks" needs a read**: some of it now describes policy rather than the software, and the kiosk bullet changed meaning in Phase 12. | decision |
-| [#9](https://github.com/camster91/frontdesk/issues/9) | **The build is unsigned**, so an endpoint agent has only its own judgement to go on. The build already takes a certificate; getting one is a hand-off. See `docs/EDR_AND_SIGNING.md`. | known, not fixed |
+- #1/#2/#3: source/test fixes merged; disposable registry round-trip, wipe-data
+  and leaving the Done screen are covered. Real Windows sign-in/reboot remains
+  a separate acceptance check in #12.
+- #4: `sentenceCase` now preserves mixed-case names such as `McDonald`, `iPad`
+  and `HDMI`; issue closed. Existing user records were not rewritten.
+- #9/#17: code signing and publication complete. Signed MSIX, ZIP and checksums
+  are available in [v1.1.0](https://github.com/camster91/RFrontdesk/releases/tag/v1.1.0).
+- #5: desk policy review remains open. #18: managed-PC endpoint acceptance
+  remains open; a valid signature does not establish allowlisting.
+- [#26](https://github.com/camster91/RFrontdesk/issues/26), new package review: normal MSIX activation uses staff mode with DevTools
+  available and does not inherit a ZIP installation's kiosk flags. Public tablets
+  must use the ZIP installer's lockdown option until package kiosk activation
+  and startup retention are implemented and verified. README now states this
+  deployment boundary.
 
 ---
 
-## Known, not fixed
+## Name formatting policy
 
-Two things found while working, left alone deliberately rather than silently
-changed.
-
-- **Typed item and category names are sentence-cased.** `sentenceCase`
-  (`app.js:1837`) lowercases everything after the first letter, so "HDMI dongle"
-  is stored as "Hdmi Dongle" and "TV Equipment" as "Tv Equipment". This is
-  pre-existing behaviour and it is applied to the catalog, not to display strings,
-  so every screen and every report shows the mangled form. It is pinned by a check
-  in `tools/test-ui.cjs` so a change is visible. Fixing it means deciding whether
-  to leave existing names alone (mixed casing in one catalog) or rewrite them
-  (a migration over user data), which is a call for whoever owns the desk.
-- **Borrower names are sentence-cased too**, with the same effect on "McDonald"
-  and similar. Same reasoning.
+`sentenceCase` preserves mixed-case words and short acronyms, capitalizes
+lower-case words, and softens longer words on an all-capitals multi-word line.
+This is current source behavior, not the historical lowercasing bug. Existing
+records are not migrated or renamed by this documentation update.
