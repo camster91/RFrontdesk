@@ -21,7 +21,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $exePath = Join-Path $DistDir 'RFrontDesk.exe'
-$template = Join-Path $PSScriptRoot 'msix\AppxManifest.xml.in'
+$template = Join-Path $root 'packaging\msix\AppxManifest.xml.in'
 $stage = Join-Path $root 'build\msix-staging'
 $assets = Join-Path $stage 'Assets'
 

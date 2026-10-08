@@ -52,6 +52,7 @@ jobs:
             -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
             -CertStoreLocation Cert:\CurrentUser\My
           $passwordText = [guid]::NewGuid().ToString()
+          Write-Host "::add-mask::$passwordText"
           $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
           $pfx = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.pfx'
           $cer = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.cer'
@@ -181,4 +182,3 @@ jobs:
             Write-Host 'uninstall removed package-local data and retained legacy source data'
           }
           if ($env:LEGACY_DATA -and (Test-Path $env:LEGACY_DATA)) { Remove-Item $env:LEGACY_DATA -Recurse -Force }
-
