@@ -1,6 +1,6 @@
 # Code signing (Azure Artifact Signing)
 
-GitHub builds `RFrontDesk.exe` on every push (`.github/workflows/build.yml`) and, on `main`, signs it with **Azure Artifact Signing** (formerly "Trusted Signing"). The signed zip is attached to each run under **Actions → Build → Artifacts → rfrontdesk**.
+GitHub builds `RFrontDesk.exe` on every push (`.github/workflows/build.yml`) and, on `main`, signs it with **Azure Artifact Signing** (formerly "Trusted Signing"). The signed zip and signed MSIX are attached to each successful `main` run; the guarded manual release job publishes both files and their SHA-256 manifest to GitHub Releases.
 
 Signing goes through the shared workflow in the Rclicker repo (`camster91/Rclicker/.github/workflows/sign-windows.yml`), which every one of camster91's Windows apps uses. The Azure IDs live in that one file, so this repository stores no secrets and no Azure variables. GitHub signs in to Azure with a short-lived OIDC token.
 
@@ -11,6 +11,9 @@ This is the cloud alternative to option A in `EDR_AND_SIGNING.md` (a certificate
 1. **build** compiles into `dist\\` and uploads it unsigned as the artifact `rfrontdesk-windows`.
 2. **sign** (only on `main`) calls the shared workflow. It signs and verifies `RFrontDesk.exe` and uploads `rfrontdesk-windows-signed`.
 3. **package** runs `tools/package.ps1` on the signed folder, or on the unsigned one for other branches, and uploads the zip as `rfrontdesk`. It runs after signing so `For IT.txt` records the signed exe's hash.
+4. **msix** packages the same signed executable with `tools/package-msix.ps1`, **sign_msix** signs the package, and **verify_msix** checks the timestamp, identity, version and publisher before any release can use it.
+
+The `release` job is still manual and restricted to `main`. It requires every build, executable-signing, MSIX-signing and readback check to pass, then verifies both release files again before creating the `v1.1.0` GitHub release. A push or pull request never publishes a release.
 
 If signing fails on `main`, nothing is packaged, so an unsigned zip can never pass for a signed one.
 

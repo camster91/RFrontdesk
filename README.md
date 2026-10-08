@@ -10,20 +10,21 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 
 ## Getting and installing it
 
-1. **Download.** GitHub builds it: **Actions → Build →** the latest run on `main` **→ Artifacts → rfrontdesk**. On `main` the exe is signed (see [docs/code-signing.md](docs/code-signing.md)).
-2. **Install.** Extract the zip, double-click **RFrontDesk.exe**, choose **Install**. It installs for you only, into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut. No admin rights. On a public tablet, tick **This is a public tablet: lock it down**.
-3. **Update.** Install a newer zip the same way. The records are kept.
-4. **Uninstall.** Windows **Settings → Apps → RFrontDesk → Uninstall**. The records are kept unless you tick the box to delete them.
+Download the latest [GitHub release](https://github.com/camster91/RFrontdesk/releases), which includes both install choices and `SHA256SUMS.txt`:
+
+1. **MSIX (recommended for managed Windows).** Open `RFrontDesk-1.1.0.msix` and let Windows App Installer add the package for your account. Windows creates the Start menu entry and owns package updates, startup and uninstall. The package uses a read-only install location and keeps its writable data in the package's private data area.
+2. **ZIP (portable or per-user install).** Extract `RFrontDesk-1.1.0.zip`, double-click **RFrontDesk.exe**, and choose **Install**. It installs for you only into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut and no admin rights. To keep it portable, choose **Run from this folder** instead. On a public tablet, tick **This is a public tablet: lock it down**.
+3. **Update.** Open a newer MSIX or install a newer ZIP the same way. The records, backups and PIN settings are kept within that distribution's supported data location.
+4. **Uninstall.** Before removing an MSIX, use **Settings → Windows app → Export Backup (JSON)** and keep the file somewhere protected. Windows removes the package's private data on uninstall. The ZIP installer keeps records by default; its uninstall option can delete them when you explicitly choose it.
+
+For the ZIP install, the **Start with Windows** toggle is available in the Windows app settings. For an MSIX install, startup is managed by the Windows package, so the app does not add a duplicate registry startup entry.
 
 For IT: `RFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]` and `--uninstall --quiet [--delete-data]`. The zip's `For IT.txt` lists exactly what it writes where.
 
-The signed ZIP/EXE remains the primary distribution. An MSIX can also be built
-for managed Windows installation with `tools/package-msix.ps1` after a valid
-Authenticode-signed `dist\RFrontDesk.exe` exists. The package Publisher is
-derived from that certificate, and its stable identity uses the executable's
-four-part version. Sign the resulting `.msix` with the same release identity
-before installing it; the isolated Windows workflow exercises this path with a
-disposable certificate but does not publish it.
+The GitHub release publishes a signed ZIP/EXE and a signed MSIX from the same
+Windows build. The MSIX Publisher is derived from the release certificate, and
+its stable identity uses the executable's four-part version. The release also
+contains SHA-256 hashes for both files.
 
 The packaged app writes to `%LOCALAPPDATA%\Packages\<family>\LocalCache\Local\FrontDesk`,
 never beside the read-only package. On first launch it copies missing files from

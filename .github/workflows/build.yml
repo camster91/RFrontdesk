@@ -270,14 +270,18 @@ jobs:
   # pull request, or tag. It can run only when a person starts this workflow
   # from main, after the signed package has completed successfully.
   release:
-    needs: [build, sign, package]
+    needs: [build, sign, package, msix, sign_msix, verify_msix]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
       needs.build.result == 'success' &&
       needs.sign.result == 'success' &&
       needs.sign.outputs.signed == 'true' &&
-      needs.package.result == 'success'
+      needs.package.result == 'success' &&
+      needs.msix.result == 'success' &&
+      needs.sign_msix.result == 'success' &&
+      needs.sign_msix.outputs.signed == 'true' &&
+      needs.verify_msix.result == 'success'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -289,6 +293,11 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: rfrontdesk
+          path: release
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rfrontdesk-msix-signed
           path: release
 
       - name: Verify the signed 1.1.0 package
@@ -318,13 +327,64 @@ jobs:
           }
           Write-Host "Verified $version signed by $publisher."
 
+      - name: Verify the signed 1.1.0 MSIX and write checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.msix'
+          if (-not (Test-Path $msix)) { throw "The signed MSIX artifact was not downloaded to $msix." }
+
+          $sig = Get-AuthenticodeSignature $msix
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
+            throw "The MSIX is not a valid timestamped signature: $($sig.Status)."
+          }
+          $publisher = $sig.SignerCertificate.GetNameInfo(
+            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          if ($publisher -cne 'Cameron Ashley') {
+            throw "The MSIX is signed by '$publisher', not 'Cameron Ashley'."
+          }
+
+          $unpacked = Join-Path $env:RUNNER_TEMP 'rfrontdesk-release-msix-check'
+          Remove-Item $unpacked -Recurse -Force -ErrorAction SilentlyContinue
+          $makeAppx = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+          if (-not $makeAppx) {
+            $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $makeAppx = Get-ChildItem $sdk -Filter makeappx.exe -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\makeappx\.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          }
+          if (-not $makeAppx) { throw 'makeappx.exe was not found for release MSIX readback' }
+          & $makeAppx.FullName unpack /p $msix /d $unpacked /o
+          if ($LASTEXITCODE -ne 0) { throw 'makeappx failed to unpack the release MSIX' }
+          $manifest = [xml](Get-Content (Join-Path $unpacked 'AppxManifest.xml') -Raw)
+          if ($manifest.Package.Identity.Name -ne 'CameronAshley.RFrontDesk') { throw 'MSIX identity name drifted' }
+          if ($manifest.Package.Identity.Version -ne '1.1.0.0') { throw "MSIX version is $($manifest.Package.Identity.Version), not 1.1.0.0" }
+          if ($manifest.Package.Identity.Publisher -ne $sig.SignerCertificate.Subject) {
+            throw 'MSIX manifest publisher drifted from its signed package certificate'
+          }
+          Write-Host "Verified MSIX signed by $publisher, timestamped=yes, identity=$($manifest.Package.Identity.Name), version=$($manifest.Package.Identity.Version)."
+
+          $assets = @(
+            Get-Item (Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.zip')
+            Get-Item $msix
+          )
+          $lines = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($asset.Name)"
+          }
+          $lines | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'release\SHA256SUMS.txt') -Encoding ascii
+          Write-Host ($lines -join [Environment]::NewLine)
+
       - name: Publish the GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          gh release create v1.1.0 release/RFrontDesk-1.1.0.zip `
+          gh release create v1.1.0 `
+            release/RFrontDesk-1.1.0.zip `
+            release/RFrontDesk-1.1.0.msix `
+            release/SHA256SUMS.txt `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title 'RFrontDesk 1.1.0' `
