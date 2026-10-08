@@ -12,8 +12,8 @@ this document and have since drifted** — Phases 1–5, 10 and 11 all edited th
 file, so a reference can be tens of lines out. Search by the function or class
 name quoted beside it rather than jumping to the number.
 
-**Status at 2026-10-02: Phases 1–13 complete.** Every finding below is fixed and
-covered by `node tools/test-all.cjs` (**thirteen** suites, 780 checks, all green) —
+**Status at 2026-10-08: Phases 1–14 complete.** Every finding below is fixed and
+covered by the thirteen-suite test battery, all green —
 except the items listed under "Still open", which are the findings from the most
 recent passes that remain unfixed. Phase 13's are listed in its own section;
 the earlier ones are tracked as issues on this repository. The
@@ -2141,6 +2141,23 @@ data-layer ones confirmed to fail against the old code:
 - **Settings → Import asks first**, naming the file and how much is in it, as
   Restore always has. A file that is not a backup is refused without asking.
 
+### Phase 14 — closeout of issues 6–8 (2026-10-08)
+
+The three deferred cleanup findings are now resolved without changing the desk's
+stored data shape or the kiosk's interaction policy:
+
+- **Issue #6 — requests store:** the v3 store remains in the schema for desks
+  that already have it. A comment beside its migration records that current
+  return requests live on loans and that removing the store would require a
+  migration over existing data.
+- **Issue #7 — keyboard hook:** the unused `[data-kbd-toggle]` document-click
+  clause and its detach call are gone. The touch suite still measures the normal
+  blur and screen-navigation close paths, and confirms that no shipped element
+  carries the removed hook.
+- **Issue #8 — staff header targets:** `.btn-admin-link` is now at least 44px
+  tall at mouse sizes (and keeps the existing 64px touch minimum). The
+  responsive suite measures both live home-header controls at every viewport.
+
 ---
 
 ## Still open
@@ -2189,16 +2206,13 @@ and closed where the work happens rather than in this file.
 | [#3](https://github.com/camster91/frontdesk/issues/3) | **The kiosk's DONE screen has no check that leaves it** — the control that resets the session, and so the only thing that makes the three-per-session limit mean anything. | testing |
 | [#4](https://github.com/camster91/frontdesk/issues/4) | **`sentenceCase` keeps touching typed names** (`McDonald` → `Mcdonald`). Matching no longer depends on it, so the remaining cost is how a name reads — a desk call, with a middle path worth considering. | decision |
 | [#5](https://github.com/camster91/frontdesk/issues/5) | **The README's "Known quirks" needs a read**: some of it now describes policy rather than the software, and the kiosk bullet changed meaning in Phase 12. | decision |
-| [#6](https://github.com/camster91/frontdesk/issues/6) | **`requests` is a store with a schema and no readers** — kept deliberately, because dropping it is a schema change on desks that already hold data. | known, not fixed |
-| [#7](https://github.com/camster91/frontdesk/issues/7) | **`_onDocClick` looks for `[data-kbd-toggle]` and no element carries it** — a dead clause, kept for now rather than deleted unmeasured. | known, not fixed |
-| [#8](https://github.com/camster91/frontdesk/issues/8) | **The staff home header links are 34px tall at mouse sizes**, under the 44px the rest of the app holds to for anything meant to be tapped. On a counter machine that may be a touchscreen. | known, not fixed |
 | [#9](https://github.com/camster91/frontdesk/issues/9) | **The build is unsigned**, so an endpoint agent has only its own judgement to go on. The build already takes a certificate; getting one is a hand-off. See `docs/EDR_AND_SIGNING.md`. | known, not fixed |
 
 ---
 
 ## Known, not fixed
 
-Five things found while working, left alone deliberately rather than silently
+Two things found while working, left alone deliberately rather than silently
 changed.
 
 - **Typed item and category names are sentence-cased.** `sentenceCase`
@@ -2211,26 +2225,3 @@ changed.
   (a migration over user data), which is a call for whoever owns the desk.
 - **Borrower names are sentence-cased too**, with the same effect on "McDonald"
   and similar. Same reasoning.
-- **The `requests` object store is vestigial.** It has a schema (added in the v3
-  migration, with indexes), read and update accessors (`getRequests`,
-  `fulfillRequest`, `cancelRequest`), export and import support — and nothing in
-  the app ever creates a record in it. The kiosk's return request is not stored
-  there; it lives on the loan, as `returnRequestedAt` / `returnRequestedCondition`
-  / `returnRequestedNote`, which is what the staff Queue tab actually reads.
-  Removing the store means a database version bump and a migration over live data
-  for no user-visible change, so it is documented rather than deleted. Anything
-  built on top of it should not assume it has ever been populated.
-- **`_onDocClick` looks for `[data-kbd-toggle]`, and no element has it.** A dead
-  hook left from an earlier design — a tap-outside-to-dismiss affordance for the
-  keyboard. Harmless (the handler simply never matches), and left in place because
-  the keyboard now genuinely should *not* dismiss on an outside tap: the kiosk
-  fields and the admin search field both live in scrollable panels where a tap
-  between keys is usually a mis-aimed key. Worth deleting the next time that
-  handler is touched.
-- **The two header links on the staff home screen are 34px tall at mouse
-  widths** — the layout suite reports them as a note on a passing check. On touch
-  widths they are `--touch-min` (64px) via the `@media (pointer: coarse)` rule,
-  which is the case that matters on the hardware this runs on. 34px clears WCAG
-  2.2 AA's 24px target minimum with room to spare, and matches the rest of the
-  desktop UI, where a 44px-tall text link would look like a mistake. Left as is;
-  recorded so the suite's note is not mistaken for a defect someone should chase.
