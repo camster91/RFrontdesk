@@ -17,6 +17,22 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 
 For IT: `RFrontDesk.exe --install --quiet [--kiosk] [--autostart] [--no-desktop]` and `--uninstall --quiet [--delete-data]`. The zip's `For IT.txt` lists exactly what it writes where.
 
+The signed ZIP/EXE remains the primary distribution. An MSIX can also be built
+for managed Windows installation with `tools/package-msix.ps1` after a valid
+Authenticode-signed `dist\RFrontDesk.exe` exists. The package Publisher is
+derived from that certificate, and its stable identity uses the executable's
+four-part version. Sign the resulting `.msix` with the same release identity
+before installing it; the isolated Windows workflow exercises this path with a
+disposable certificate but does not publish it.
+
+The packaged app writes to `%LOCALAPPDATA%\Packages\<family>\LocalCache\Local\FrontDesk`,
+never beside the read-only package. On first launch it copies missing files from
+the old per-user install/fallback data folder without replacing existing
+IndexedDB/WebView2 data, backups, logs or PIN settings. Package updates retain
+that folder. Windows owns package startup and uninstall; the packaged host does
+not add a duplicate registry Run entry. Package-local data is removed by a
+normal Windows uninstall, so export a backup before removing the package.
+
 The installer is built into the one exe, on purpose: a separate self-extracting setup is the shape endpoint agents (SentinelOne, CrowdStrike) delete, and a second exe would be a second file to sign.
 
 ## Key features
@@ -49,6 +65,7 @@ To build by hand on Windows, with PowerShell 7:
 pwsh -File host/fetch-deps.ps1     # download the WebView2 assemblies (fresh clone)
 pwsh -File host/build.ps1          # build into dist/
 pwsh -File tools/package.ps1       # build the distributable zip in release/
+pwsh -File tools/package-msix.ps1  # MSIX from the valid signed exe
 ```
 
 `build.ps1` keeps `dist/data` across rebuilds so a desk's records are never wiped, and `package.ps1` refuses to build a zip that would include live borrower data. The app needs the Microsoft Edge WebView2 Runtime, which is present on almost every Windows 10/11 machine.
@@ -73,7 +90,8 @@ Runs every suite: host bridge, host flags, setup and crash recovery, toast stack
 ```
 web/      the app (index.html, js/app.js, styles.css)
 host/     the Windows wrapper (C#), build script and icon
-tools/    test suites, local dev server, icon generator, packaging script
+tools/    test suites, local dev server, icon generator, packaging scripts
+packaging/msix/  MSIX manifest template
 docs/     code review notes and code signing notes
 .github/  the GitHub build
 ```

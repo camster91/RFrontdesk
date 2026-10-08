@@ -9262,6 +9262,7 @@ async function _renderHostSettings(container) {
   }
   if (!document.contains(container)) return;
   const escape = escapeHtml3;
+  const packageManaged = !!info?.packaged;
   const rows = backups.slice(0, 6).map((b) => `
       <div class="backup-row">
         <div class="backup-row-main">
@@ -9283,7 +9284,7 @@ async function _renderHostSettings(container) {
         <div class="path-row-main">
           <div class="setting-label" style="margin:0;">Data folder</div>
           <div class="path-value">${escape(info?.dataDir || "unknown")}</div>
-          <div class="loan-meta">${info?.portable ? "Beside the app — copy this whole folder to move the desk." : "In your user profile — the app folder itself is not writable."}</div>
+          <div class="loan-meta">${packageManaged ? "Managed by the Windows package — the app keeps this writable copy across updates." : info?.portable ? "Beside the app — copy this whole folder to move the desk." : "In your user profile — the app folder itself is not writable."}</div>
         </div>
         <button class="btn btn-secondary" data-action="open-folder" data-which="data">Open</button>
       </div>
@@ -9299,13 +9300,15 @@ async function _renderHostSettings(container) {
         <button class="btn btn-primary" data-action="backup-now">Back up now</button>
         <button class="btn btn-secondary" data-action="open-folder" data-which="log">Open log file folder</button>
       </div>
+      ${packageManaged ? `
+      <div class="loan-meta">Startup is managed by the installed Windows package. Windows keeps one package startup task, so this copy does not create a duplicate registry entry.</div>` : `
       <label class="setting-toggle">
         <input type="checkbox" data-action="autostart"${info?.autostart ? " checked" : ""} />
         <span>Start Front Desk when Windows starts</span>
       </label>
       <div class="loan-meta">Starts minimised to the notification area, so the desk is ready before anyone arrives.${
         info?.autostart ? ` Windows will run it as: <span class="path-value" style="display:inline;">${escape(info?.autostartArgs || "no options")}</span>` : ""
-      }</div>
+      }</div>`}
       ${autostartStale ? `
       <div class="path-row" data-autostart-stale>
         <div class="path-row-main">

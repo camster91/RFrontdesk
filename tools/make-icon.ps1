@@ -47,7 +47,11 @@ param(
 
     # Where to write it. Defaults to host\frontdesk.ico, which is what
     # host\build.ps1 passes to csc with /win32icon.
-    [string] $OutFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'host\frontdesk.ico')
+    [string] $OutFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'host\frontdesk.ico'),
+
+    # Optional PNGs for the MSIX tile assets. The same drawing code produces
+    # both the exe icon and the package logos, so the two cannot drift.
+    [string] $PngDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -262,4 +266,21 @@ try {
 $file = Get-Item $OutFile
 Write-Host ""
 Write-Host ("  wrote {0}  ({1} entries, {2} KB)" -f $file.FullName, $images.Count, [Math]::Round($file.Length / 1KB, 1)) -ForegroundColor Green
+
+if ($PngDir) {
+    New-Item -ItemType Directory -Force $PngDir | Out-Null
+    foreach ($pngSize in 44, 50, 150) {
+        $png = New-TileBitmap $pngSize
+        try {
+            $pngPath = Join-Path $PngDir ("Square{0}x{0}Logo.png" -f $pngSize)
+            $png.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            Write-Host ("  wrote {0}x{0} PNG" -f $pngSize)
+            if ($pngSize -eq 50) {
+                Copy-Item $pngPath (Join-Path $PngDir 'StoreLogo.png') -Force
+            }
+        } finally {
+            $png.Dispose()
+        }
+    }
+}
 Write-Host ""
