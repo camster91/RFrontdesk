@@ -206,6 +206,8 @@ namespace FrontDeskHost
             Check("--kiosk locks, the same as --no-devtools", inst.Kiosk, null);
             StartupOptions un = StartupOptions.Parse(new string[] { "--uninstall", "--delete-data" });
             Check("--uninstall and --delete-data are recognised", un.Uninstall && un.DeleteData && !un.Kiosk, null);
+            StartupOptions self = StartupOptions.Parse(new string[] { "--selftest" });
+            Check("--selftest is recognised", self.SelfTest, null);
             Check("--no-desktop is not mistaken for a misspelt lock flag", !inst.Unknown.Contains("--no-desktop"), null);
 
             // The startup entry.
@@ -249,6 +251,47 @@ namespace FrontDeskHost
             Check("\"Run from this folder\" is remembered",
                 !Installer.ShouldOffer(unzipped, installed,
                     delegate(string f) { return f.EndsWith(Installer.RunHereMarker, StringComparison.Ordinal); }, false), null);
+
+            // A package has a different identity and a different writable
+            // root. The family is stable across package updates, while a
+            // malformed identity must not produce a plausible path.
+            Check("package family is derived from identity name and publisher id",
+                PackageIdentity.FamilyName("CameronAshley.RFrontDesk_1.1.0.0_x64__abc123") ==
+                    "CameronAshley.RFrontDesk_abc123", null);
+            Check("malformed package identity has no family",
+                PackageIdentity.FamilyName("not-a-package") == null, null);
+            Check("package data is under LocalCache\\Local", PackageIdentity.DataDirectory(
+                @"C:\Users\desk\AppData\Local", "FrontDesk_abc") ==
+                @"C:\Users\desk\AppData\Local\Packages\FrontDesk_abc\LocalCache\Local\FrontDesk", null);
+
+            string migration = Path.Combine(Path.GetTempPath(), "frontdesk-migration-" + Guid.NewGuid().ToString("N"));
+            string legacy = Path.Combine(migration, "legacy");
+            string packaged = Path.Combine(migration, "packaged");
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(legacy, "browser", "IndexedDB"));
+                Directory.CreateDirectory(Path.Combine(legacy, "backups"));
+                Directory.CreateDirectory(Path.Combine(packaged, "browser", "IndexedDB"));
+                File.WriteAllText(Path.Combine(legacy, "browser", "IndexedDB", "records"), "legacy records");
+                File.WriteAllText(Path.Combine(legacy, "backups", "backup.json"), "legacy backup");
+                File.WriteAllText(Path.Combine(packaged, "browser", "IndexedDB", "records"), "new package records");
+                int copied = Paths.MigrateLegacyData(legacy, packaged);
+                Check("legacy migration copies missing nested data", copied == 1 &&
+                    File.Exists(Path.Combine(packaged, "backups", "backup.json")), null);
+                Check("legacy migration never overwrites package IndexedDB",
+                    File.ReadAllText(Path.Combine(packaged, "browser", "IndexedDB", "records")) == "new package records", null);
+                Check("legacy migration records a retry-safe marker",
+                    File.Exists(Path.Combine(packaged, ".legacy-data-migrated-v1")), null);
+                File.WriteAllText(Path.Combine(legacy, "backups", "new.json"), "new backup");
+                Check("completed migration does not unexpectedly recopy files",
+                    Paths.MigrateLegacyData(legacy, packaged) == 0 &&
+                    !File.Exists(Path.Combine(packaged, "backups", "new.json")), null);
+            }
+            finally
+            {
+                try { if (Directory.Exists(migration)) Directory.Delete(migration, true); }
+                catch { }
+            }
 
             // The data folder.
             bool portable;

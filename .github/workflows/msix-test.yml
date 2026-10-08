@@ -1,0 +1,184 @@
+name: MSIX package test
+
+# This workflow is deliberately isolated from release publication. It builds
+# and signs only on a disposable Windows runner, installs the package for that
+# runner's user, exercises migration/update/selftest, and removes it again.
+on:
+  pull_request:
+    paths:
+      - "host/**"
+      - "tools/**"
+      - "packaging/**"
+      - "web/js/app.js"
+      - ".github/workflows/msix-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install test tools
+        run: npm ci --ignore-scripts
+
+      - name: Fetch WebView2 assemblies
+        shell: pwsh
+        run: ./host/fetch-deps.ps1
+
+      - name: Build and run host checks
+        shell: pwsh
+        run: |
+          ./host/build.ps1 -NoSymbols
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tools/test-host.cjs
+
+      - name: Create isolated signing certificate and sign executable
+        id: cert
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $subject = 'CN=RFrontDesk isolated CI'
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject `
+            -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+            -CertStoreLocation Cert:\CurrentUser\My
+          $passwordText = [guid]::NewGuid().ToString()
+          $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+          $pfx = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.pfx'
+          $cer = Join-Path $env:RUNNER_TEMP 'rfrontdesk-msix-test.cer'
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $password | Out-Null
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found' }
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $passwordText `
+            /tr http://timestamp.digicert.com /td SHA256 dist\RFrontDesk.exe
+          if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the executable' }
+          $readback = Get-AuthenticodeSignature dist\RFrontDesk.exe
+          if (-not $readback.SignerCertificate) { throw 'signed executable has no certificate' }
+          Write-Host "Executable signature: $($readback.Status) / $($readback.SignerCertificate.Subject)"
+          "RFD_MSIX_PFX=$pfx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "RFD_MSIX_PFX_PASSWORD=$passwordText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "RFD_MSIX_THUMB=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Pack MSIX from the valid signed executable
+        shell: pwsh
+        run: |
+          ./tools/package-msix.ps1 -OutDir release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Sign and install MSIX
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Get-ChildItem release\RFrontDesk-*.msix | Select-Object -First 1
+          if (-not $msix) { throw 'MSIX was not produced' }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found' }
+          & $signtool.FullName sign /fd SHA256 /f $env:RFD_MSIX_PFX `
+            /p $env:RFD_MSIX_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $msix.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the MSIX' }
+          $readback = Get-AuthenticodeSignature $msix.FullName
+          if (-not $readback.SignerCertificate) { throw 'MSIX readback has no certificate' }
+          Write-Host "MSIX signature: $($readback.Status) / $($readback.SignerCertificate.Subject)"
+
+          $legacy = Join-Path $env:LOCALAPPDATA 'Programs\RFrontDesk\data'
+          New-Item -ItemType Directory -Force (Join-Path $legacy 'browser\IndexedDB'), (Join-Path $legacy 'backups') | Out-Null
+          Set-Content (Join-Path $legacy 'browser\IndexedDB\legacy-marker') 'legacy IndexedDB'
+          Set-Content (Join-Path $legacy 'backups\legacy-backup.json') '{"items":[]}'
+          Set-Content (Join-Path $legacy 'pin-settings.json') 'legacy PIN settings'
+          "LEGACY_DATA=$legacy" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          Add-AppxPackage -Path $msix.FullName
+          $pkg = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
+          if (-not $pkg) { throw 'Add-AppxPackage installed no RFrontDesk package' }
+          $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw)
+          $identity = $manifest.Package.Identity
+          if ($identity.Version -ne '1.1.0.0') { throw "identity version was $($identity.Version)" }
+          if ($identity.Publisher -ne $readback.SignerCertificate.Subject) { throw 'manifest publisher drifted from signed executable' }
+          "PACKAGE_FULL_NAME=$($pkg.PackageFullName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "PACKAGE_FAMILY_NAME=$($pkg.PackageFamilyName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Run packaged selftest and verify migration
+        shell: pwsh
+        env:
+          PACKAGE_FAMILY_NAME: ${{ steps.package.outputs.PACKAGE_FAMILY_NAME }}
+          LEGACY_DATA: ${{ steps.package.outputs.LEGACY_DATA }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $family = $env:PACKAGE_FAMILY_NAME
+          $pkg = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
+          if (-not $pkg) { throw 'installed package is unavailable' }
+          $command = Join-Path $pkg.InstallLocation 'RFrontDesk.exe'
+          Invoke-CommandInDesktopPackage -PackageFamilyName $family -appid App `
+            -Command $command -Args '--selftest' -PreventBreakaway
+          $data = Join-Path $env:LOCALAPPDATA "Packages\$family\LocalCache\Local\FrontDesk"
+          $reportPath = Join-Path $data 'selftest.json'
+          $deadline = (Get-Date).AddSeconds(120)
+          while (-not (Test-Path $reportPath) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $reportPath)) { throw "packaged selftest wrote no report at $reportPath" }
+          $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+          if (-not $report.frozen -or -not $report.packaged) { throw 'selftest did not report packaged mode' }
+          if ($report.data_dir -notmatch [regex]::Escape($family)) { throw 'data path was not package-local' }
+          $bad = @($report.checks.PSObject.Properties | Where-Object { -not $_.Value.ok })
+          if ($bad.Count) { throw "$($bad.Count) packaged selftest checks failed" }
+          foreach ($f in 'browser\IndexedDB\legacy-marker', 'backups\legacy-backup.json', 'pin-settings.json') {
+            if (-not (Test-Path (Join-Path $data $f))) { throw "migration did not copy $f" }
+          }
+          Set-Content (Join-Path $data 'update-marker') 'survives package update'
+          Write-Host "packaged selftest: $($report.checks.PSObject.Properties.Name.Count) checks passed"
+          Write-Host "package data: $data"
+
+      - name: Reinstall package and verify data survives update
+        shell: pwsh
+        env:
+          PACKAGE_FAMILY_NAME: ${{ steps.package.outputs.PACKAGE_FAMILY_NAME }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Get-ChildItem release\RFrontDesk-*.msix | Select-Object -First 1
+          Add-AppxPackage -Path $msix.FullName -ForceUpdateFromAnyVersion
+          $data = Join-Path $env:LOCALAPPDATA "Packages\$($env:PACKAGE_FAMILY_NAME)\LocalCache\Local\FrontDesk"
+          if ((Get-Content (Join-Path $data 'update-marker') -Raw).Trim() -ne 'survives package update') {
+            throw 'package update did not preserve package-local data'
+          }
+          Write-Host 'package update preserved IndexedDB/backup/PIN migration data'
+
+      - name: Remove package and verify uninstall data policy
+        if: always()
+        shell: pwsh
+        env:
+          PACKAGE_FULL_NAME: ${{ steps.package.outputs.PACKAGE_FULL_NAME }}
+          PACKAGE_FAMILY_NAME: ${{ steps.package.outputs.PACKAGE_FAMILY_NAME }}
+          LEGACY_DATA: ${{ steps.package.outputs.LEGACY_DATA }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PACKAGE_FULL_NAME) {
+            $installed = Get-AppxPackage -Name CameronAshley.RFrontDesk |
+              Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }
+            if ($installed) { Remove-AppxPackage -Package $env:PACKAGE_FULL_NAME -ErrorAction Stop }
+            $deadline = (Get-Date).AddSeconds(120)
+            while ((Get-AppxPackage -Name CameronAshley.RFrontDesk | Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (Get-AppxPackage -Name CameronAshley.RFrontDesk | Where-Object { $_.PackageFullName -eq $env:PACKAGE_FULL_NAME }) { throw 'package remained installed after uninstall' }
+            $data = Join-Path $env:LOCALAPPDATA "Packages\$($env:PACKAGE_FAMILY_NAME)\LocalCache\Local\FrontDesk"
+            if (Test-Path $data) { throw "uninstall left package-local data: $data" }
+            if (-not (Test-Path (Join-Path $env:LEGACY_DATA 'browser\IndexedDB\legacy-marker'))) { throw 'uninstall removed legacy data that was outside the package' }
+            Write-Host 'uninstall removed package-local data and retained legacy source data'
+          }
+          if ($env:LEGACY_DATA -and (Test-Path $env:LEGACY_DATA)) { Remove-Item $env:LEGACY_DATA -Recurse -Force }
+

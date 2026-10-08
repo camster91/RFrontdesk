@@ -37,6 +37,55 @@ namespace FrontDeskHost
     }
 
     /// <summary>
+    /// The small part of the Windows package identity API the desktop host
+    /// needs.  It is deliberately late-bound through kernel32 so the same exe
+    /// remains a normal unpackaged Win32 app when it is launched from a zip.
+    /// </summary>
+    internal static class PackageIdentity
+    {
+        private const int ErrorInsufficientBuffer = 122;
+        private const int AppModelErrorNoPackage = 15700;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetCurrentPackageFullName(ref uint packageFullNameLength,
+            StringBuilder packageFullName);
+
+        public static string FullName()
+        {
+            try
+            {
+                uint length = 0;
+                int first = GetCurrentPackageFullName(ref length, null);
+                if (first == AppModelErrorNoPackage || first != ErrorInsufficientBuffer || length == 0)
+                    return null;
+                StringBuilder value = new StringBuilder((int)length);
+                int second = GetCurrentPackageFullName(ref length, value);
+                return second == 0 ? value.ToString() : null;
+            }
+            catch
+            {
+                // Older Windows or a non-Windows test host simply has no
+                // package identity.  That is the ordinary zip path.
+                return null;
+            }
+        }
+
+        public static string FamilyName(string fullName)
+        {
+            if (string.IsNullOrEmpty(fullName)) return null;
+            int first = fullName.IndexOf('_');
+            int last = fullName.LastIndexOf('_');
+            if (first <= 0 || last <= first || last >= fullName.Length - 1) return null;
+            return fullName.Substring(0, first) + "_" + fullName.Substring(last + 1);
+        }
+
+        public static string DataDirectory(string localAppData, string familyName)
+        {
+            return Path.Combine(localAppData, "Packages", familyName, "LocalCache", "Local", "FrontDesk");
+        }
+    }
+
+    /// <summary>
     /// Where everything lives. The app folder is preferred so the whole thing
     /// stays portable, but a copy dropped somewhere unwritable (Program Files,
     /// a read-only share) falls back to LocalAppData rather than dying on
@@ -51,6 +100,12 @@ namespace FrontDeskHost
         public static string BrowserData;
         public static string LogFile;
         public static bool Portable;
+        public static bool Packaged;
+        public static string PackageFullName;
+        public static string PackageFamilyName;
+        public static string LegacyData;
+
+        private const string MigrationMarker = ".legacy-data-migrated-v1";
 
         /// <summary>The newest log is trimmed to this; one older file is kept beside it.</summary>
         public const long MaxLogBytes = 1024 * 1024;
@@ -62,13 +117,105 @@ namespace FrontDeskHost
             string fallback = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "FrontDesk", "data");
-            Data = ChooseData(Root, fallback, IsWritable, Directory.Exists, out Portable);
+            PackageFullName = PackageIdentity.FullName();
+            PackageFamilyName = PackageIdentity.FamilyName(PackageFullName);
+            Packaged = !string.IsNullOrEmpty(PackageFamilyName);
+            if (Packaged)
+            {
+                Portable = false;
+                Data = PackageIdentity.DataDirectory(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    PackageFamilyName);
+                LegacyData = FindLegacyData(Root, fallback, Data);
+            }
+            else
+            {
+                Data = ChooseData(Root, fallback, IsWritable, Directory.Exists, out Portable);
+                LegacyData = null;
+            }
             Backups = Path.Combine(Data, "backups");
             BrowserData = Path.Combine(Data, "browser");
             LogFile = Path.Combine(Data, "frontdesk.log");
             SafeCreate(Data);
+            if (Packaged) MigrateLegacyData(LegacyData, Data);
             SafeCreate(Backups);
             RollLog(LogFile, MaxLogBytes);
+        }
+
+        private static string FindLegacyData(string root, string fallback, string target)
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string installed = Path.Combine(local, "Programs", Installer.AppName, "data");
+            string[] candidates = { installed, fallback, Path.Combine(root, "data") };
+            foreach (string candidate in candidates)
+            {
+                if (string.IsNullOrEmpty(candidate) || SamePath(candidate, target)) continue;
+                if (Directory.Exists(candidate)) return candidate;
+            }
+            return null;
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            try
+            {
+                return string.Equals(Path.GetFullPath(a).TrimEnd('\\'),
+                    Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        /// <summary>
+        /// Copy legacy data into package storage without replacing anything
+        /// already created there. This includes the WebView2/IndexedDB tree,
+        /// backups, log and the settings that contain the desk PIN. A partial
+        /// copy can safely be retried because every file is checked first.
+        /// </summary>
+        internal static int MigrateLegacyData(string source, string target)
+        {
+            if (string.IsNullOrEmpty(source) || !Directory.Exists(source) || SamePath(source, target)) return 0;
+            SafeCreate(target);
+            string marker = Path.Combine(target, MigrationMarker);
+            if (File.Exists(marker)) return 0;
+            int copied = 0;
+            CopyWithoutOverwrite(source, target, ref copied);
+            try { File.WriteAllText(marker, "Legacy data was migrated without overwriting package data.\r\n"); }
+            catch { }
+            return copied;
+        }
+
+        private static void CopyWithoutOverwrite(string source, string target, ref int copied)
+        {
+            foreach (string file in Directory.GetFiles(source))
+            {
+                string destination = Path.Combine(target, Path.GetFileName(file));
+                try
+                {
+                    if (!File.Exists(destination))
+                    {
+                        File.Copy(file, destination, false);
+                        copied++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("legacy data file was not copied: " + file + " (" + ex.Message + ")");
+                }
+            }
+            foreach (string directory in Directory.GetDirectories(source))
+            {
+                string destination = Path.Combine(target, Path.GetFileName(directory));
+                try { Directory.CreateDirectory(destination); }
+                catch (Exception ex)
+                {
+                    Log("legacy data folder was not created: " + destination + " (" + ex.Message + ")");
+                    continue;
+                }
+                CopyWithoutOverwrite(directory, destination, ref copied);
+            }
         }
 
         /// <summary>
@@ -208,6 +355,45 @@ namespace FrontDeskHost
         }
     }
 
+    /// <summary>
+    /// A non-interactive check used only by the isolated Windows package job.
+    /// It exercises the same packaged process and writable data path as the
+    /// app, without opening WebView2 or touching any real desk record.
+    /// </summary>
+    internal static class SelfTest
+    {
+        public static void Run()
+        {
+            Directory.CreateDirectory(Paths.Data);
+            Directory.CreateDirectory(Paths.BrowserData);
+            Directory.CreateDirectory(Paths.Backups);
+            string marker = Path.Combine(Paths.Data, ".selftest-marker");
+            bool writable = false;
+            try
+            {
+                File.WriteAllText(marker, "isolated selftest");
+                writable = File.ReadAllText(marker) == "isolated selftest";
+                File.Delete(marker);
+            }
+            catch
+            {
+                try { if (File.Exists(marker)) File.Delete(marker); }
+                catch { }
+            }
+
+            string report = "{\"frozen\":true,\"packaged\":" + Json.Bool(Paths.Packaged) +
+                ",\"package_family\":" + Json.Str(Paths.PackageFamilyName ?? "") +
+                ",\"data_dir\":" + Json.Str(Paths.Data) +
+                ",\"checks\":{" +
+                "\"data_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.Data)) + "}," +
+                "\"browser_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.BrowserData)) + "}," +
+                "\"backups_dir\":{\"ok\":" + Json.Bool(Directory.Exists(Paths.Backups)) + "}," +
+                "\"writable\":{\"ok\":" + Json.Bool(writable) + "}}}";
+            File.WriteAllText(Path.Combine(Paths.Data, "selftest.json"), report, new UTF8Encoding(false));
+            Console.WriteLine(report);
+        }
+    }
+
     internal static class Json
     {
         public static string Escape(string s)
@@ -278,6 +464,8 @@ namespace FrontDeskHost
                 b.Append("\"version\":").Append(Json.Str(Build.Version)).Append(",");
                 b.Append("\"hosted\":true,");
                 b.Append("\"portable\":").Append(Json.Bool(Paths.Portable)).Append(",");
+                b.Append("\"packaged\":").Append(Json.Bool(Paths.Packaged)).Append(",");
+                b.Append("\"packageFamily\":").Append(Json.Str(Paths.PackageFamilyName ?? "")).Append(",");
                 b.Append("\"root\":").Append(Json.Str(Paths.Root)).Append(",");
                 b.Append("\"dataDir\":").Append(Json.Str(Paths.Data)).Append(",");
                 b.Append("\"backupDir\":").Append(Json.Str(Paths.Backups)).Append(",");
@@ -689,6 +877,7 @@ namespace FrontDeskHost
         public bool AutostartOnInstall;
         public bool NoDesktopShortcut;
         public bool DeleteData;
+        public bool SelfTest;
 
         /// <summary>
         /// How this process was started. Read from the real command line rather
@@ -741,6 +930,7 @@ namespace FrontDeskHost
                 else if (string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase)) o.AutostartOnInstall = true;
                 else if (string.Equals(a, "--no-desktop", StringComparison.OrdinalIgnoreCase)) o.NoDesktopShortcut = true;
                 else if (string.Equals(a, "--delete-data", StringComparison.OrdinalIgnoreCase)) o.DeleteData = true;
+                else if (string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase)) o.SelfTest = true;
                 else if (a != null && a.StartsWith("-", StringComparison.Ordinal))
                 {
                     o.Unknown.Add(a);
@@ -783,6 +973,7 @@ namespace FrontDeskHost
         /// </summary>
         public static string Args()
         {
+            if (Paths.Packaged) return "managed by the Windows package";
             return ArgsFor(StartupOptions.Current.DevTools);
         }
 
@@ -794,6 +985,7 @@ namespace FrontDeskHost
         /// <summary>The command Windows will run at logon, as it stands now.</summary>
         public static string Command()
         {
+            if (Paths.Packaged) return "managed by the Windows package startup task";
             return CommandFor(Application.ExecutablePath, StartupOptions.Current.DevTools);
         }
 
@@ -848,6 +1040,7 @@ namespace FrontDeskHost
         /// <summary>What this copy's startup entry should be changed to, or null if it is fine.</summary>
         public static string StaleFix()
         {
+            if (Paths.Packaged) return null;
             try
             {
                 return Repair(Stored(), Application.ExecutablePath, StartupOptions.Current.DevTools, File.Exists);
@@ -866,6 +1059,7 @@ namespace FrontDeskHost
         /// </summary>
         public static bool RepairNow()
         {
+            if (Paths.Packaged) return false;
             string fix = StaleFix();
             if (fix == null) return false;
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
@@ -896,6 +1090,7 @@ namespace FrontDeskHost
         /// <summary>Write the entry for a given exe. Used by the installer.</summary>
         internal static void SetFor(string exePath, bool devTools)
         {
+            if (Paths.Packaged) return;
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKey))
             {
                 WriteEntry(k, true, CommandFor(exePath, devTools));
@@ -904,6 +1099,7 @@ namespace FrontDeskHost
 
         public static bool IsEnabled()
         {
+            if (Paths.Packaged) return false;
             try
             {
                 using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, false))
@@ -923,6 +1119,8 @@ namespace FrontDeskHost
         /// </summary>
         public static void Set(bool enabled)
         {
+            if (Paths.Packaged)
+                throw new InvalidOperationException("Startup is managed by the installed Windows package.");
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
             {
                 if (k == null) throw new InvalidOperationException("Cannot open the Run key for this user.");
@@ -1026,6 +1224,8 @@ namespace FrontDeskHost
 
         public static int Install(StartupOptions o)
         {
+            if (Paths.Packaged)
+                return Problem(o, "This copy is managed by Windows. Install or update the MSIX package from Settings or your organisation's software portal.");
             string src = Full(AppDomain.CurrentDomain.BaseDirectory);
             string dst = DefaultInstallDir();
             string missing = MissingFiles(src);
@@ -1286,6 +1486,8 @@ namespace FrontDeskHost
 
         public static int Uninstall(StartupOptions o)
         {
+            if (Paths.Packaged)
+                return Problem(o, "This copy is managed by Windows. Remove the MSIX package from Settings > Apps; the package data policy is shown there.");
             string dir = InstalledDir();
             if (dir == null)
                 return Problem(o, "Front Desk is not installed for this Windows user, so there is nothing to remove.");
@@ -2518,11 +2720,27 @@ namespace FrontDeskHost
         {
             StartupOptions startup = StartupOptions.Current;
 
+            bool packaged = !string.IsNullOrEmpty(PackageIdentity.FullName());
+
+            if (startup.SelfTest)
+            {
+                Paths.Resolve();
+                SelfTest.Run();
+                return;
+            }
+
             // Setup runs instead of the app, before the single-instance check:
             // it is often run while the app is open, to update it.
             if (startup.Install || startup.Uninstall)
             {
                 PrepareVisuals();
+                if (packaged)
+                {
+                    MessageBox.Show("This copy is installed by Windows. Use Settings > Apps to manage the package.",
+                        "Front Desk", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Environment.ExitCode = 2;
+                    return;
+                }
                 Environment.ExitCode = startup.Install ? Installer.Install(startup) : Installer.Uninstall(startup);
                 return;
             }
@@ -2545,7 +2763,7 @@ namespace FrontDeskHost
             // This replaces the "Install Front Desk.cmd" script the zip used to
             // carry -- a script inside a downloaded zip is a classic phishing
             // shape, and mail filters and endpoint agents block it.
-            if (Installer.ShouldOffer(AppDomain.CurrentDomain.BaseDirectory, Installer.DefaultInstallDir(),
+            if (!packaged && Installer.ShouldOffer(AppDomain.CurrentDomain.BaseDirectory, Installer.DefaultInstallDir(),
                     Installer.Exists, startup.Minimized))
             {
                 PrepareVisuals();
