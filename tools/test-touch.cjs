@@ -94,6 +94,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     });
     await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "networkidle2" });
 
+    // Issue #7: the old document click handler watched for this selector, but
+    // the shipped markup never carried it. Keep that fact measured so a future
+    // control cannot silently depend on a listener that no longer exists.
+    const toggleHooks = await page.evaluate(() => document.querySelectorAll("[data-kbd-toggle]").length);
+    check("the page has no unused keyboard toggle hooks", toggleHooks === 0, `found ${toggleHooks}`);
+
     // See the header: without this the keyboard sits part-way off the bottom of
     // the screen and nothing below can be trusted.
     await page.addStyleTag({
@@ -259,7 +265,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         };
       });
 
-    // Start from hidden, so the show() below is a real transition.
+    // Start from hidden, so the show() below is a real transition. This blur
+    // path is the ordinary keyboard close behaviour retained after issue #7's
+    // dead document-click clause was removed.
     await page.evaluate(() => document.activeElement.blur());
     await sleep(400);
     check("blurring the field puts the keyboard away", !(await kbdState()).visible, JSON.stringify(await kbdState()));

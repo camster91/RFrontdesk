@@ -531,6 +531,18 @@ const HOME_COUNTS = `(() => {
             Number(c.out) > 0 && Number(c.overdue) > 0,
             `out=${c.out} overdue=${c.overdue} with 70 seeded loans`
           );
+          const headerControls = await page.evaluate(() =>
+            [...document.querySelectorAll("#screen-home .screen-header .btn-admin-link")].map((el) => ({
+              label: el.textContent.trim(),
+              width: Math.round(el.getBoundingClientRect().width),
+              height: Math.round(el.getBoundingClientRect().height)
+            }))
+          );
+          check(
+            `${bp.name}: staff home header controls are at least ${TAP_COMFORTABLE}px tall`,
+            headerControls.length === 2 && headerControls.every((control) => control.height >= TAP_COMFORTABLE),
+            JSON.stringify(headerControls)
+          );
         }
       }
 

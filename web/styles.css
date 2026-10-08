@@ -1279,6 +1279,7 @@ img[data-logo] { filter: var(--logo-filter); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--space-2) var(--space-3);
+  min-height: 44px;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 500;
