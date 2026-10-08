@@ -266,7 +266,7 @@ jobs:
           }
           Write-Host "Verified signed MSIX: $($msix.Name), version=$version, publisher=$publisher, timestamped=yes"
 
-    # Publishing is an explicit release action, never a side effect of a push,
+  # Publishing is an explicit release action, never a side effect of a push,
   # pull request, or tag. It can run only when a person starts this workflow
   # from main, after the signed package has completed successfully.
   release:
