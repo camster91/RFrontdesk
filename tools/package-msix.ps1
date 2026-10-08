@@ -60,7 +60,9 @@ Get-ChildItem $DistDir -Force |
     Copy-Item -Destination $stage -Recurse -Force
 
 & (Join-Path $PSScriptRoot 'make-icon.ps1') -OutFile (Join-Path $root 'host\frontdesk.ico') -PngDir $assets
-if ($LASTEXITCODE -ne 0) { Fail 'make-icon.ps1 failed while creating MSIX assets.' }
+foreach ($asset in 'Square44x44Logo.png', 'Square50x50Logo.png', 'Square150x150Logo.png', 'StoreLogo.png') {
+    if (-not (Test-Path (Join-Path $assets $asset))) { Fail "make-icon.ps1 did not create $asset." }
+}
 
 $escape = { param([string]$value) [System.Security.SecurityElement]::Escape($value) }
 $values = @{
