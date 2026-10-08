@@ -150,6 +150,15 @@ jobs:
           Set-Content (Join-Path $data 'update-marker') 'survives package update'
           Write-Host "packaged selftest: $($report.checks.PSObject.Properties.Name.Count) checks passed, including WebView2 navigation"
           Write-Host "package data: $data"
+          $deadline = (Get-Date).AddSeconds(60)
+          do {
+            $running = @(Get-Process -Name RFrontDesk -ErrorAction SilentlyContinue)
+            if ($running.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+          } while ((Get-Date) -lt $deadline)
+          if (@(Get-Process -Name RFrontDesk -ErrorAction SilentlyContinue).Count) {
+            throw 'packaged selftest process did not exit before update'
+          }
 
       - name: Build a higher-version update package
         id: update_package
