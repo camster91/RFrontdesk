@@ -632,42 +632,6 @@ body {
   background: var(--surface);
 }
 
-/* "Add "<name>"" under the item box. A real affordance, not a hint: the public
-   may add an item, and it is stamped for staff review.
-   Deliberately not classed .kiosk-suggestion, because that class means "a
-   catalog item you can tap" and several behaviours key on it -- an add row that
-   answered to it would make "the list offers the item" true when no item exists.
-   Sized and bordered like a suggestion so it reads as the same kind of object. */
-.kiosk-add-new {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  width: 100%;
-  margin-top: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  min-height: var(--touch-min);
-  border: 2px solid var(--magenta);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 18px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.kiosk-add-new:hover,
-.kiosk-add-new:focus {
-  background: var(--bg-hover);
-  outline: none;
-}
-
-.kiosk-add-new:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 .kiosk-suggestion-empty {
   padding: var(--space-4) var(--space-5);
   background: var(--surface);
