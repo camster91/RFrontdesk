@@ -323,7 +323,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     await fill("#kiosk-need", "Squeaky Rubber Duck");
     await clearToasts();
-    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 8000 });
+    await page.waitForSelector('[data-action="kiosk-confirm-pick"][data-adds="1"]', { timeout: 8000 });
     // Read straight from the store rather than through the app, so a cached
     // catalog cannot make this pass by agreeing with itself.
     const catalogCount2 = () =>
@@ -345,6 +345,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const borrowLabel = () => page.$eval('[data-action="kiosk-confirm-pick"]', (b) => b.textContent.trim());
     check("the main button says it will add and borrow the new name",
       /^Add "Squeaky Rubber Duck" and borrow it$/.test(await borrowLabel()), await borrowLabel());
+
+    check("new items have only one add-and-borrow action",
+      await page.$$eval('#screen-kiosk-borrow-need button', buttons =>
+        buttons.filter(b => b.offsetParent !== null && /^Add /.test(b.textContent.trim())).length === 1));
+    check("the desk review note is visible without another button",
+      /front desk will review it/i.test(await textIn("screen-kiosk-borrow-need", "#kiosk-need-suggestions")));
+
+    if (process.env.FRONTDESK_SCREENSHOT_DIR) {
+      fs.mkdirSync(process.env.FRONTDESK_SCREENSHOT_DIR, { recursive: true });
+      const originalViewport = page.viewport();
+      for (const width of [1280, 390]) {
+        await page.setViewport({ width, height: 900 });
+        await page.screenshot({ path: path.join(process.env.FRONTDESK_SCREENSHOT_DIR, `borrow-new-${width}.png`), fullPage: true });
+      }
+      await page.setViewport(originalViewport);
+    }
 
     // Enter is still never an add: a stray key must not write a catalog row.
     await page.focus("#kiosk-need");
@@ -686,7 +702,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const borrowThree = async (names) => {
       for (let i = 0; i < names.length; i++) {
         await fill("#kiosk-need", names[i]);
-        await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
+        await page.waitForSelector('[data-action="kiosk-confirm-pick"][data-adds="1"]', { timeout: 10000 });
         await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
         await page.waitForSelector("#screen-kiosk-borrow-done:not(.hidden)", { timeout: 10000 });
         check(`session can add and borrow ${names[i]}`,

@@ -6164,9 +6164,11 @@ function initKiosk() {
   const confirmBtn = document.querySelector('[data-action="kiosk-confirm-pick"]');
   if (confirmBtn) {
     confirmBtn.onclick = () => {
-      // The add offer on screen is the one this button now names: tap it.
-      const add = confirmBtn.dataset.adds && document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
-      if (add) add.click();
+      if (confirmBtn.disabled) return;
+      const query = document.getElementById("kiosk-need")?.value.trim();
+      // Only add the current, rendered offer. Enter continues to resolve existing items.
+      if (confirmBtn.dataset.adds && query === _kioskSuggestQuery)
+        _kioskCreateAndCheckout(kioskCreateCheck(query));
       else _handleCommit();
     };
   }
@@ -6456,11 +6458,8 @@ function kioskCreateCheck(typed) {
  * are computed by the caller, which is the only place that knows what else was
  * found.
  *
- * The add control is deliberately **not** classed `kiosk-suggestion`, because
- * that class means "a catalog item you can tap" and several behaviours key on it;
- * an add row that answered to the same selector would make "the list offers the
- * item" true when no item exists. It is a separate class, and it is only ever
- * appended after the real matches are rendered.
+ * New names use the single primary button below this list; the list shows
+ * only catalog choices and a non-interactive explanation of staff review.
  */
 function _renderSuggestions(matches, query, opts = {}) {
   const container = document.getElementById("kiosk-need-suggestions");
@@ -6480,7 +6479,7 @@ function _renderSuggestions(matches, query, opts = {}) {
       if (catalogEmpty) {
         const note = document.createElement("div");
         note.className = "kiosk-suggestion-empty";
-        note.textContent = "Nothing has been added to the list yet. Type what you need below and it can be added for you.";
+        note.textContent = "The list is empty. Type the item name above to add and borrow it.";
         container.appendChild(note);
       }
       return;
@@ -6488,24 +6487,10 @@ function _renderSuggestions(matches, query, opts = {}) {
     const note = document.createElement("div");
     note.className = "kiosk-suggestion-empty";
     note.textContent = create && create.ok
-      ? "Not on the list yet \u2014 you can add it below, or ask the front desk."
+      ? "Not on the list yet. Add and borrow it below; the front desk will review it."
       : "Not on the list \u2014 please ask the front desk";
     container.appendChild(note);
     if (create && create.ok) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "kiosk-add-new";
-      btn.dataset.action = "kiosk-add-new";
-      const label = document.createElement("span");
-      label.className = "kiosk-add-new-name";
-      label.textContent = `Add "${create.name}"`;
-      const hint = document.createElement("span");
-      hint.className = "kiosk-suggestion-category";
-      hint.textContent = "the desk will check it later";
-      btn.appendChild(label);
-      btn.appendChild(hint);
-      btn.onclick = () => _kioskCreateAndCheckout(create);
-      container.appendChild(btn);
       _setBorrowLabel(`Add "${create.name}" and borrow it`);
     } else if (create && create.reason) {
       const why = document.createElement("div");
@@ -6568,6 +6553,7 @@ function _onNeedInput() {
     const container = document.getElementById("kiosk-need-suggestions");
     if (container) container.innerHTML = "";
     _kioskSuggestQuery = null;
+    _setBorrowLabel(null);
   }
   _updateTypeaheadSoon();
 }
@@ -6684,7 +6670,7 @@ async function _kioskCreateAndCheckout(create) {
     });
     return;
   }
-  const btn = document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]');
+  const btn = document.querySelector('[data-action="kiosk-confirm-pick"]');
   if (btn) btn.disabled = true;
   await openDB();
   // Claim the slot before the write, so a double tap cannot create two rows.
@@ -6759,12 +6745,13 @@ async function _kioskCreateAndCheckout(create) {
     // Hand the slot back: nothing was written, so the borrower has not used one.
     _kioskCreateState.count -= 1;
     _kioskCreateState.keys.delete(check.key);
-    if (btn) btn.disabled = false;
     showToast(err && err.message ? err.message : "That could not be added. Please ask the front desk.", {
       type: "error",
       duration: 5e3
     });
     return null;
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 /**
