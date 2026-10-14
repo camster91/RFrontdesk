@@ -395,7 +395,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         })
       );
     const hasAddControl = () =>
-      page.evaluate(() => !!document.querySelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]'));
+      page.evaluate(() => !!document.querySelector('[data-action="kiosk-confirm-pick"][data-adds="1"]'));
     const suggestText = () => visibleText("#kiosk-need-suggestions");
 
     // The real back-home control, on whichever kiosk screen is showing, so the
@@ -660,8 +660,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check("the borrower is told why rather than left at a dead end", !!String(await toastText()).trim(), await toastText());
 
     await fill("#kiosk-need", "Squeaky Rubber Duck");
-    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
-    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-add-new"]');
+    await page.waitForSelector('[data-action="kiosk-confirm-pick"][data-adds="1"]', { timeout: 10000 });
+    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
     const duckDone = await kioskDoneText();
     // `sentenceCase` is applied to a name created at the kiosk, so this compares
     // the words rather than the exact casing.
@@ -749,8 +749,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await gotoWelcome();
     await kioskWalkToNeed("Merge Victim");
     await fill("#kiosk-need", "Room 115 Extra");
-    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
-    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-add-new"]');
+    await page.waitForSelector('[data-action="kiosk-confirm-pick"][data-adds="1"]', { timeout: 10000 });
+    await clickIn("screen-kiosk-borrow-need", '[data-action="kiosk-confirm-pick"]');
     await kioskDoneText();
     await backHome();
 
@@ -1603,7 +1603,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check("admin catalog immediately stops showing the wiped rows", await itemRows() === 0);
     await kioskWalkToNeed("After Wipe");
     await fill("#kiosk-need", "Projector");
-    await page.waitForSelector('#kiosk-need-suggestions [data-action="kiosk-add-new"]', { timeout: 10000 });
+    await page.waitForSelector('[data-action="kiosk-confirm-pick"][data-adds="1"]', { timeout: 10000 });
     check("kiosk cache no longer offers a wiped item",
       await page.$$eval("#kiosk-need-suggestions .kiosk-suggestion", (rows) => rows.length === 0));
 
