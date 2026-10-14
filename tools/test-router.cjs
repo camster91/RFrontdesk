@@ -69,7 +69,9 @@ function makeSandbox() {
     Object,
     Error,
     window: {},
-    // Not under test; the real one lives in the admin module.
+    // Session timer behavior is exercised in the browser by test-sessions.cjs.
+    touchAdminSession: () => {
+    },
     endAdminSession: () => {
     },
     // Nor this; the real one lives with the kiosk, and test-kiosk.cjs drives it.

@@ -21,9 +21,9 @@ const PORT = 8807;
 const PIN = "1234";
 
 const EXPOSE = [
-  "openDB", "get", "put", "runTx", "createItem", "upsertBorrower", "createLoan", "mergeItems",
+  "openDB", "get", "put", "del", "runTx", "createItem", "upsertBorrower", "createLoan", "mergeItems",
   "unmergeItem", "importAll", "exportAll", "listItems", "listBorrowers", "getOpenLoanForItem",
-  "requestLoanReturn",
+  "requestLoanReturn", "returnLoan", "undoLoansAtomic", "mergeBorrowers", "_allItemRecords",
   // The remaining-fixes round: lost writes, duplicate dismissals, All loans,
   // and the staff edit / search / merge screens.
   "updateSettings", "getSettings", "addItemAlias", "findUnreviewedDuplicates", "setDedupAcknowledged",
@@ -479,6 +479,92 @@ function startServer() {
     check("Merge with… lists more than ten people", mergeList.count > 10, JSON.stringify(mergeList));
     check("and leaves archived people out", !mergeList.archivedListed, JSON.stringify(mergeList));
     check("and searching finds the one you want", mergeList.searched.length === 1 && mergeList.searched[0] === mergeList.zedId, JSON.stringify(mergeList));
+
+    const mergedUndo = await page.evaluate(async () => {
+      const t = window.__t;
+      const keep = await t.createItem({ name: "Undo Keep Fixture" });
+      const victim = await t.createItem({ name: "Undo Victim Fixture" });
+      const keeper = await t.upsertBorrower({ name: "Undo Keeper", phone: "4165550701" });
+      const person = await t.upsertBorrower({ name: "Undo Other", phone: "4165550702" });
+      const earlier = await t.createLoan({ itemId: keep.id, borrowerId: keeper.id, checkedOutAt: 100, dueAt: 1000 });
+      await t.returnLoan(earlier.id, { conditionIn: "good" });
+      const snapshot = await t.createLoan({ itemId: victim.id, borrowerId: person.id, checkedOutAt: 200, dueAt: 1000 });
+      await t.mergeItems(keep.id, victim.id);
+      await t.mergeBorrowers(keeper.id, person.id);
+      const result = await t.undoLoansAtomic([snapshot]);
+      const item = await t.get("items", keep.id);
+      const borrower = await t.get("borrowers", keeper.id);
+      const original = await t.get("items", victim.id);
+      const repeated = await t.undoLoansAtomic([snapshot]);
+      return {
+        undone: result.undone, repeated: repeated.undone,
+        removed: !(await t.get("loans", snapshot.id)),
+        itemCount: item.timesCheckedOut, itemLast: item.lastCheckedOutAt,
+        borrowerCount: borrower.timesCheckedOut, borrowerLast: borrower.lastSeenAt,
+        originalCount: original.timesCheckedOut, originalLast: original.lastCheckedOutAt,
+        originalArchived: original.isArchived,
+        repeatedItemCount: (await t.get("items", keep.id)).timesCheckedOut
+      };
+    });
+    check("checkout Undo uses the current item owner after a merge", mergedUndo.undone === 1 && mergedUndo.removed && mergedUndo.itemCount === 1 && mergedUndo.itemLast === 100, JSON.stringify(mergedUndo));
+    check("checkout Undo uses the current borrower owner after a merge", mergedUndo.borrowerCount === 1 && mergedUndo.borrowerLast === 100, JSON.stringify(mergedUndo));
+    check("checkout Undo leaves the merged original untouched", mergedUndo.originalCount === 0 && mergedUndo.originalLast === null && mergedUndo.originalArchived, JSON.stringify(mergedUndo));
+    check("repeating checkout Undo cannot decrement twice", mergedUndo.repeated === 0 && mergedUndo.repeatedItemCount === 1, JSON.stringify(mergedUndo));
+
+    // A successful request is provisional until its transaction commits. Force
+    // a real IndexedDB abort immediately after success; the helper must reject
+    // rather than claim a save/delete that never reached persistent storage.
+    const committed = await page.evaluate(async () => {
+      const t = window.__t;
+      const id = 990001;
+      const originalPut = IDBObjectStore.prototype.put;
+      const originalDelete = IDBObjectStore.prototype.delete;
+      const forceAbort = (original) => function (...args) {
+        const req = original.apply(this, args);
+        req.addEventListener("success", () => this.transaction.abort(), { once: true });
+        return req;
+      };
+      let putRejected = false, deleteRejected = false;
+      const beforePut = await t._allItemRecords();
+      try {
+        IDBObjectStore.prototype.put = forceAbort(originalPut);
+        try { await t.put("items", { id, name: "Must not commit" }); }
+        catch (err) { putRejected = !!err; }
+      } finally { IDBObjectStore.prototype.put = originalPut; }
+      const absent = !(await t.get("items", id));
+      const putCacheKept = beforePut === await t._allItemRecords();
+      await t.put("items", { id, name: "Committed fixture", nameLower: "committed fixture" });
+      const beforeDelete = await t._allItemRecords();
+      try {
+        IDBObjectStore.prototype.delete = forceAbort(originalDelete);
+        try { await t.del("items", id); }
+        catch (err) { deleteRejected = !!err; }
+      } finally { IDBObjectStore.prototype.delete = originalDelete; }
+      const retained = !!(await t.get("items", id));
+      const deleteCacheKept = beforeDelete === await t._allItemRecords();
+      await t.del("items", id);
+      return { putRejected, absent, putCacheKept, deleteRejected, retained, deleteCacheKept, deleted: !(await t.get("items", id)) };
+    });
+    check("put rejects a transaction abort after request success", committed.putRejected && committed.absent, JSON.stringify(committed));
+    check("delete rejects a transaction abort and retains the record", committed.deleteRejected && committed.retained, JSON.stringify(committed));
+    check("aborted writes leave the committed read cache intact", committed.putCacheKept && committed.deleteCacheKept, JSON.stringify(committed));
+    check("a committed delete is visible before its promise resolves", committed.deleted, JSON.stringify(committed));
+
+    const ordered = await page.evaluate(async () => {
+      const t = window.__t;
+      await t.put("borrowers", { id: 990002, name: "Order Person 10", phone: "4165550100", timesCheckedOut: 1, lastSeenAt: 20 });
+      await t.put("borrowers", { id: 990003, name: "Order Person 2", phone: "4165550200", timesCheckedOut: 5, lastSeenAt: 10, isArchived: true });
+      await t.put("borrowers", { id: 990004, name: "Order Person 1", phone: "4165550300", timesCheckedOut: 5, lastSeenAt: 10 });
+      const rows = async (sort) => {
+        const div = document.createElement("div");
+        await t._renderPeopleList(div, "order person", sort);
+        return Array.from(div.querySelectorAll(".borrower-name")).map((el) => el.textContent.trim());
+      };
+      return { name: await rows("name"), active: await rows("timesCheckedOut"), recent: await rows("lastSeenAt") };
+    });
+    check("People preserves numeric name ordering and archived rows", /Person 1/.test(ordered.name[0]) && /Person 2/.test(ordered.name[1]) && /archived/.test(ordered.name[1]) && /Person 10/.test(ordered.name[2]), JSON.stringify(ordered));
+    check("People preserves activity ordering and alphabetical ties", /Person 1/.test(ordered.active[0]) && /Person 2/.test(ordered.active[1]), JSON.stringify(ordered));
+    check("People preserves recently-seen ordering and alphabetical ties", /Person 10/.test(ordered.recent[0]) && /Person 1/.test(ordered.recent[1]) && /Person 2/.test(ordered.recent[2]), JSON.stringify(ordered));
 
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));

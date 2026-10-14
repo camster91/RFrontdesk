@@ -11,6 +11,8 @@ var __export = (target, all) => {
 };
 
 // ../frontdesk/modules/db.js
+// Keep numeric name ordering without constructing locale options per comparison.
+var nameCollator = new Intl.Collator(void 0, { numeric: true });
 async function openDB() {
   if (_db) return _db;
   return new Promise((resolve, reject) => {
@@ -398,18 +400,13 @@ async function get(store, id) {
 }
 async function put(store, value) {
   await openDB();
-  const result = await asPromise(tx(store, "readwrite").put(value));
-  // See the note in `runTx`: these are the two stores the read caches derive from.
-  if (store === "items") invalidateItemsCache();
-  if (store === "loans") invalidateAvailabilityCache();
-  return result;
+  // A successful request can still be rolled back. Report saved records and
+  // invalidate read caches only once the containing transaction commits.
+  return runTx([store], "readwrite", (s) => s.req(s.get(store).put(value)));
 }
 async function del(store, id) {
   await openDB();
-  const result = await asPromise(tx(store, "readwrite").delete(id));
-  if (store === "items") invalidateItemsCache();
-  if (store === "loans") invalidateAvailabilityCache();
-  return result;
+  return runTx([store], "readwrite", (s) => s.req(s.get(store).delete(id)));
 }
 async function getByIndex(store, indexName, value) {
   await openDB();
@@ -457,9 +454,7 @@ async function listItems({ includeArchived = false, sortBy = "name" } = {}) {
     if (sortBy === "timesCheckedOut") {
       return b.timesCheckedOut - a.timesCheckedOut;
     }
-    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
-      numeric: true
-    });
+    return nameCollator.compare(String(a.name || ""), String(b.name || ""));
   });
   return items;
 }
@@ -595,12 +590,11 @@ async function listBorrowers({ includeArchived = false, sortBy = "name" } = {}) 
   const allBorrowers = await getAll("borrowers");
   let borrowers = includeArchived ? allBorrowers : allBorrowers.filter((b) => !b.isArchived);
   borrowers.sort((a, b) => {
+    if (sortBy === "timesCheckedOut") return (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0) || nameCollator.compare(String(a.name || ""), String(b.name || ""));
     if (sortBy === "lastSeenAt") {
-      return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
+      return (b.lastSeenAt || 0) - (a.lastSeenAt || 0) || nameCollator.compare(String(a.name || ""), String(b.name || ""));
     }
-    return String(a.name || "").localeCompare(String(b.name || ""), void 0, {
-      numeric: true
-    });
+    return nameCollator.compare(String(a.name || ""), String(b.name || ""));
   });
   return borrowers;
 }
@@ -927,21 +921,23 @@ async function undoLoansAtomic(loans) {
         // removed elsewhere. Decrementing again would corrupt the counters.
         continue;
       }
-      if (loan.itemId != null) {
-        const item = await s.req(itemsStore.get(loan.itemId));
+      // A toast keeps the original checkout snapshot, but a merge may have
+      // moved that loan. The current record is authoritative for ownership.
+      if (live.itemId != null) {
+        const item = await s.req(itemsStore.get(live.itemId));
         if (item) {
           item.timesCheckedOut = Math.max(0, (item.timesCheckedOut || 0) - 1);
-          const siblings = await s.req(loansStore.index("itemId").getAll(loan.itemId));
+          const siblings = await s.req(loansStore.index("itemId").getAll(live.itemId));
           const newest = siblings.reduce((max, l) => l.id === loan.id ? max : Math.max(max, l.checkedOutAt || 0), 0);
           item.lastCheckedOutAt = newest || null;
           await s.req(itemsStore.put(item));
         }
       }
-      if (loan.borrowerId != null) {
-        const borrower = await s.req(borrowersStore.get(loan.borrowerId));
+      if (live.borrowerId != null) {
+        const borrower = await s.req(borrowersStore.get(live.borrowerId));
         if (borrower) {
           borrower.timesCheckedOut = Math.max(0, (borrower.timesCheckedOut || 0) - 1);
-          const siblings = await s.req(loansStore.index("borrowerId").getAll(loan.borrowerId));
+          const siblings = await s.req(loansStore.index("borrowerId").getAll(live.borrowerId));
           const newest = siblings.reduce((max, l) => l.id === loan.id ? max : Math.max(max, l.checkedOutAt || 0), 0);
           borrower.lastSeenAt = newest || null;
           await s.req(borrowersStore.put(borrower));
@@ -3752,6 +3748,10 @@ var historyStack = [];
 // "the one I came from".
 var _navigatingBack = false;
 var _kioskExitGranted = false;
+function isStaffScreen(name) {
+  return name === "home" || name === "admin" || name === "admin-detail" ||
+    name === "checkout" || name === "checkin" || name === "checkin-return";
+}
 function goToScreen(name, opts = {}) {
   // Containment. The kiosk is an unattended public surface, and it lives in the
   // same document as the staff screens -- "kiosk mode" was never a real mode, and
@@ -3786,10 +3786,10 @@ function goToScreen(name, opts = {}) {
   if (opts.slide === "left") el.classList.add("slide-in-left");
   else if (opts.slide === "right") el.classList.add("slide-in-right");
   currentScreen = name;
-  // Leaving the admin screens ends the idle-lock timer. Without this the timer
-  // stayed armed after the user was already out, and could fire later and drag
-  // them from an unrelated screen back to the login prompt.
-  if (name !== "admin" && name !== "admin-detail") endAdminSession();
+  // Home and the loan flows expose staff records too. Keep their idle lock
+  // armed until the device returns to the public surface or login screen.
+  if (isStaffScreen(name)) touchAdminSession();
+  else endAdminSession();
   // Same for the kiosk's own idle timer: armed on any kiosk screen past the
   // welcome, cleared everywhere else.
   _armKioskIdle();
@@ -3915,6 +3915,11 @@ function initScreens() {
     }
   }
   bindStaticHandlers();
+  // Staff can enter Home before ever opening Admin. Cover every entry path.
+  const bump = () => touchAdminSession();
+  document.addEventListener("pointerdown", bump, { passive: true, capture: true });
+  document.addEventListener("keydown", bump, { capture: true });
+  document.addEventListener("wheel", bump, { passive: true, capture: true });
 }
 function bindStaticHandlers() {
   const inlineTargets = document.querySelectorAll('[onclick*="app.goToScreen"]');
@@ -5619,7 +5624,7 @@ let _hostInfoCache = null;
 // Keep WEB_VERSION in step with Build.Version in host/FrontDesk.cs and
 // AssemblyVersion in host/AssemblyInfo.cs; tools/test-host-bridge.cjs fails if
 // they drift apart.
-const WEB_VERSION = "1.1.1";
+const WEB_VERSION = "1.1.2";
 async function renderBuildInfo() {
   const el = document.querySelector(".build-info");
   if (!el) return;
@@ -7333,21 +7338,21 @@ var PIN_MAX_LOCK_MS = 5 * 60 * 1e3;
 // walk away, and the next person at the tablet could read every name, phone
 // number, note and loan in the system. Drop back to the login screen when idle.
 function touchAdminSession() {
-  if (getCurrentScreen() !== "admin" && getCurrentScreen() !== "admin-detail") return;
+  if (!isStaffScreen(getCurrentScreen())) return;
   if (_adminIdleTimer) clearTimeout(_adminIdleTimer);
   _adminIdleTimer = setTimeout(() => {
-    if (getCurrentScreen() === "admin" || getCurrentScreen() === "admin-detail") {
+    if (isStaffScreen(getCurrentScreen())) {
       // An open dialog is part of the session being locked. It used to stay on
       // top of the PIN screen -- an "Edit borrower" form showing a name, phone
       // and notes -- and its Save still wrote to the record and opened the
       // detail screen, with no PIN. Closing it settles it as a cancel.
       closeDialog();
       // Cancel on the lock screen goes back to the kiosk, not to wherever the
-      // login was first opened from. That was usually the staff home, which has
-      // no lock of its own, so Cancel was a way past this one.
+      // login was first opened from. Returning to a staff screen on Cancel
+      // would expose records again without entering the PIN.
       adminLoginReturn = "welcome";
       goToScreen("admin-login");
-      Promise.resolve().then(() => (init_ui(), ui_exports)).then((m) => m.showInfo("Admin panel locked after 5 minutes of inactivity.")).catch(() => {
+      Promise.resolve().then(() => (init_ui(), ui_exports)).then((m) => m.showInfo("Staff screens locked after 5 minutes of inactivity.")).catch(() => {
       });
     }
   }, ADMIN_IDLE_MS);
@@ -7377,7 +7382,10 @@ function cancelAdminLogin() {
 }
 function showAdminLogin() {
   const from = getCurrentScreen();
-  adminLoginReturn = from && from !== "admin-login" && from !== "splash" ? from : "home";
+  // Repeating the login shortcut on an idle-lock screen must not overwrite
+  // its public Cancel destination with an unrestricted staff screen.
+  if (from === "admin-login") return;
+  adminLoginReturn = from && from !== "splash" ? from : "welcome";
   // Leaving the kiosk is only ever granted here, from the deliberate hold gesture.
   if (isKioskScreen(from)) _kioskExitGranted = true;
   goToScreen("admin-login");
@@ -8962,19 +8970,14 @@ async function renderPeople() {
 async function _renderPeopleList(content, query, sortBy) {
   if (!content) return;
   const all = await listBorrowers({
-    includeArchived: true
+    includeArchived: true,
+    sortBy
   });
   const q = (query || "").toLowerCase().trim();
   // Digits alone too, so "416-555-0100" finds the number however it was typed.
   const qDigits = q.replace(/\D/g, "");
   let filtered = q ? all.filter((b) => b.name.toLowerCase().includes(q) || (b.phoneFormatted || "").includes(q) || b.phone.includes(q) || qDigits.length >= 3 && b.phone.includes(qDigits)) : all;
-  filtered.sort((a, b) => {
-    if (sortBy === "timesCheckedOut") return (b.timesCheckedOut || 0) - (a.timesCheckedOut || 0);
-    if (sortBy === "lastSeenAt") return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
-    return (a.name || "").localeCompare(b.name || "", void 0, {
-      numeric: true
-    });
-  });
+  // Filtering keeps the order supplied by listBorrowers; avoid sorting twice.
   content.innerHTML = "";
   if (filtered.length === 0) {
     // "No people yet" was shown for a search that just found nobody, which
@@ -10554,19 +10557,8 @@ function _wireAdminChrome() {
   if (_wiredOnce) return;
   const root = document.getElementById("screen-admin");
   if (!root) return;
-  // Any real interaction on the admin screens pushes the idle timer back. The
-  // timer used to be started once in showAdmin() and never extended, so a staff
-  // member actively working was thrown back to the login screen mid-task after
-  // five minutes. These are passive listeners, so they cost nothing.
-  //
-  // On the document, not the admin screen: the detail screen, the dialogs it
-  // opens and the on-screen keyboard are all outside #screen-admin, so typing a
-  // long note into "Edit borrower" never counted as activity and the lock fired
-  // mid-edit. touchAdminSession ignores anything not on an admin screen.
-  const bump = () => touchAdminSession();
-  document.addEventListener("pointerdown", bump, { passive: true, capture: true });
-  document.addEventListener("keydown", bump, { capture: true });
-  document.addEventListener("wheel", bump, { passive: true, capture: true });
+  // Document activity listeners are registered in initScreens, including dialogs
+  // and the on-screen keyboard that live outside this panel.
   const tabs = root.querySelectorAll(".tab");
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
