@@ -28,4 +28,4 @@ Full-suite result: **all 14 suites passed**, exit code 0, on the final patch. Th
 
 The local `npm test` child shell did not have Node on PATH; the command above invokes the identical runner directly with the task's callable Node runtime. No host PATH or security settings were changed.
 
-No installed-app interaction, live desk data, production write, signing, publication or release claim is made by these local tests. The application version remains unchanged in this patch; release versioning and CI verification are handled separately.
+No installed-app interaction, live desk data, production write, signing, publication or release claim is made by these local tests. Release preparation sets the matching host, assembly and web versions to1.1.2; GitHub CI verifies the resulting patch before merge.
