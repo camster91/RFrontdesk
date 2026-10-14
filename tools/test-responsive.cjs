@@ -26,7 +26,7 @@ const http = require("http");
 const puppeteer = require("puppeteer");
 
 const ROOT = path.join(__dirname, "..", "web");
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = require("./browser-path.cjs");
 const PORT = 8798;
 
 // WCAG 2.2 SC 2.5.8 (Target Size, Minimum) is 24x24 CSS px. The comfortable

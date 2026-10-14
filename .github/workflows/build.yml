@@ -28,6 +28,8 @@ jobs:
       PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -66,7 +68,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@main
+    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@40eb12d8568765e03b0b876079cd248aa7be1e72
     with:
       artifact: rfrontdesk-windows
       file-types: exe
@@ -84,6 +86,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -101,7 +105,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           function Run($exe, [string[]] $a) {
-            $p = Start-Process $exe -ArgumentList $a -Wait -PassThru
+            $p = Start-Process $exe -ArgumentList $a -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { throw "$($a -join ' ') exited with $($p.ExitCode)" }
           }
           $unzipped = Join-Path $env:RUNNER_TEMP 'unzipped'
@@ -163,6 +167,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -211,7 +217,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@main
+    uses: camster91/Rclicker/.github/workflows/sign-windows.yml@40eb12d8568765e03b0b876079cd248aa7be1e72
     with:
       artifact: rfrontdesk-msix
       file-types: msix
@@ -290,6 +296,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read release version and notes
+        shell: pwsh
+        run: |
+          $version = ./tools/read-version.ps1
+          if (-not (Test-Path "docs/release-notes-$version.md")) { throw "Missing release notes for $version." }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "MSIX_VERSION=$version.0" >> $env:GITHUB_ENV
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: rfrontdesk
@@ -300,21 +314,20 @@ jobs:
           name: rfrontdesk-msix-signed
           path: release
 
-      - name: Verify the signed 1.1.0 package
+      - name: Verify the signed package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $zip = Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.zip'
+          $zip = Join-Path $env:GITHUB_WORKSPACE "release\RFrontDesk-$env:VERSION.zip"
           if (-not (Test-Path $zip)) { throw "The package job did not produce $zip." }
 
-          $check = Join-Path $env:RUNNER_TEMP 'rfrontdesk-release-check'
-          Remove-Item $check -Recurse -Force -ErrorAction SilentlyContinue
+          $check = Join-Path $env:RUNNER_TEMP ('rfrontdesk-release-check-' + [guid]::NewGuid().ToString('N'))
           Expand-Archive -Path $zip -DestinationPath $check
           $exe = Join-Path $check 'RFrontDesk\RFrontDesk.exe'
           if (-not (Test-Path $exe)) { throw 'The release zip has no RFrontDesk.exe.' }
 
           $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion
-          if ($version -ne '1.1.0.0') { throw "The package executable is version '$version', not 1.1.0.0." }
+          if ($version -ne $env:MSIX_VERSION) { throw "The package executable is version '$version', not $env:MSIX_VERSION." }
 
           $sig = Get-AuthenticodeSignature $exe
           if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or -not $sig.TimeStamperCertificate) {
@@ -327,11 +340,11 @@ jobs:
           }
           Write-Host "Verified $version signed by $publisher."
 
-      - name: Verify the signed 1.1.0 MSIX and write checksums
+      - name: Verify the signed MSIX and write checksums
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $msix = Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.msix'
+          $msix = Join-Path $env:GITHUB_WORKSPACE "release\RFrontDesk-$env:VERSION.msix"
           if (-not (Test-Path $msix)) { throw "The signed MSIX artifact was not downloaded to $msix." }
 
           $sig = Get-AuthenticodeSignature $msix
@@ -344,8 +357,7 @@ jobs:
             throw "The MSIX is signed by '$publisher', not 'Cameron Ashley'."
           }
 
-          $unpacked = Join-Path $env:RUNNER_TEMP 'rfrontdesk-release-msix-check'
-          Remove-Item $unpacked -Recurse -Force -ErrorAction SilentlyContinue
+          $unpacked = Join-Path $env:RUNNER_TEMP ('rfrontdesk-release-msix-check-' + [guid]::NewGuid().ToString('N'))
           $makeAppx = Get-Command makeappx.exe -ErrorAction SilentlyContinue
           if (-not $makeAppx) {
             $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
@@ -358,14 +370,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'makeappx failed to unpack the release MSIX' }
           $manifest = [xml](Get-Content (Join-Path $unpacked 'AppxManifest.xml') -Raw)
           if ($manifest.Package.Identity.Name -ne 'CameronAshley.RFrontDesk') { throw 'MSIX identity name drifted' }
-          if ($manifest.Package.Identity.Version -ne '1.1.0.0') { throw "MSIX version is $($manifest.Package.Identity.Version), not 1.1.0.0" }
+          if ($manifest.Package.Identity.Version -ne $env:MSIX_VERSION) { throw "MSIX version is $($manifest.Package.Identity.Version), not $env:MSIX_VERSION" }
           if ($manifest.Package.Identity.Publisher -ne $sig.SignerCertificate.Subject) {
             throw 'MSIX manifest publisher drifted from its signed package certificate'
           }
           Write-Host "Verified MSIX signed by $publisher, timestamped=yes, identity=$($manifest.Package.Identity.Name), version=$($manifest.Package.Identity.Version)."
 
           $assets = @(
-            Get-Item (Join-Path $env:GITHUB_WORKSPACE 'release\RFrontDesk-1.1.0.zip')
+            Get-Item (Join-Path $env:GITHUB_WORKSPACE "release\RFrontDesk-$env:VERSION.zip")
             Get-Item $msix
           )
           $lines = foreach ($asset in $assets) {
@@ -381,12 +393,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          gh release create v1.1.0 `
-            release/RFrontDesk-1.1.0.zip `
-            release/RFrontDesk-1.1.0.msix `
+          gh release create "v$env:VERSION" `
+            "release/RFrontDesk-$env:VERSION.zip" `
+            "release/RFrontDesk-$env:VERSION.msix" `
             release/SHA256SUMS.txt `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
-            --title 'RFrontDesk 1.1.0' `
-            --notes-file docs/release-notes-1.1.0.md
+            --title "RFrontDesk $env:VERSION" `
+            --notes-file "docs/release-notes-$env:VERSION.md"
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE." }

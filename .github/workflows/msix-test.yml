@@ -22,6 +22,18 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Read baseline and higher test versions
+        shell: pwsh
+        run: |
+          $baseline = ./tools/read-version.ps1
+          $parsed = [version]$baseline
+          if ($parsed.Build -ge 65535) { throw 'No higher patch version fits in an MSIX identity.' }
+          $higher = '{0}.{1}.{2}' -f $parsed.Major, $parsed.Minor, ($parsed.Build + 1)
+          "RFD_BASE_VERSION=$baseline" >> $env:GITHUB_ENV
+          "RFD_UPDATE_VERSION=$higher" >> $env:GITHUB_ENV
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -115,7 +127,7 @@ jobs:
           if (-not $pkg) { throw 'Add-AppxPackage installed no RFrontDesk package' }
           $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw)
           $identity = $manifest.Package.Identity
-          if ($identity.Version -ne '1.1.0.0') { throw "identity version was $($identity.Version)" }
+          if ($identity.Version -ne "$env:RFD_BASE_VERSION.0") { throw "identity version was $($identity.Version)" }
           if ($identity.Publisher -ne $readback.SignerCertificate.Subject) { throw 'manifest publisher drifted from signed executable' }
           "PACKAGE_FULL_NAME=$($pkg.PackageFullName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           "PACKAGE_FAMILY_NAME=$($pkg.PackageFamilyName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -166,22 +178,27 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $source = $env:GITHUB_WORKSPACE
-          $updateRoot = Join-Path $env:RUNNER_TEMP 'rfrontdesk-update-source'
-          if (Test-Path $updateRoot) { Remove-Item $updateRoot -Recurse -Force }
+          $updateRoot = Join-Path $env:RUNNER_TEMP ('rfrontdesk-update-source-' + [guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Force $updateRoot | Out-Null
           Copy-Item (Join-Path $source '*') -Destination $updateRoot -Recurse -Force
 
           $frontDesk = Join-Path $updateRoot 'host\FrontDesk.cs'
           $frontDeskText = Get-Content $frontDesk -Raw
-          $frontDeskText = $frontDeskText.Replace('public const string Version = "1.1.0";', 'public const string Version = "1.1.1";')
-          if ($frontDeskText -notmatch 'public const string Version = "1\.1\.1";') { throw 'could not prepare higher host version' }
+          $oldHostVersion = 'public const string Version = "{0}";' -f $env:RFD_BASE_VERSION
+          $newHostVersion = 'public const string Version = "{0}";' -f $env:RFD_UPDATE_VERSION
+          if (-not $frontDeskText.Contains($oldHostVersion)) { throw 'could not find baseline host version' }
+          $frontDeskText = $frontDeskText.Replace($oldHostVersion, $newHostVersion)
           Set-Content $frontDesk -Value $frontDeskText -Encoding utf8
+          if ((& (Join-Path $updateRoot 'tools/read-version.ps1')) -ne $env:RFD_UPDATE_VERSION) { throw 'could not prepare higher host version' }
 
           $assemblyInfo = Join-Path $updateRoot 'host\AssemblyInfo.cs'
           $assemblyText = Get-Content $assemblyInfo -Raw
-          $assemblyText = $assemblyText -replace 'AssemblyVersion\("1\.1\.0\.0"\)', 'AssemblyVersion("1.1.1.0")'
-          $assemblyText = $assemblyText -replace 'AssemblyFileVersion\("1\.1\.0\.0"\)', 'AssemblyFileVersion("1.1.1.0")'
-          if ($assemblyText -notmatch 'AssemblyFileVersion\("1\.1\.1\.0"\)') { throw 'could not prepare higher file version' }
+          foreach ($attribute in 'AssemblyVersion', 'AssemblyFileVersion') {
+            $oldValue = '{0}("{1}.0")' -f $attribute, $env:RFD_BASE_VERSION
+            $newValue = '{0}("{1}.0")' -f $attribute, $env:RFD_UPDATE_VERSION
+            if (-not $assemblyText.Contains($oldValue)) { throw "could not find baseline $attribute" }
+            $assemblyText = $assemblyText.Replace($oldValue, $newValue)
+          }
           Set-Content $assemblyInfo -Value $assemblyText -Encoding utf8
 
           $updateDist = Join-Path $updateRoot 'dist-update'
@@ -206,7 +223,7 @@ jobs:
             /tr http://timestamp.digicert.com /td SHA256 $updateMsix.FullName
           if ($LASTEXITCODE -ne 0) { throw 'signtool failed for the higher-version MSIX' }
           $manifest = [xml](Get-Content (Join-Path $updateRoot 'build\msix-staging\AppxManifest.xml') -Raw)
-          if ($manifest.Package.Identity.Version -ne '1.1.1.0') { throw "higher package identity version was $($manifest.Package.Identity.Version)" }
+          if ($manifest.Package.Identity.Version -ne "$env:RFD_UPDATE_VERSION.0") { throw "higher package identity version was $($manifest.Package.Identity.Version)" }
           "UPDATE_MSIX=$($updateMsix.FullName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "prepared higher-version package: $($updateMsix.FullName)"
 
@@ -236,7 +253,7 @@ jobs:
           $pkg = Get-AppxPackage -Name CameronAshley.RFrontDesk | Select-Object -First 1
           if (-not $pkg) { throw 'higher-version package is unavailable after update' }
           $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw)
-          if ($manifest.Package.Identity.Version -ne '1.1.1.0') { throw "installed update version was $($manifest.Package.Identity.Version)" }
+          if ($manifest.Package.Identity.Version -ne "$env:RFD_UPDATE_VERSION.0") { throw "installed update version was $($manifest.Package.Identity.Version)" }
           $data = Join-Path $env:LOCALAPPDATA "Packages\$($env:PACKAGE_FAMILY_NAME)\LocalCache\Local\FrontDesk"
           if ((Get-Content (Join-Path $data 'update-marker') -Raw).Trim() -ne 'survives package update') {
             throw 'package update did not preserve package-local data'

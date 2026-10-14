@@ -12,8 +12,8 @@ The desk lends out cables, adapters, keys and other gear all day, often from a t
 
 Download the latest [GitHub release](https://github.com/camster91/RFrontdesk/releases), which includes both install choices and `SHA256SUMS.txt`:
 
-1. **MSIX (managed staff workstation).** Open `RFrontDesk-1.1.0.msix` and let Windows App Installer add the package for your account. Windows creates the Start menu entry and owns package updates, startup and uninstall. The package uses a read-only install location and keeps its writable data in the package's private data area.
-2. **ZIP (portable or per-user install).** Extract `RFrontDesk-1.1.0.zip`, double-click **RFrontDesk.exe**, and choose **Install**. It installs for you only into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut and no admin rights. To keep it portable, choose **Run from this folder** instead. On a public tablet, tick **This is a public tablet: lock it down**.
+1. **MSIX (managed staff workstation).** Open `RFrontDesk-1.1.1.msix` and let Windows App Installer add the package for your account. Windows creates the Start menu entry and owns package updates, startup and uninstall. The package uses a read-only install location and keeps its writable data in the package's private data area.
+2. **ZIP (portable or per-user install).** Extract `RFrontDesk-1.1.1.zip`, double-click **RFrontDesk.exe**, and choose **Install**. It installs for you only into `%LOCALAPPDATA%\Programs\RFrontDesk`, with a Start menu shortcut and no admin rights. To keep it portable, choose **Run from this folder** instead. On a public tablet, tick **This is a public tablet: lock it down**.
 3. **Update.** Open a newer MSIX or install a newer ZIP the same way. The records, backups and PIN settings are kept within that distribution's supported data location.
 4. **Uninstall.** Before removing an MSIX, sign in to the staff panel and use **Settings → Export Backup (JSON)**, then keep the file somewhere protected. Windows removes the package's private data on uninstall. The ZIP installer keeps records by default; its uninstall option can delete them when you explicitly choose it.
 
@@ -59,6 +59,11 @@ The installer is built into the one exe, on purpose: a separate self-extracting 
 - **Packaging**: PowerShell build and packaging scripts that produce a self-verifying zip
 
 ## Building
+
+Browser suites use Edge in hosted CI. For local tests, set
+`FRONTDESK_TEST_BROWSER` to an installed Chromium executable, then run `npm test`.
+The tests use fabricated records and temporary profiles. Release-version tests
+also reject missing, invalid or ambiguous host version constants.
 
 GitHub does this on every push and pull request (`.github/workflows/build.yml`): fetch WebView2, build, run every test suite, sign (on `main`), package, and try install, update and uninstall from the zip. Nobody needs a build computer, and nothing is deployed.
 
