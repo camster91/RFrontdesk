@@ -16,7 +16,7 @@ const http = require("http");
 const puppeteer = require("puppeteer");
 
 const ROOT = path.join(__dirname, "..", "web");
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = require("./browser-path.cjs");
 const PORT = 8798;
 const PIN = "1234";
 // The staff-seeded borrower (exists, has nothing out), the kiosk borrower, and

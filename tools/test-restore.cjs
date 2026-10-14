@@ -23,7 +23,7 @@ const http = require("http");
 const puppeteer = require("puppeteer");
 
 const ROOT = path.join(__dirname, "..", "web");
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = require("./browser-path.cjs");
 const PORT = 8799;
 
 const TYPES = {

@@ -9,6 +9,7 @@ const { spawnSync } = require("child_process");
 const path = require("path");
 
 const SUITES = [
+  ["release version", "test-version.cjs"],
   ["host bridge", "test-bridge.cjs"],
   ["host flags and navigation", "test-host.cjs"],
   ["toast stack", "test-toast.cjs"],
