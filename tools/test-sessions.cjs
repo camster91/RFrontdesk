@@ -79,6 +79,18 @@ const FAST_TIMERS = () => {
   };
 };
 
+// Only the PIN scenarios freeze Date.now. Keeping the fixture clock in this
+// fresh profile's sessionStorage lets a page reload preserve the same instant.
+// No production constants change, and the real 30s -> 5m deadlines are tested
+// without sleeping for minutes. Removing the key restores the real clock.
+const PIN_TEST_CLOCK = () => {
+  const actualNow = Date.now.bind(Date);
+  Date.now = () => {
+    const now = sessionStorage.getItem("__frontdesk_pin_test_now");
+    return now === null ? actualNow() : Number(now);
+  };
+};
+
 const SEED = ({ ALICE, OTHER, CARL }) =>
   new Promise((resolve, reject) => {
     const req = indexedDB.open("frontdesk");
@@ -155,6 +167,7 @@ const READ = (store, id) =>
       } catch (_) {}
     });
     await page.evaluateOnNewDocument(FAST_TIMERS);
+    await page.evaluateOnNewDocument(PIN_TEST_CLOCK);
 
     const url = `http://127.0.0.1:${PORT}/index.html`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -194,6 +207,22 @@ const READ = (store, id) =>
         { sel, src: re.source }
       );
     const read = (store, id) => page.evaluate(READ, store, id);
+    const waitRecord = (store, id, expected) => page.waitForFunction(
+      ({ store, id, expected }) => new Promise((resolve, reject) => {
+        const req = indexedDB.open("frontdesk");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const r = db.transaction([store]).objectStore(store).get(id);
+          r.onsuccess = () => {
+            resolve(!!r.result && Object.entries(expected).every(([key, value]) => r.result[key] === value));
+            db.close();
+          };
+          r.onerror = () => { db.close(); reject(r.error); };
+        };
+      }),
+      { timeout: 8000 }, { store, id, expected }
+    );
     const dialogOpen = () =>
       page.evaluate(() => {
         const d = document.getElementById("dialog");
@@ -433,6 +462,101 @@ const READ = (store, id) =>
       return out;
     });
     check("the keyboard does not open on a radio, checkbox or date input", !kbd.radio && !kbd.checkbox && !kbd.date, JSON.stringify(kbd));
+
+    // Persist Lost through the actual return screen, including its explicit
+    // cancellation/confirmation boundary; then discard all in-memory state.
+    await signIn();
+    await clickIn("screen-admin", '[data-action="admin-home"]');
+    await page.waitForSelector("#screen-home:not(.hidden)");
+    await clickIn("screen-home", ".btn-home-primary:nth-of-type(2)");
+    await page.waitForSelector("#screen-checkin:not(.hidden)");
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("#screen-checkin .loan-item")).some((r) => /Projector Remote/.test(r.textContent)));
+    await page.evaluate(() => {
+      Array.from(document.querySelectorAll("#screen-checkin .loan-item")).find((r) => /Projector Remote/.test(r.textContent)).click();
+    });
+    await page.waitForSelector("#screen-checkin-return:not(.hidden)");
+    await page.$eval("#screen-checkin-return .notes-input", (el) => { el.value = "Lost fixture: reported missing at the desk"; });
+    await clickIn("screen-checkin-return", '[data-condition="lost"]');
+    await page.waitForSelector("#dialog .dialog-actions .btn");
+    await clickText("#dialog .dialog-actions .btn", /^Cancel$/i);
+    const cancelledLost = await read("loans", 1);
+    check("cancelling Lost preserves the open loan", cancelledLost.isOpen === "open" && !cancelledLost.returnedAt && !cancelledLost.conditionIn, JSON.stringify(cancelledLost));
+    await clickIn("screen-checkin-return", '[data-condition="lost"]');
+    await page.waitForSelector("#dialog .dialog-actions .btn");
+    await clickText("#dialog .dialog-actions .btn", /Mark as Lost/i);
+    await waitRecord("loans", 1, { isOpen: "closed", conditionIn: "lost" });
+    const lost = await read("loans", 1);
+    check("confirming Lost commits condition, closed state, timestamp and staff note", lost.returnedAt > 0 && /Lost fixture: reported missing/.test(lost.notes), JSON.stringify(lost));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    const reloadedLost = await read("loans", 1);
+    check("Lost survives reload with the exact committed return timestamp and note", reloadedLost.conditionIn === "lost" && reloadedLost.isOpen === "closed" && reloadedLost.returnedAt === lost.returnedAt && reloadedLost.notes === lost.notes, JSON.stringify(reloadedLost));
+    await signIn();
+    await clickIn("screen-admin", '.tab[data-tab="currently-out"]');
+    await page.waitForFunction(() => /No items out/.test(document.getElementById("tab-currently-out").textContent));
+    check("the reloaded lost loan is absent from Currently Out", !/Projector Remote/.test(await page.$eval("#tab-currently-out", (el) => el.textContent)));
+
+    // PIN failures are committed settings, and refresh must not buy new
+    // guesses. Freeze only the clock; submit through the real LOGIN button.
+    await page.evaluate(() => {
+      window.app.goToScreen("welcome");
+      sessionStorage.setItem("__frontdesk_pin_test_now", String(Date.now()));
+      window.app.showAdminLogin();
+    });
+    const submitPin = async (pin) => {
+      await page.evaluate((value) => {
+        const root = document.getElementById("screen-admin-login");
+        root.querySelector(".pin-input").value = value;
+        root.querySelector(".pin-submit").click();
+      }, pin);
+    };
+    const advanceTo = (now) => page.evaluate((value) => sessionStorage.setItem("__frontdesk_pin_test_now", String(value)), now);
+    const pinNow = () => page.evaluate(() => Date.now());
+    for (let count = 1; count <= 4; count++) {
+      await submitPin("9876");
+      await waitRecord("settings", 1, { pinFailures: count, pinLockedUntil: 0 });
+    }
+    check("the first four wrong PINs persist without a timed lock", (await read("settings", 1)).pinFailures === 4 && (await screen()) === "screen-admin-login");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    await page.evaluate(() => window.app.showAdminLogin());
+    const thresholdNow = await pinNow();
+    await submitPin("9876");
+    await waitRecord("settings", 1, { pinFailures: 5, pinLockedUntil: thresholdNow + 30000 });
+    check("reload preserves four failures so the fifth attempt locks for 30 seconds", (await screen()) === "screen-admin-login");
+    await submitPin(PIN);
+    await page.waitForFunction(() => document.querySelector("#screen-admin-login .pin-input").value === "");
+    let locked = await read("settings", 1);
+    check("a correct PIN is refused during the lock without consuming another guess", (await screen()) === "screen-admin-login" && locked.pinFailures === 5 && locked.pinLockedUntil === thresholdNow + 30000, JSON.stringify(locked));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    await page.evaluate(() => window.app.showAdminLogin());
+    await submitPin(PIN);
+    await page.waitForFunction(() => document.querySelector("#screen-admin-login .pin-input").value === "");
+    locked = await read("settings", 1);
+    check("reloading cannot bypass an active PIN lock or reset its deadline", (await screen()) === "screen-admin-login" && locked.pinFailures === 5 && locked.pinLockedUntil === thresholdNow + 30000, JSON.stringify(locked));
+    for (const [count, duration] of [[6, 60000], [7, 120000], [8, 240000], [9, 300000], [10, 300000]]) {
+      await advanceTo(locked.pinLockedUntil + 1);
+      const now = await pinNow();
+      await submitPin("9876");
+      await waitRecord("settings", 1, { pinFailures: count, pinLockedUntil: now + duration });
+      locked = await read("settings", 1);
+      check(`wrong PIN ${count} persists an escalating ${duration / 1000}-second lock`, (await screen()) === "screen-admin-login", JSON.stringify(locked));
+    }
+    await advanceTo(locked.pinLockedUntil - 1);
+    await submitPin(PIN);
+    await page.waitForFunction(() => document.querySelector("#screen-admin-login .pin-input").value === "");
+    check("the correct PIN remains refused one millisecond before expiry", (await screen()) === "screen-admin-login" && (await read("settings", 1)).pinFailures === 10);
+    await advanceTo(locked.pinLockedUntil);
+    await submitPin(PIN);
+    await page.waitForSelector("#screen-admin:not(.hidden)");
+    await waitRecord("settings", 1, { pinFailures: 0, pinLockedUntil: 0 });
+    check("a correct PIN at expiry signs in and commits a complete lockout reset", (await screen()) === "screen-admin");
+    await page.evaluate(() => sessionStorage.removeItem("__frontdesk_pin_test_now"));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#screen-welcome:not(.hidden)");
+    await signIn();
+    check("the reset persists across a further reload", (await screen()) === "screen-admin" && (await read("settings", 1)).pinFailures === 0 && (await read("settings", 1)).pinLockedUntil === 0);
 
     const realErrors = errors.filter((e) => !/favicon/.test(e));
     check("no console errors through the whole run", realErrors.length === 0, realErrors.join(" | "));
