@@ -365,6 +365,56 @@ const READ = (store, id) =>
     await sleep(300);
     check("Cancel on the lock screen goes to the kiosk, not the staff home", (await screen()) === "screen-welcome", await screen());
 
+    // Staff home used to clear the lock immediately after a successful login.
+    // Every loan screen must retain the same lock, while genuine activity and
+    // deliberately returning to the kiosk keep their existing behavior.
+    await signIn();
+    await page.evaluate(() => { window.__fast = { admin: 600 }; });
+    await clickIn("screen-admin", '[data-action="admin-home"]');
+    check("Staff home is reachable after signing in", (await screen()) === "screen-home", await screen());
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press("Shift");
+      await sleep(250);
+    }
+    check("activity keeps Staff home unlocked", (await screen()) === "screen-home", await screen());
+    await sleep(850);
+    check("Staff home locks after inactivity", (await screen()) === "screen-admin-login", await screen());
+    await page.keyboard.down("Control");
+    await page.keyboard.down("Shift");
+    await page.keyboard.press("A");
+    await page.keyboard.up("Shift");
+    await page.keyboard.up("Control");
+    await page.evaluate(() => window.app.cancelAdminLogin());
+    check("repeating the login shortcut cannot turn locked Cancel into Staff home", (await screen()) === "screen-welcome", await screen());
+    for (const destination of ["checkout", "checkin", "checkin-return"]) {
+      await page.evaluate(() => { window.__fast = null; });
+      await signIn();
+      await page.evaluate((name) => {
+        window.__fast = { admin: 600 };
+        window.app.goToScreen(name);
+      }, destination);
+      await sleep(850);
+      check(`${destination} locks after inactivity`, (await screen()) === "screen-admin-login", await screen());
+      await page.evaluate(() => window.app.cancelAdminLogin());
+    }
+    await page.evaluate(() => { window.__fast = null; });
+    await signIn();
+    await page.evaluate(() => {
+      window.__fast = { admin: 600 };
+      window.app.goToScreen("home");
+    });
+    await clickIn("screen-home", "#btn-to-kiosk");
+    await sleep(850);
+    check("returning to the kiosk clears the staff idle lock", (await screen()) === "screen-welcome", await screen());
+    await page.evaluate(() => { window.__fast = null; });
+    await signIn();
+    await page.evaluate(() => {
+      window.app.goToScreen("splash");
+      window.app.showAdminLogin();
+      window.app.cancelAdminLogin();
+    });
+    check("Cancel from a splash-screen login returns to the public kiosk", (await screen()) === "screen-welcome", await screen());
+
     // ── 6. the keyboard leaves non-text inputs alone ────────────────────────
     const kbd = await page.evaluate(async () => {
       const out = {};
