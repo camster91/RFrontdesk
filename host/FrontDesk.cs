@@ -657,11 +657,12 @@ namespace FrontDeskHost
                 tmp = path + ".partial";
                 File.WriteAllText(tmp, json, new UTF8Encoding(false));
 
-                // Read it back and confirm it is the same length and still looks
-                // like the export it claims to be.
+                // Read it back and confirm the actual UTF-8 byte count. Names
+                // can contain non-ASCII characters, so text.Length is not the
+                // size of the file shown to the operator.
                 string verify = File.ReadAllText(tmp);
-                long bytes = verify.Length;
-                bool sizeOk = bytes == json.Length;
+                long bytes = new FileInfo(tmp).Length;
+                bool sizeOk = bytes == Encoding.UTF8.GetByteCount(json);
                 bool shapeOk = verify.TrimStart().StartsWith("{", StringComparison.Ordinal) &&
                                verify.IndexOf("\"items\"", StringComparison.Ordinal) >= 0;
 
@@ -761,7 +762,7 @@ namespace FrontDeskHost
                 string text = File.ReadAllText(path);
                 StringBuilder b = new StringBuilder();
                 b.Append("{\"ok\":true,\"file\":").Append(Json.Str(safe));
-                b.Append(",\"bytes\":").Append(text.Length.ToString(CultureInfo.InvariantCulture));
+                b.Append(",\"bytes\":").Append(new FileInfo(path).Length.ToString(CultureInfo.InvariantCulture));
                 b.Append(",\"text\":").Append(Json.Str(text));
                 b.Append("}");
                 return b.ToString();

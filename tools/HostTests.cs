@@ -60,6 +60,7 @@ namespace FrontDeskHost
             if (mode == "kiosk") Kiosk();
             else if (mode == "plain") Plain();
             else if (mode == "files") Files();
+            else if (mode == "backups") Backups();
             else if (mode == "registry") RegistryRoundTrip();
             else
             {
@@ -426,6 +427,126 @@ namespace FrontDeskHost
             {
                 try { Directory.Delete(tmp, true); }
                 catch { }
+            }
+        }
+
+        private static bool ReplyFlag(string reply, string name, bool value)
+        {
+            return reply.IndexOf("\"" + name + "\":" + (value ? "true" : "false"), StringComparison.Ordinal) >= 0;
+        }
+
+        private static long ReplyNumber(string reply, string name)
+        {
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                reply, "\"" + System.Text.RegularExpressions.Regex.Escape(name) + "\":(\\d+)");
+            return match.Success ? long.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : -1;
+        }
+
+        /// <summary>
+        /// Call the shipping bridge against a unique synthetic filesystem. These
+        /// methods do not use MainForm, so no window/dialog or Resolve() is needed.
+        /// Every static path changed here belongs only to this test process.
+        /// </summary>
+        private static void Backups()
+        {
+            string tmp = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "fd-backuptest-" + Guid.NewGuid().ToString("N")));
+            string originalBackups = Paths.Backups;
+            string originalLog = Paths.LogFile;
+            string folder = Path.Combine(tmp, "backups");
+            string json = "{\"items\":[],\"borrowers\":[],\"loans\":[],\"settings\":[],\"requests\":[]}";
+            try
+            {
+                Directory.CreateDirectory(folder);
+                Paths.Backups = folder;
+                Paths.LogFile = Path.Combine(tmp, "fixture.log");
+                Bridge bridge = new Bridge(null);
+                DateTime first = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                List<string> names = new List<string>();
+                for (int i = 0; i < 35; i++)
+                {
+                    string name = "frontdesk-backup-" + first.AddDays(i).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) + ".json";
+                    names.Add(name);
+                    Write(Path.Combine(folder, name), json);
+                    File.SetLastWriteTimeUtc(Path.Combine(folder, name), first.AddDays(i));
+                }
+                string[] manual = { "before-the-move.json", "frontdesk-backup-2020-01-01 (keep).json", "other-desk-export.json" };
+                foreach (string name in manual)
+                {
+                    Write(Path.Combine(folder, name), json);
+                    File.SetLastWriteTimeUtc(Path.Combine(folder, name), first.AddYears(-1));
+                }
+                string target = "frontdesk-backup-2099-12-31.json";
+                Write(Path.Combine(folder, target), json);
+                string failed = bridge.SaveBackup("not an export", target);
+                Check("failed verification reports a failure across the bridge", ReplyFlag(failed, "ok", false), failed);
+                Check("failed verification preserves the previous same-name backup", Read(Path.Combine(folder, target)) == json, null);
+                Check("failed verification never rotates older backups", Directory.GetFiles(folder, "*.json").Length == 39, null);
+                Check("failed verification removes its partial staging file", !File.Exists(Path.Combine(folder, target + ".partial")), null);
+
+                string replacement = "{\"items\":[{\"name\":\"Caf\u00e9 \u6771\u4eac\"}],\"borrowers\":[],\"loans\":[]}";
+                string saved = bridge.SaveBackup(replacement, target);
+                Check("successful replacement reports verified readback", ReplyFlag(saved, "ok", true) && ReplyFlag(saved, "verified", true) && ReplyFlag(saved, "sizeMatches", true), saved);
+                Check("successful replacement keeps the exact Unicode export", File.ReadAllText(Path.Combine(folder, target), Encoding.UTF8) == replacement, null);
+                Check("successful replacement leaves no partial staging file", !File.Exists(Path.Combine(folder, target + ".partial")), null);
+                long actualBytes = new FileInfo(Path.Combine(folder, target)).Length;
+                Check("SaveBackup reports the actual UTF-8 file byte count", ReplyNumber(saved, "bytes") == actualBytes, "reported=" + ReplyNumber(saved, "bytes") + ", disk=" + actualBytes);
+                Check("rotation removes only the six oldest automatic backups", ReplyNumber(saved, "rotatedOut") == 6, saved);
+                int autoCount = 0;
+                foreach (string file in Directory.GetFiles(folder, "*.json"))
+                    if (Bridge.IsAutoBackupName(Path.GetFileName(file))) autoCount++;
+                Check("rotation retains exactly the newest thirty automatic backups", autoCount == 30, "kept=" + autoCount);
+                bool ordered = true;
+                for (int i = 0; i < names.Count; i++)
+                    ordered &= File.Exists(Path.Combine(folder, names[i])) == (i >= 6);
+                Check("retention uses deterministic modification order", ordered, null);
+                bool manualKept = true;
+                foreach (string name in manual) manualKept &= Read(Path.Combine(folder, name)) == json;
+                Check("retention preserves manual, renamed and foreign JSON backups", manualKept, null);
+
+                string read = bridge.ReadBackup(target);
+                Check("ReadBackup returns the exact export through JSON escaping", ReplyFlag(read, "ok", true) && read.IndexOf("\"text\":" + Json.Str(replacement), StringComparison.Ordinal) >= 0, read);
+                Check("ReadBackup reports the actual UTF-8 file byte count", ReplyNumber(read, "bytes") == actualBytes, "reported=" + ReplyNumber(read, "bytes") + ", disk=" + actualBytes);
+                Check("ListBackups includes saved and protected manual backups", ReplyNumber(saved, "kept") == 33 && bridge.ListBackups().IndexOf("before-the-move.json", StringComparison.Ordinal) >= 0, saved);
+                Write(Path.Combine(tmp, "outside.json"), "outside fixture sentinel");
+                Check("ReadBackup cannot traverse to a sibling fixture file", ReplyFlag(bridge.ReadBackup("..\\outside.json"), "ok", false), null);
+                Check("ReadBackup reports a missing file without throwing", ReplyFlag(bridge.ReadBackup("missing.json"), "ok", false), null);
+
+                // An exclusive lock gives a deterministic I/O failure without
+                // changing permissions or relying on disk exhaustion.
+                string partial = Path.Combine(folder, target + ".partial");
+                string lockedReply;
+                using (FileStream held = new FileStream(partial, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+                    lockedReply = bridge.SaveBackup(json, target);
+                File.Delete(partial);
+                Check("an actual exclusive-file-lock failure is reported", ReplyFlag(lockedReply, "ok", false), lockedReply);
+                Check("the failed save leaves the verified destination intact", Read(Path.Combine(folder, target)) == replacement, null);
+                Check("the failed save does not rotate or change backup count", Directory.GetFiles(folder, "*.json").Length == 33, null);
+                Check("an empty export is refused before writing", ReplyFlag(bridge.SaveBackup("", target), "ok", false) && Read(Path.Combine(folder, target)) == replacement, null);
+
+                string createdName = "frontdesk-backup-2100-01-01.json";
+                string created = bridge.SaveBackup(json, createdName);
+                Check("a first save commits a new backup through the move path", ReplyFlag(created, "ok", true) && ReplyFlag(created, "verified", true) && Read(Path.Combine(folder, createdName)) == json, created);
+                Check("a new backup rotates one old automatic file and preserves manual files", ReplyNumber(created, "rotatedOut") == 1 && Directory.GetFiles(folder, "*.json").Length == 33 && Read(Path.Combine(folder, manual[0])) == json, created);
+
+                // Files created by external Windows tools may have a UTF-8 BOM.
+                // The bridge must report on-disk size even though ReadAllText
+                // strips that preamble before returning the export text.
+                string bomName = "manual-unicode-bom.json";
+                File.WriteAllText(Path.Combine(folder, bomName), replacement, new UTF8Encoding(true));
+                string bomRead = bridge.ReadBackup(bomName);
+                Check("manual UTF-8 BOM readback preserves export content and actual file size", ReplyFlag(bomRead, "ok", true) && bomRead.IndexOf("\"text\":" + Json.Str(replacement), StringComparison.Ordinal) >= 0 && ReplyNumber(bomRead, "bytes") == new FileInfo(Path.Combine(folder, bomName)).Length, bomRead);
+            }
+            finally
+            {
+                Paths.Backups = originalBackups;
+                Paths.LogFile = originalLog;
+                // Resolve and constrain the recursive cleanup to this unique
+                // fixture root under the OS temporary directory.
+                if (Installer.IsInside(tmp, Path.GetTempPath()) && Path.GetFileName(tmp).StartsWith("fd-backuptest-", StringComparison.Ordinal))
+                {
+                    try { Directory.Delete(tmp, true); }
+                    catch { }
+                }
             }
         }
 

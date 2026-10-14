@@ -9,16 +9,18 @@
 // tools\HostTests.cs together with host\FrontDesk.cs, using the same in-box
 // compiler the build uses and the same references, and runs the result.
 //
-// Five runs, because two of the checks are about a process's own command line:
+// Six modes, because two checks depend on the process's own command line:
 //
 //   --mode=parse           the command-line parser and the URL decision table
 //   --mode=plain  --minimized         an ordinary install
 //   --mode=kiosk  --minimized --no-devtools   a locked-down kiosk install
 //   --mode=files           installing over an old copy, and the log, in a temp folder
+//   --mode=backups         verified saves/readback/retention in synthetic temp files
 //   --mode=registry        write/read/remove in a unique non-logon registry key
 //
 // Nothing here starts a window, changes logon settings, or opens a socket. The
 // disposable registry key is outside Windows Run keys and is removed in finally.
+// Pass --mode=backups to run just the backup filesystem checks.
 
 const { spawnSync } = require("child_process");
 const fs = require("fs");
@@ -91,12 +93,18 @@ const RUNS = [
   { mode: "plain", extra: ["--minimized"] },
   { mode: "kiosk", extra: ["--minimized", "--no-devtools"] },
   { mode: "files", extra: [] },
+  { mode: "backups", extra: [] },
   { mode: "registry", extra: [] }
 ];
 
+// A scoped run compiles the same shipping host and executes only the requested
+// fixture; the ordinary full runner still executes every mode.
+const requested = process.argv.find((arg) => arg.startsWith("--mode="));
+const selected = requested ? RUNS.filter((run) => run.mode === requested.slice("--mode=".length)) : RUNS;
+if (!selected.length) fail("unknown host test mode");
 let failures = 0;
 let checks = 0;
-for (const run of RUNS) {
+for (const run of selected) {
   console.log(`  --- mode ${run.mode} ---`);
   const r = spawnSync(exe, [`--mode=${run.mode}`].concat(run.extra), { encoding: "utf8" });
   const out = (r.stdout || "") + (r.stderr || "");
