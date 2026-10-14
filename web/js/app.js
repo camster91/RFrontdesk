@@ -7689,6 +7689,11 @@ async function showBorrowerDetail(borrowerId) {
         </div>
       ` : ""}
     `;
+    // Actions must work as soon as their buttons are painted. Loading loan
+    // rows below can yield to the browser before the detail view finishes.
+    content.querySelector('[data-action="edit-borrower"]')?.addEventListener("click", () => _editBorrower(borrower));
+    content.querySelector('[data-action="merge-borrower"]')?.addEventListener("click", () => _mergeBorrower(borrower));
+    content.querySelector('[data-action="archive-borrower"]')?.addEventListener("click", () => _archiveBorrower(borrower));
     const openWrap = content.querySelector("#open-loans-borrower");
     for (const loan of openLoans) openWrap.appendChild(await _makeOpenLoanRow(loan));
     const list = content.querySelector("#borrower-loans-list");
@@ -7700,9 +7705,6 @@ async function showBorrowerDetail(borrowerId) {
       more.textContent = `\u2026and ${closed.length - 100} more`;
       list.appendChild(more);
     }
-    content.querySelector('[data-action="edit-borrower"]')?.addEventListener("click", () => _editBorrower(borrower));
-    content.querySelector('[data-action="merge-borrower"]')?.addEventListener("click", () => _mergeBorrower(borrower));
-    content.querySelector('[data-action="archive-borrower"]')?.addEventListener("click", () => _archiveBorrower(borrower));
     content.querySelectorAll("[data-borrower-id]").forEach((el) => {
       el.addEventListener("click", () => showBorrowerDetail(Number(el.dataset.borrowerId)));
     });

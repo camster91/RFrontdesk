@@ -5,6 +5,8 @@ A simpler kiosk action and release maintenance.
 - Typing an unlisted item now shows one **Add and borrow** action, with a note
   that staff will review the new item. Enter still selects existing items and
   never creates a new catalog entry. Existing creation limits remain in place.
+- Borrower actions respond as soon as their buttons appear, even while loan
+  rows are still loading. A quick tap on Edit no longer gets lost during loading.
 - Release filenames, package-version checks and notes now follow the host's
   version constant, reducing the chance of a stale version in a future release.
 - Build checkouts do not retain GitHub credentials, and the shared signer is

@@ -65,6 +65,18 @@ function startServer() {
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
         return;
       }
+      if (rel === "/js/app.js") {
+        // A fixture-only latency seam inside the bundle's private scope.
+        // The test still invokes Edit through its rendered button.
+        const hook = "async function _makeOpenLoanRow(loan) {";
+        const source = body.toString("utf8");
+        if (source.split(hook).length !== 2) {
+          res.writeHead(500).end("loan-row latency fixture could not be installed");
+          return;
+        }
+        body = source.replace(hook,
+          hook + " if (window.__borrowerRowsPending) await window.__borrowerRowsPending;");
+      }
       res.writeHead(200, {
         "content-type": TYPES[path.extname(file)] || "application/octet-stream",
         "cache-control": "no-store"
@@ -1409,6 +1421,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // whatever the sort chose -- clicking "the first row" is how a test passes
     // against the wrong person.
     await fill('#tab-people input[data-filter="q"]', "Phone Changer");
+    // Hold loan-row loading open: a painted Edit button must already respond,
+    // rather than waiting for an unrelated async list to finish rendering.
+    await page.evaluate(() => {
+      let release;
+      window.__borrowerRowsPending = new Promise(resolve => { release = resolve; });
+      window.__releaseBorrowerRows = () => {
+        release();
+        delete window.__borrowerRowsPending;
+        delete window.__releaseBorrowerRows;
+      };
+    });
     const openedPerson = await page.evaluate(() => {
       const row = Array.from(document.querySelectorAll("#tab-people #people-content .admin-list-item")).find((x) =>
         /Phone Changer/.test(x.textContent)
@@ -1420,7 +1443,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check("the person whose number is about to change is on screen", openedPerson === true);
     await page.waitForSelector('[data-action="edit-borrower"]', { timeout: 15000 });
     await clickEl('[data-action="edit-borrower"]');
-    await page.waitForSelector('#dialog [data-f="phone"]', { timeout: 10000 });
+    try {
+      await page.waitForSelector('#dialog [data-f="phone"]', { timeout: 10000 });
+      check("Edit works while borrower loan rows are still loading", true);
+    } finally {
+      await page.evaluate(() => window.__releaseBorrowerRows?.());
+    }
     await fill('#dialog [data-f="phone"]', "4165550399");
     const savedEdit = await dialogButton(/^save$/i);
     check("the edit takes a new number and saves it", savedEdit === "ok", savedEdit);
