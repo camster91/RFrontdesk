@@ -746,7 +746,7 @@ async function createLoan({ itemId, borrowerId, checkedOutAt, dueAt, conditionOu
       throw new Error("A loan needs a borrower; pass walkIn: true for a walk-in");
     }
     const loan = {
-      itemId: itemId || null,
+      itemId: item ? item.id : null,
       itemNameSnapshot: itemName,
       borrowerId: borrowerId || null,
       // A walk-in's snapshots are written deliberately rather than sniffed out of
@@ -5745,7 +5745,40 @@ async function hostRestoreBackup(fileName) {
   });
 }
 
-async function autoBackup({ force = false } = {}) {
+// All backup entry points share one write. The native host uses a single
+// per-day .partial file, so concurrent writes must never reach it.
+let _backupInFlight = null;
+let _backupLoopStarted = false;
+const BACKUP_CHECK_MS = 15 * 60 * 1e3;
+function autoBackup(options = {}) {
+  if (_backupInFlight) {
+    // A manual request arriving while the daily check reads settings must still
+    // force a write if that check decides the last backup is recent.
+    return options.force ? _backupInFlight.then((result) =>
+      result.reason === "recent" ? autoBackup(options) : result) : _backupInFlight;
+  }
+  _backupInFlight = _performAutoBackup(options).finally(() => {
+    _backupInFlight = null;
+  });
+  return _backupInFlight;
+}
+function startAutoBackups() {
+  if (_backupLoopStarted) return;
+  _backupLoopStarted = true;
+  const tick = async () => {
+    try {
+      await autoBackup();
+    } catch (err) {
+      console.warn("Auto-backup failed:", err);
+    } finally {
+      // Delay from completion: slow writes cannot accumulate checks, and a
+      // failed attempt retries within 15 minutes without a reload.
+      setTimeout(tick, BACKUP_CHECK_MS);
+    }
+  };
+  setTimeout(tick, 0);
+}
+async function _performAutoBackup({ force = false } = {}) {
   try {
     const settings = await getSettings();
     const last = settings.lastBackupAt || 0;
@@ -10818,7 +10851,7 @@ async function bootstrap() {
         refreshHome();
       }
     });
-    autoBackup().catch((e) => console.warn("Auto-backup failed:", e));
+    startAutoBackups();
     // The service-worker registration was removed. It pointed at ./sw.js, which
     // does not exist in this build, so every launch logged a 404 -- and a cache
     // in front of a locally-installed app is pure downside: if a stale app.js is

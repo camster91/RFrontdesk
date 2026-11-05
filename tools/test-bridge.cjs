@@ -187,6 +187,67 @@ function load(bridge) {
     ok("autoBackup: only a verified backup counts, and a failed one is retried");
   }
 
+  // The kiosk may stay open for days. Run its real backup loop against a fake
+  // clock, including an unresolved native write and a failed verification.
+  {
+    let now = 2 * 86400e3;
+    let settings = {};
+    let calls = 0;
+    let finishWrite;
+    const timers = [];
+    const s = load({ SaveBackup: () => {
+      calls++;
+      return new Promise((resolve) => { finishWrite = (verified) => resolve(JSON.stringify({ ok: verified, verified, bytes: 10, kept: 1 })); });
+    } });
+    s.Date = { now: () => now };
+    s.setTimeout = (fn, delay) => { timers.push({ fn, delay }); return timers.length; };
+    s.getSettings = async () => ({ ...settings });
+    s.updateSettings = async (updates) => { Object.assign(settings, updates); };
+    s.exportAll = async () => ({ items: [], borrowers: [], loans: [] });
+    s.showToast = () => {};
+    s._onPublicScreen = () => true;
+    s.logToHost = () => {};
+    s.BACKUP_INTERVAL_MS = 86400e3;
+    const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+    const tick = async () => {
+      const timer = timers.shift();
+      check("a recurring backup check is scheduled", !!timer);
+      if (timer) { now += timer.delay; timer.fn(); await flush(); }
+    };
+    s.startAutoBackups();
+    s.startAutoBackups();
+    check("starting the backup loop twice does not duplicate it", timers.length === 1);
+    await tick();
+    check("the loop starts a backup without a reload", calls === 1, calls);
+    const manual = s.runBackupNow();
+    await flush();
+    check("manual and automatic backups share an in-flight write", calls === 1, calls);
+    check("the loop waits for the native write before scheduling another check", timers.length === 0, timers.length);
+    finishWrite(true);
+    await manual;
+    await flush();
+    await tick();
+    check("a recent successful backup is not repeated", calls === 1, calls);
+    now += 86400e3;
+    await tick();
+    check("an open kiosk backs up again after a day", calls === 2, calls);
+    finishWrite(false);
+    await flush();
+    check("failed backups schedule a bounded retry delay", timers.length === 1 && timers[0].delay >= 60e3 && timers[0].delay <= 3600e3, JSON.stringify(timers));
+    await tick();
+    check("failed backups are retried without reloading", calls === 3, calls);
+    finishWrite(true);
+    await flush();
+    check("a successful retry records its completion time", settings.lastBackupAt === now, settings.lastBackupAt);
+    const recent = s.autoBackup();
+    const forced = s.runBackupNow();
+    await flush();
+    check("a manual request still writes if the concurrent daily check skips a recent backup", calls === 4, calls);
+    finishWrite(true);
+    await Promise.all([recent, forced]);
+    ok("daily backup loop: recurring, bounded retries and no overlapping writes");
+  }
+
   // --- The version shown in the corner (H: three files must agree) ---------
   //
   // web/js/app.js (WEB_VERSION), host/FrontDesk.cs (Build.Version) and

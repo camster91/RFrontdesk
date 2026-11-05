@@ -174,6 +174,33 @@ function startServer() {
     check("a checkout of the merged-away item lands on the live one, and is refused while it is out", chain.secondOut === "ALREADY_OUT", chain.secondOut);
     check("undone in order, the loan comes back to its item", chain.back && chain.back.loansMovedBack === 1 && chain.openOnA, JSON.stringify(chain.back));
 
+    const resumedMerge = await page.evaluate(async () => {
+      const t = window.__t;
+      const keep = await t.createItem({ name: "Resumed Keeper Camera" });
+      const victim = await t.createItem({ name: "Resumed Victim Camera" });
+      await t.mergeItems(keep.id, victim.id);
+      const loan = await t.createLoan({ itemId: victim.id, walkIn: true, dueAt: Date.now() + 3600e3 });
+      const open = await t.getOpenLoanForItem(keep.id);
+      let secondOut;
+      try {
+        await t.createLoan({ itemId: keep.id, walkIn: true, dueAt: Date.now() + 3600e3 });
+        secondOut = "accepted";
+      } catch (err) {
+        secondOut = err.code;
+      }
+      await t.undoLoansAtomic([loan]);
+      return {
+        keepId: keep.id, loanItemId: loan.itemId, openId: open && open.id, loanId: loan.id, secondOut,
+        keeper: await t.get("items", keep.id), victim: await t.get("items", victim.id),
+        openAfterUndo: !!(await t.getOpenLoanForItem(keep.id))
+      };
+    });
+    check("a resumed merged-item checkout records the live keeper ID", resumedMerge.loanItemId === resumedMerge.keepId, JSON.stringify(resumedMerge));
+    check("the keeper's availability sees that loan", resumedMerge.openId === resumedMerge.loanId, JSON.stringify(resumedMerge));
+    check("the keeper cannot be checked out a second time", resumedMerge.secondOut === "ALREADY_OUT", resumedMerge.secondOut);
+    check("Undo restores the keeper's availability and counters", !resumedMerge.openAfterUndo && resumedMerge.keeper.timesCheckedOut === 0 && resumedMerge.keeper.lastCheckedOutAt === null, JSON.stringify(resumedMerge));
+    check("Undo leaves the archived victim's counters untouched", resumedMerge.victim.timesCheckedOut === 0 && resumedMerge.victim.lastCheckedOutAt === null, JSON.stringify(resumedMerge.victim));
+
     const archived = await page.evaluate(async () => {
       const t = window.__t;
       const it = await t.createItem({ name: "Retired Projector" });
